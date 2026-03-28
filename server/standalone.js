@@ -24,6 +24,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const JWT_SECRET = process.env.JWT_SECRET || 'tribes-dev-secret-' + randomBytes(16).toString('hex');
 const DATA_DIR = join(__dirname, 'data');
 const INITIAL_BALANCE = 100000;  // $100,000 virtual wallet
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
 
 // Risk management defaults
 const RISK = {
@@ -577,8 +578,8 @@ api.post('/api/auth/register', async (req, res) => {
     }
   }
 
-  // First user becomes admin automatically
-  const isFirstUser = db.count('users') === 0;
+  // First user OR designated admin email becomes admin
+  const isAdmin = db.count('users') === 0 || email.toLowerCase() === ADMIN_EMAIL;
 
   const user = db.insert('users', {
     email: email.toLowerCase(),
@@ -587,7 +588,7 @@ api.post('/api/auth/register', async (req, res) => {
     last_name: lastName,
     phone: phone || '',
     avatar: (firstName[0] + lastName[0]).toUpperCase(),
-    role: isFirstUser ? 'admin' : 'investor',
+    role: isAdmin ? 'admin' : 'investor',
     status: 'active',
     trading_mode: 'paper',
     login_count: 1,
@@ -637,13 +638,14 @@ api.post('/api/auth/login', async (req, res) => {
 
   if (user.status === 'suspended') return json(res, 403, { error: 'Account suspended' });
 
-  // Auto-promote first registered user to admin if no admin exists yet
-  const adminExists = db.findOne('users', u => u.role === 'admin');
-  if (!adminExists) {
-    const allUsers = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-    if (allUsers.length > 0 && allUsers[0].id === user.id) {
-      user.role = 'admin';
-    }
+  // Enforce admin role for designated admin email
+  if (user.email === ADMIN_EMAIL && user.role !== 'admin') {
+    user.role = 'admin';
+  }
+  // Fallback: if no admin exists at all, promote first user
+  if (!db.findOne('users', u => u.role === 'admin')) {
+    const first = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))[0];
+    if (first && first.id === user.id) user.role = 'admin';
   }
 
   user.last_login_at = new Date().toISOString();
@@ -707,11 +709,15 @@ api.get('/api/auth/me', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user) return json(res, 404, { error: 'User not found' });
 
-  // Auto-promote first registered user to admin if no admin exists
-  const adminExists = db.findOne('users', u => u.role === 'admin');
-  if (!adminExists) {
-    const allUsers = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-    if (allUsers.length > 0 && allUsers[0].id === user.id) {
+  // Enforce admin role for designated admin email
+  if (user.email === ADMIN_EMAIL && user.role !== 'admin') {
+    user.role = 'admin';
+    db._save('users');
+  }
+  // Fallback: if no admin exists at all, promote first user
+  if (!db.findOne('users', u => u.role === 'admin')) {
+    const first = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))[0];
+    if (first && first.id === user.id) {
       user.role = 'admin';
       db._save('users');
     }
