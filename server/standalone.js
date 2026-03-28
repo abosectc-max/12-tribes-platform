@@ -57,6 +57,8 @@ class JsonDB {
     this._load('risk_events');
     this._load('order_queue');
     this._load('access_requests');
+    this._load('auto_trade_log');
+    this._load('fund_settings');
 
     // Seed AI agents if empty
     if (this.tables.agent_stats.length === 0) {
@@ -1059,6 +1061,230 @@ const priceInterval = setInterval(() => {
   wsBroadcastPrices();
 }, 2000);
 
+// ═══════════════════════════════════════════
+//   SERVER-SIDE AUTONOMOUS TRADING ENGINE
+//   Runs independently of browser — 24/7
+// ═══════════════════════════════════════════
+
+const AI_AGENTS = [
+  { name: 'Viper',    personality: 'momentum' },
+  { name: 'Oracle',   personality: 'stable' },
+  { name: 'Spectre',  personality: 'volatile' },
+  { name: 'Sentinel', personality: 'conservative' },
+  { name: 'Phoenix',  personality: 'recovery' },
+  { name: 'Titan',    personality: 'large_position' },
+];
+
+const AGENT_SYMBOLS = {
+  momentum:       ['NVDA', 'TSLA', 'META', 'AMD', 'PLTR', 'COIN'],
+  stable:         ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'VOO'],
+  conservative:   ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'GLD'],
+  volatile:       ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'ADA'],
+  recovery:       ['F', 'BAC', 'WISH', 'RIOT', 'GE', 'CCIV'],
+  large_position: ['SPY', 'QQQ', 'IWM', 'EEM', 'AAPL', 'MSFT'],
+};
+
+const AUTO_TRADE_CONFIG = {
+  tickIntervalMs: 10000,       // Check every 10 seconds
+  maxOpenPositions: 8,         // Per user
+  maxDailyTrades: 50,          // Per user
+  positionSizePct: 0.03,       // 3% of equity per trade
+  conservativeSkipRate: 0.20,  // Sentinel skips 20% of ticks
+};
+
+let autoTradeTickCount = 0;
+
+function runAutoTradeTick() {
+  autoTradeTickCount++;
+
+  // Find all users with auto-trading enabled via fund_settings
+  const allFundSettings = db.findMany('fund_settings');
+
+  for (const settingsRecord of allFundSettings) {
+    const userId = settingsRecord.user_id;
+    const data = settingsRecord.data;
+    if (!data || !data.autoTrading || !data.autoTrading.isAutoTrading) continue;
+
+    try {
+      serverAgentTrade(userId, data);
+    } catch (err) {
+      console.error(`[AutoTrader] Error for user ${userId}:`, err.message);
+    }
+  }
+}
+
+function serverAgentTrade(userId, fundData) {
+  const wallet = db.findOne('wallets', w => w.user_id === userId);
+  if (!wallet || wallet.kill_switch_active) return;
+
+  // Pick random agent
+  const activeAgents = fundData.autoTrading.agentsActive || AI_AGENTS.map(a => a.name);
+  if (activeAgents.length === 0) return;
+
+  const agentName = activeAgents[Math.floor(Math.random() * activeAgents.length)];
+  const agent = AI_AGENTS.find(a => a.name === agentName);
+  if (!agent) return;
+
+  // Conservative agent sometimes skips
+  if (agent.personality === 'conservative' && Math.random() < AUTO_TRADE_CONFIG.conservativeSkipRate) return;
+
+  // Get tradable symbols for this agent's personality
+  const preferredSymbols = AGENT_SYMBOLS[agent.personality] || AGENT_SYMBOLS.stable;
+  const tradable = preferredSymbols.filter(s => marketPrices[s] !== undefined);
+  if (tradable.length === 0) return;
+
+  const symbol = tradable[Math.floor(Math.random() * tradable.length)];
+  const price = marketPrices[symbol];
+
+  // Check daily trade limit
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const todayTrades = db.count('trades', t => t.user_id === userId && new Date(t.closed_at) >= todayStart);
+  const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
+  if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) return;
+
+  // Check open positions
+  const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
+
+  // Close existing position (50% chance if we have open ones from same agent)
+  const agentPositions = openPositions.filter(p => p.agent === agentName);
+  if (agentPositions.length > 0 && Math.random() < 0.5) {
+    const posToClose = agentPositions[Math.floor(Math.random() * agentPositions.length)];
+    closePosition(userId, posToClose.id);
+    logAutoTrade(userId, agentName, symbol, 'CLOSE', 0, 'Position management');
+    return;
+  }
+
+  // Cap open positions
+  if (openPositions.length >= AUTO_TRADE_CONFIG.maxOpenPositions) {
+    // Close oldest position
+    const sorted = openPositions.sort((a, b) => (a.opened_at || '').localeCompare(b.opened_at || ''));
+    if (sorted.length > 0) closePosition(userId, sorted[0].id);
+    return;
+  }
+
+  // Determine side based on agent personality
+  const rand = Math.random();
+  let side, reason;
+  if (agent.personality === 'momentum') {
+    side = rand < 0.65 ? 'LONG' : 'SHORT'; reason = rand < 0.65 ? 'Momentum signal detected' : 'Trend exhaustion short';
+  } else if (agent.personality === 'stable' || agent.personality === 'conservative') {
+    side = rand < 0.6 ? 'LONG' : 'SHORT'; reason = rand < 0.6 ? 'Value entry point' : 'Portfolio rebalance';
+  } else if (agent.personality === 'volatile') {
+    side = rand < 0.55 ? 'LONG' : 'SHORT'; reason = rand < 0.55 ? 'Volatility breakout' : 'Mean reversion short';
+  } else if (agent.personality === 'recovery') {
+    side = rand < 0.6 ? 'LONG' : 'SHORT'; reason = rand < 0.6 ? 'Recovery signal' : 'Dead cat bounce short';
+  } else {
+    side = rand < 0.55 ? 'LONG' : 'SHORT'; reason = rand < 0.55 ? 'Large position entry' : 'Sector rotation';
+  }
+
+  // Position sizing — 3% of equity
+  const equity = wallet.equity || wallet.balance || 100000;
+  const maxPositionValue = equity * AUTO_TRADE_CONFIG.positionSizePct;
+  const quantity = Math.max(1, Math.floor(maxPositionValue / price));
+
+  // Execute
+  const result = executeTrade(userId, { symbol, side, quantity, agent: agentName, price });
+  if (result.success) {
+    logAutoTrade(userId, agentName, symbol, side, quantity, reason);
+  }
+}
+
+function logAutoTrade(userId, agent, symbol, side, quantity, reason) {
+  db.insert('auto_trade_log', {
+    user_id: userId, agent, symbol, side, quantity, reason,
+    timestamp: new Date().toISOString(),
+  });
+  // Trim log to last 500 entries per user
+  const logs = db.findMany('auto_trade_log', l => l.user_id === userId);
+  if (logs.length > 500) {
+    const toRemove = logs.slice(0, logs.length - 500);
+    toRemove.forEach(l => db.remove('auto_trade_log', r => r.id === l.id));
+  }
+}
+
+// Auto-trading tick — every 10 seconds
+const autoTradeInterval = setInterval(runAutoTradeTick, AUTO_TRADE_CONFIG.tickIntervalMs);
+
+// Keep-alive self-ping — prevents Render free tier from sleeping
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.EXTERNAL_URL;
+let keepAliveInterval = null;
+if (SELF_URL) {
+  // Use built-in http/https based on URL protocol
+  const pingFn = SELF_URL.startsWith('https')
+    ? (await import('node:https')).get
+    : (await import('node:http')).get;
+  keepAliveInterval = setInterval(() => {
+    pingFn(`${SELF_URL}/api/health`, (res) => { res.resume(); }).on('error', () => {});
+  }, 4 * 60 * 1000); // Every 4 minutes
+}
+
+// ─── AUTO-TRADE LOG API ENDPOINTS ───
+
+// Get live auto-trade activity feed (recent trades by AI agents)
+api.get('/api/auto-trades', auth, (req, res) => {
+  const logs = db.findMany('auto_trade_log', l => l.user_id === req.userId)
+    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+    .slice(0, 50);
+  json(res, 200, logs);
+});
+
+// Get auto-trading status
+api.get('/api/auto-trading/status', auth, (req, res) => {
+  const settings = db.findOne('fund_settings', s => s.user_id === req.userId);
+  const isActive = settings?.data?.autoTrading?.isAutoTrading || false;
+  const positions = db.findMany('positions', p => p.user_id === req.userId && p.status === 'OPEN');
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const todayTrades = db.count('trades', t => t.user_id === req.userId && new Date(t.closed_at) >= todayStart);
+  const wallet = db.findOne('wallets', w => w.user_id === req.userId);
+
+  json(res, 200, {
+    isActive,
+    openPositions: positions.length,
+    todayTrades,
+    agents: AI_AGENTS.map(a => a.name),
+    activeAgents: settings?.data?.autoTrading?.agentsActive || [],
+    tradingMode: settings?.data?.autoTrading?.tradingMode || 'balanced',
+    startedAt: settings?.data?.autoTrading?.tradingStartedAt || null,
+    equity: wallet?.equity || 0,
+    balance: wallet?.balance || 0,
+    tickCount: autoTradeTickCount,
+  });
+});
+
+// Start/stop auto-trading (toggle)
+api.post('/api/auto-trading/toggle', auth, async (req, res) => {
+  const body = await readBody(req);
+  const { enabled, mode } = body;
+
+  let settings = db.findOne('fund_settings', s => s.user_id === req.userId);
+  if (!settings) {
+    settings = db.insert('fund_settings', {
+      user_id: req.userId,
+      data: { autoTrading: {} },
+    });
+  }
+
+  if (!settings.data) settings.data = {};
+  if (!settings.data.autoTrading) settings.data.autoTrading = {};
+
+  settings.data.autoTrading.isAutoTrading = enabled !== false;
+  settings.data.autoTrading.tradingMode = mode || settings.data.autoTrading.tradingMode || 'balanced';
+  if (enabled !== false) {
+    settings.data.autoTrading.tradingStartedAt = Date.now();
+    settings.data.autoTrading.agentsActive = AI_AGENTS.map(a => a.name);
+  } else {
+    settings.data.autoTrading.agentsActive = [];
+  }
+  settings.updated_at = new Date().toISOString();
+  db._save('fund_settings');
+
+  json(res, 200, {
+    success: true,
+    isActive: settings.data.autoTrading.isAutoTrading,
+    agents: settings.data.autoTrading.agentsActive,
+  });
+});
+
 // Start
 server.listen(PORT, '0.0.0.0', () => {
   console.log('');
@@ -1075,6 +1301,9 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   Database:  JSON file (${DATA_DIR})`);
   console.log(`   Users:     ${db.count('users')}`);
   console.log(`   Symbols:   ${Object.keys(marketPrices).length}`);
+  console.log(`   AutoTrade: ENABLED (${AUTO_TRADE_CONFIG.tickIntervalMs / 1000}s tick)`);
+  console.log(`   Agents:    ${AI_AGENTS.map(a => a.name).join(', ')}`);
+  console.log(`   KeepAlive: ${SELF_URL ? 'ON (4min ping)' : 'OFF (set RENDER_EXTERNAL_URL)'}`);
   console.log('');
   console.log('   Awaiting connections.');
   console.log('');
@@ -1085,6 +1314,8 @@ server.listen(PORT, '0.0.0.0', () => {
 function shutdown(sig) {
   console.log(`\n${sig} — shutting down...`);
   clearInterval(priceInterval);
+  clearInterval(autoTradeInterval);
+  if (keepAliveInterval) clearInterval(keepAliveInterval);
   wsClients.forEach(c => { try { c.socket.end(); } catch {} });
   server.close(() => { console.log('Server closed.'); process.exit(0); });
   setTimeout(() => process.exit(1), 5000);

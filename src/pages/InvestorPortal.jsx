@@ -1590,32 +1590,52 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
   const [recentTrades, setRecentTrades] = useState([]);
   const [sessionStats, setSessionStats] = useState({ trades: 0, pnl: 0, startTime: null });
   const [isStarting, setIsStarting] = useState(false);
+  const [serverStats, setServerStats] = useState(null);
 
-  // Check initial status — re-check after server sync completes (async pull)
+  // API base for server-side auto-trading
+  const API_BASE = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    return `http://${hostname}:4000/api`;
+  })();
+  const authToken = (() => { try { return localStorage.getItem('12tribes_auth_token') || ''; } catch { return ''; } })();
+
+  // Check initial status — from server first, then localStorage fallback
   useEffect(() => {
-    const checkAndRestore = () => {
+    let cancelled = false;
+    const checkServer = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/auto-trading/status`, {
+          headers: { 'Authorization': `Bearer ${authToken}` },
+        });
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          if (data.isActive) {
+            setTradingActive(true);
+            setTradingMode(data.tradingMode || 'balanced');
+            setSessionStats({ trades: data.todayTrades || 0, pnl: 0, startTime: data.startedAt });
+            setServerStats(data);
+            return;
+          }
+        }
+      } catch {}
+      // Fallback to localStorage
       const status = getAutoTradingStatus(investorId);
-      if (status && status.isAutoTrading) {
+      if (status && status.isAutoTrading && !cancelled) {
         setTradingActive(true);
         setTradingMode(status.tradingMode || 'balanced');
         setSessionStats({ trades: status.totalTradesExecuted || 0, pnl: status.sessionPnL || 0, startTime: status.tradingStartedAt });
-        return true;
       }
-      return false;
     };
-    // Immediate check (covers localStorage hit)
-    if (!checkAndRestore()) {
-      // Delayed re-check catches async server pull that restores isAutoTrading
-      const t1 = setTimeout(checkAndRestore, 1500);
-      const t2 = setTimeout(checkAndRestore, 3500);
-      return () => { clearTimeout(t1); clearTimeout(t2); };
-    }
+    checkServer();
+    return () => { cancelled = true; };
   }, [investorId]);
 
-  // Auto-trade interval when active
+  // Poll server for live trade activity + run client-side trades as visual supplement
   useEffect(() => {
     if (!tradingActive) return;
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
+      // Client-side trade for instant visual feedback
       const trade = simulateAgentTrade(investorId);
       if (trade) {
         setRecentTrades(prev => [trade, ...prev].slice(0, 8));
@@ -1626,13 +1646,53 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
         }));
         if (onTick) onTick();
       }
+      // Also poll server-side stats periodically
+      try {
+        const res = await fetch(`${API_BASE}/auto-trading/status`, {
+          headers: { 'Authorization': `Bearer ${authToken}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setServerStats(data);
+        }
+      } catch {}
     }, 5000);
     return () => clearInterval(interval);
   }, [tradingActive, investorId, onTick]);
 
+  // Also fetch recent server-side auto-trade logs for the feed
+  useEffect(() => {
+    if (!tradingActive) return;
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/auto-trades`, {
+          headers: { 'Authorization': `Bearer ${authToken}` },
+        });
+        if (res.ok) {
+          const logs = await res.json();
+          if (logs.length > 0 && recentTrades.length === 0) {
+            // Seed the feed with server-side trades on initial load
+            setRecentTrades(logs.slice(0, 8).map(l => ({
+              agent: l.agent, symbol: l.symbol, side: l.side,
+              quantity: l.quantity, price: 0, reason: l.reason,
+              executedAt: new Date(l.timestamp).getTime(),
+            })));
+          }
+        }
+      } catch {}
+    };
+    fetchLogs();
+  }, [tradingActive]);
+
   const handleStart = () => {
     setIsStarting(true);
     initFundManager(investorId);
+    // Enable server-side auto-trading
+    fetch(`${API_BASE}/auto-trading/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+      body: JSON.stringify({ enabled: true, mode: tradingMode }),
+    }).catch(() => {});
     setTimeout(() => {
       startAutoTrading(investorId, tradingMode);
       setTradingActive(true);
@@ -1642,6 +1702,12 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
   };
 
   const handleStop = () => {
+    // Disable server-side auto-trading
+    fetch(`${API_BASE}/auto-trading/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+      body: JSON.stringify({ enabled: false }),
+    }).catch(() => {});
     stopAutoTrading(investorId);
     setTradingActive(false);
   };
@@ -1764,10 +1830,20 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
         ))}
       </div>
 
+      {/* Server-side indicator */}
+      {serverStats && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: serverStats.isActive ? "#10B981" : "#EF4444" }} />
+          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", letterSpacing: 1 }}>
+            SERVER-SIDE ENGINE: {serverStats.isActive ? 'ACTIVE' : 'INACTIVE'} | {serverStats.openPositions} positions | {serverStats.todayTrades} trades today
+          </span>
+        </div>
+      )}
+
       {/* Stats Row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
         {[
-          { l: "Trades Executed", v: sessionStats.trades, c: "#00D4FF" },
+          { l: "Trades Executed", v: sessionStats.trades + (serverStats?.todayTrades || 0), c: "#00D4FF" },
           { l: "Session P&L", v: `${sessionStats.pnl >= 0 ? '+' : ''}$${sessionStats.pnl.toFixed(0)}`, c: sessionStats.pnl >= 0 ? "#10B981" : "#EF4444" },
           { l: "Time Active", v: elapsedTime < 60 ? `${elapsedTime}m` : `${Math.floor(elapsedTime / 60)}h ${elapsedTime % 60}m`, c: "rgba(255,255,255,0.7)" },
         ].map(s => (
