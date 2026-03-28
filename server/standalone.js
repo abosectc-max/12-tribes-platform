@@ -637,6 +637,15 @@ api.post('/api/auth/login', async (req, res) => {
 
   if (user.status === 'suspended') return json(res, 403, { error: 'Account suspended' });
 
+  // Auto-promote first registered user to admin if no admin exists yet
+  const adminExists = db.findOne('users', u => u.role === 'admin');
+  if (!adminExists) {
+    const allUsers = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+    if (allUsers.length > 0 && allUsers[0].id === user.id) {
+      user.role = 'admin';
+    }
+  }
+
   user.last_login_at = new Date().toISOString();
   user.login_count = (user.login_count || 0) + 1;
   db._save('users');
