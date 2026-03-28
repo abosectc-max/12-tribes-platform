@@ -1,0 +1,903 @@
+// ═══════════════════════════════════════════
+//   12 TRIBES — AUTH STORE v4.0
+//   Real Users Only | $100K Virtual Wallet | Login Timestamps
+//   Backend Sync: Registers/logins sync to server for cross-device access
+//   Falls back to localStorage-only if server unreachable
+// ═══════════════════════════════════════════
+
+// ═══════ BACKEND API SYNC LAYER ═══════
+const API_BASE = (() => {
+  // Production: VITE_API_URL points to Render backend
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  // Local dev: same hostname, port 4000
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  return `http://${hostname}:4000/api`;
+})();
+
+const STORAGE_KEY_TOKEN = '12tribes_auth_token';
+
+let authToken = (() => {
+  try { return localStorage.getItem(STORAGE_KEY_TOKEN) || null; } catch { return null; }
+})();
+
+function saveToken(token) {
+  authToken = token;
+  try { localStorage.setItem(STORAGE_KEY_TOKEN, token); } catch {}
+}
+
+function clearToken() {
+  authToken = null;
+  try { localStorage.removeItem(STORAGE_KEY_TOKEN); } catch {}
+}
+
+async function apiFetch(path, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000); // 4s timeout
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: { ...headers, ...(options.headers || {}) },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    const data = await res.json();
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    clearTimeout(timeout);
+    return { ok: false, status: 0, data: null, offline: true, error: err.message };
+  }
+}
+
+// Track server availability — avoid hammering a down server
+let serverAvailable = null; // null = unknown, true/false = last known state
+let lastServerCheck = 0;
+
+async function isServerUp() {
+  const now = Date.now();
+  // Re-check every 30s or if unknown
+  if (serverAvailable !== null && (now - lastServerCheck) < 30000) return serverAvailable;
+  const result = await apiFetch('/health');
+  serverAvailable = result.ok;
+  lastServerCheck = now;
+  return serverAvailable;
+}
+
+// Storage helpers — persist across page refreshes
+const STORAGE_KEY_USERS = '12tribes_users';
+const STORAGE_KEY_SESSION = '12tribes_session';
+const STORAGE_KEY_LOGIN_LOG = '12tribes_login_log';
+const STORAGE_KEY_VERIFICATION = '12tribes_verification';
+
+function loadFromStorage(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function saveToStorage(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+function removeFromStorage(key) {
+  try { localStorage.removeItem(key); } catch {}
+}
+
+// ═══════ USER DATABASE ═══════
+// Hydrate from localStorage — NO fake seed investors
+const userDB = new Map();
+
+const storedUsers = loadFromStorage(STORAGE_KEY_USERS);
+if (storedUsers && Array.isArray(storedUsers)) {
+  storedUsers.forEach(u => userDB.set(u.email.toLowerCase(), u));
+}
+
+// Current session — restore from localStorage if available
+let currentSession = loadFromStorage(STORAGE_KEY_SESSION);
+
+// Login activity log
+let loginLog = loadFromStorage(STORAGE_KEY_LOGIN_LOG) || [];
+
+// Email verification codes — { email: { code, expiresAt } }
+let verificationCodes = loadFromStorage(STORAGE_KEY_VERIFICATION) || {};
+
+// Persist helpers
+function persistUsers() {
+  saveToStorage(STORAGE_KEY_USERS, Array.from(userDB.values()));
+}
+
+function persistLoginLog() {
+  saveToStorage(STORAGE_KEY_LOGIN_LOG, loginLog);
+}
+
+function persistVerificationCodes() {
+  saveToStorage(STORAGE_KEY_VERIFICATION, verificationCodes);
+}
+
+// ═══════ PASSWORD HASHING (SHA-256 with fallback) ═══════
+// crypto.subtle is only available in secure contexts (HTTPS / localhost).
+// Mobile browsers on HTTP (e.g. phone accessing LAN IP) need a fallback.
+function fallbackHash(password) {
+  let hash = 0;
+  for (let i = 0; i < password.length; i++) {
+    const c = password.charCodeAt(i);
+    hash = ((hash << 5) - hash + c) | 0;
+  }
+  // Make it look like a hex string and add a prefix so we know it's a fallback
+  const n = Math.abs(hash).toString(16).padStart(8, '0');
+  return `fb:${n}${n}${n}${n}${n}${n}${n}${n}`;
+}
+
+async function hashPassword(password) {
+  try {
+    if (crypto?.subtle?.digest) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(password);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch { /* SubtleCrypto unavailable in insecure context */ }
+  return fallbackHash(password);
+}
+
+async function verifyPassword(password, hash) {
+  const hashOfInput = await hashPassword(password);
+  if (hashOfInput === hash) return true;
+  // Also check fallback hash if the stored hash is a fallback
+  if (hash?.startsWith('fb:')) return fallbackHash(password) === hash;
+  return false;
+}
+
+// ═══════ EMAIL VERIFICATION ═══════
+function generateVerificationCode() {
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  return code;
+}
+
+function setVerificationCode(email, code) {
+  const emailKey = email.toLowerCase().trim();
+  verificationCodes[emailKey] = {
+    code,
+    expiresAt: Date.now() + (10 * 60 * 1000), // 10 minutes
+  };
+  persistVerificationCodes();
+}
+
+export function getVerificationCode(email) {
+  const emailKey = email.toLowerCase().trim();
+  const entry = verificationCodes[emailKey];
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    delete verificationCodes[emailKey];
+    persistVerificationCodes();
+    return null;
+  }
+  return entry.code;
+}
+
+export function verifyEmail(email, code) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  if (!user) return { success: false, error: 'User not found' };
+
+  const entry = verificationCodes[emailKey];
+  if (!entry) return { success: false, error: 'No verification code found' };
+  if (entry.expiresAt < Date.now()) {
+    delete verificationCodes[emailKey];
+    persistVerificationCodes();
+    return { success: false, error: 'Verification code has expired' };
+  }
+  if (entry.code !== code) {
+    return { success: false, error: 'Invalid verification code' };
+  }
+
+  user.emailVerified = true;
+  userDB.set(emailKey, user);
+  delete verificationCodes[emailKey];
+  persistUsers();
+  persistVerificationCodes();
+  return { success: true, user };
+}
+
+export function isEmailVerified(email) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  return user ? user.emailVerified === true : false;
+}
+
+export function resendVerificationCode(email) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  if (!user) return { success: false, error: 'User not found' };
+
+  const code = generateVerificationCode();
+  setVerificationCode(email, code);
+  return { success: true, code };
+}
+
+// ═══════ LOGIN TIMESTAMP RECORDING ═══════
+function recordLogin(user) {
+  const entry = {
+    userId: user.id,
+    email: user.email,
+    name: user.name || `${user.firstName} ${user.lastName}`,
+    timestamp: new Date().toISOString(),
+    date: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    method: 'email', // Will be overridden by passkey auth
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 80) : 'unknown',
+  };
+  loginLog.push(entry);
+
+  // Also update user's last login and login count
+  const dbUser = userDB.get(user.email.toLowerCase());
+  if (dbUser) {
+    dbUser.lastLoginAt = entry.timestamp;
+    dbUser.loginCount = (dbUser.loginCount || 0) + 1;
+    userDB.set(user.email.toLowerCase(), dbUser);
+    persistUsers();
+  }
+
+  persistLoginLog();
+  return entry;
+}
+
+// ═══════ REGISTRATION ═══════
+export async function registerUser({ firstName, lastName, email, phone, password }) {
+  const emailKey = email.toLowerCase().trim();
+
+  if (userDB.has(emailKey)) {
+    return { success: false, error: 'An account with this email already exists. Please sign in.' };
+  }
+
+  if (!password || password.length < 6) {
+    return { success: false, error: 'Password must be at least 6 characters long.' };
+  }
+
+  const id = `INV_${String(userDB.size + 1).padStart(2, '0')}_${Date.now().toString(36)}`;
+  const avatar = `${firstName[0]}${lastName[0]}`.toUpperCase();
+  const now = new Date();
+  const passwordHash = await hashPassword(password);
+  const verificationCode = generateVerificationCode();
+
+  const user = {
+    id,
+    firstName: firstName.trim(),
+    lastName: lastName.trim(),
+    name: `${firstName.trim()} ${lastName.trim()}`,
+    email: emailKey,
+    phone: phone.trim(),
+    avatar,
+    // Virtual wallet — $100,000 deposited at registration
+    virtualBalance: 100_000,
+    initialDeposit: 100_000,
+    depositTimestamp: now.toISOString(),
+    // Timestamps
+    registeredAt: now.toISOString(),
+    registeredDate: now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    registeredTime: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    lastLoginAt: now.toISOString(),
+    loginCount: 1,
+    // Auth
+    passwordHash,
+    hasPasskey: false,
+    passkeyCredentialId: null,
+    isNewUser: true,
+    emailVerified: false,
+  };
+
+  userDB.set(emailKey, user);
+  setVerificationCode(email, verificationCode);
+  persistUsers();
+
+  // Record the registration as first login
+  recordLogin({ ...user, method: 'registration' });
+
+  // ─── BACKEND SYNC: Push registration to server for cross-device access ───
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const apiResult = await apiFetch('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey, password, firstName: firstName.trim(), lastName: lastName.trim(), phone: phone.trim() }),
+      });
+      if (apiResult.ok && apiResult.data?.accessToken) {
+        saveToken(apiResult.data.accessToken);
+        // Store server-assigned ID for cross-device consistency
+        user.serverId = apiResult.data.user?.id;
+        userDB.set(emailKey, user);
+        persistUsers();
+      }
+      // If 409 (already exists on server), that's fine — local registration succeeded
+    }
+  } catch { /* Server sync is best-effort — local registration already succeeded */ }
+
+  return { success: true, user, verificationCode };
+}
+
+// ═══════ PASSKEY (WebAuthn) ═══════
+
+export function isPasskeySupported() {
+  return !!(window.PublicKeyCredential &&
+    typeof window.PublicKeyCredential === 'function');
+}
+
+function generateChallenge() {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return array;
+}
+
+function strToBuffer(str) {
+  return new TextEncoder().encode(str);
+}
+
+function bufferToBase64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let str = '';
+  bytes.forEach(b => str += String.fromCharCode(b));
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+export async function registerPasskey(email) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  if (!user) return { success: false, error: 'User not found' };
+
+  if (!isPasskeySupported()) {
+    return { success: false, error: 'Passkeys are not supported on this device/browser' };
+  }
+
+  try {
+    const challenge = generateChallenge();
+
+    const publicKeyOptions = {
+      challenge,
+      rp: {
+        name: '12 Tribes Investments',
+        id: window.location.hostname,
+      },
+      user: {
+        id: strToBuffer(user.id),
+        name: user.email,
+        displayName: user.name,
+      },
+      pubKeyCredParams: [
+        { alg: -7, type: 'public-key' },
+        { alg: -257, type: 'public-key' },
+      ],
+      authenticatorSelection: {
+        authenticatorAttachment: 'platform',
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+      },
+      timeout: 60000,
+      attestation: 'none',
+    };
+
+    const credential = await navigator.credentials.create({
+      publicKey: publicKeyOptions,
+    });
+
+    const credentialId = bufferToBase64url(credential.rawId);
+    user.hasPasskey = true;
+    user.passkeyCredentialId = credentialId;
+    userDB.set(emailKey, user);
+    persistUsers();
+
+    return { success: true, credentialId };
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      return { success: false, error: 'Passkey creation was cancelled' };
+    }
+    return { success: false, error: `Passkey error: ${err.message}` };
+  }
+}
+
+export async function authenticateWithPasskey(email) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+
+  if (!user) return { success: false, error: 'No account found with this email' };
+  if (!user.hasPasskey) return { success: false, error: 'No passkey registered for this account' };
+  if (!isPasskeySupported()) return { success: false, error: 'Passkeys not supported' };
+
+  try {
+    const challenge = generateChallenge();
+
+    const publicKeyOptions = {
+      challenge,
+      rpId: window.location.hostname,
+      allowCredentials: [{
+        id: Uint8Array.from(atob(user.passkeyCredentialId.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
+        type: 'public-key',
+        transports: ['internal'],
+      }],
+      userVerification: 'preferred',
+      timeout: 60000,
+    };
+
+    await navigator.credentials.get({
+      publicKey: publicKeyOptions,
+    });
+
+    // Record login with timestamp
+    recordLogin({ ...user, method: 'passkey' });
+
+    currentSession = { ...user, isNewUser: false };
+    saveToStorage(STORAGE_KEY_SESSION, currentSession);
+    return { success: true, user: currentSession };
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      return { success: false, error: 'Authentication was cancelled' };
+    }
+    return { success: false, error: `Auth error: ${err.message}` };
+  }
+}
+
+// ═══════ EMAIL/PASSWORD LOGIN ═══════
+// Tries backend first (cross-device), falls back to localStorage
+export async function loginWithEmail(email, password) {
+  const emailKey = email.toLowerCase().trim();
+
+  // ─── BACKEND LOGIN: Try server first for cross-device support ───
+  let serverUser = null;
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const apiResult = await apiFetch('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey, password }),
+      });
+      if (apiResult.ok && apiResult.data?.user) {
+        saveToken(apiResult.data.accessToken);
+        serverUser = apiResult.data.user;
+      } else if (apiResult.status === 401) {
+        // Server says invalid password — check if we also have local user
+        const localUser = userDB.get(emailKey);
+        if (!localUser) {
+          return { success: false, error: 'Invalid email or password.' };
+        }
+        // Fall through to local auth
+      } else if (apiResult.status === 0 || apiResult.offline) {
+        // Server unreachable — fall through to local auth
+      } else {
+        // Other server error — fall through to local auth
+      }
+    }
+  } catch { /* Server sync is best-effort */ }
+
+  // If server authenticated successfully, hydrate local user from server data
+  if (serverUser) {
+    let localUser = userDB.get(emailKey);
+    if (!localUser) {
+      // User exists on server but not locally — create local entry (cross-device scenario)
+      const passwordHash = await hashPassword(password);
+      localUser = {
+        id: serverUser.id,
+        firstName: serverUser.firstName,
+        lastName: serverUser.lastName,
+        name: `${serverUser.firstName} ${serverUser.lastName}`,
+        email: emailKey,
+        phone: serverUser.phone || '',
+        avatar: serverUser.avatar || `${serverUser.firstName[0]}${serverUser.lastName[0]}`.toUpperCase(),
+        virtualBalance: 100_000,
+        initialDeposit: 100_000,
+        depositTimestamp: new Date().toISOString(),
+        registeredAt: serverUser.registeredAt || new Date().toISOString(),
+        registeredDate: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        registeredTime: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        lastLoginAt: new Date().toISOString(),
+        loginCount: serverUser.loginCount || 1,
+        passwordHash,
+        hasPasskey: false,
+        passkeyCredentialId: null,
+        isNewUser: false,
+        emailVerified: true, // Server-verified
+        serverId: serverUser.id,
+      };
+      userDB.set(emailKey, localUser);
+      persistUsers();
+    }
+
+    // Record login
+    recordLogin({ ...localUser, method: 'email' });
+
+    currentSession = { ...localUser, isNewUser: false };
+    saveToStorage(STORAGE_KEY_SESSION, currentSession);
+    return { success: true, user: currentSession };
+  }
+
+  // ─── LOCAL LOGIN: Fallback when server is unreachable ───
+  const user = userDB.get(emailKey);
+
+  if (!user) {
+    return { success: false, error: 'No account found. Please create an account first.' };
+  }
+
+  if (!user.passwordHash) {
+    return { success: false, error: 'This account does not have a password set. Please use passkey authentication or register with a password.' };
+  }
+
+  const passwordValid = await verifyPassword(password, user.passwordHash);
+  if (!passwordValid) {
+    return { success: false, error: 'Invalid password.' };
+  }
+
+  // ─── SYNC TO SERVER: Push local-only accounts so other devices can log in ───
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const syncResult = await apiFetch('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: emailKey,
+          password,
+          firstName: user.firstName || user.name?.split(' ')[0] || '',
+          lastName: user.lastName || user.name?.split(' ').slice(1).join(' ') || '',
+          phone: user.phone || '',
+        }),
+      });
+      if (syncResult.ok && syncResult.data?.accessToken) {
+        saveToken(syncResult.data.accessToken);
+      }
+      // 409 = already exists, which is fine — means it was already synced
+    }
+  } catch { /* Best-effort sync */ }
+
+  // Record login with timestamp
+  recordLogin({ ...user, method: 'email' });
+
+  currentSession = { ...user, isNewUser: false };
+  saveToStorage(STORAGE_KEY_SESSION, currentSession);
+  return { success: true, user: currentSession };
+}
+
+// ═══════ CHANGE PASSWORD ═══════
+export async function changePassword(email, currentPassword, newPassword) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+
+  if (!user) {
+    return { success: false, error: 'User not found' };
+  }
+
+  if (!user.passwordHash) {
+    return { success: false, error: 'This account does not have a password set.' };
+  }
+
+  if (!newPassword || newPassword.length < 6) {
+    return { success: false, error: 'New password must be at least 6 characters long.' };
+  }
+
+  const passwordValid = await verifyPassword(currentPassword, user.passwordHash);
+  if (!passwordValid) {
+    return { success: false, error: 'Current password is incorrect.' };
+  }
+
+  const newHash = await hashPassword(newPassword);
+  user.passwordHash = newHash;
+  userDB.set(emailKey, user);
+  persistUsers();
+
+  // Update current session if this is the logged-in user
+  if (currentSession && currentSession.email === emailKey) {
+    currentSession.passwordHash = newHash;
+    saveToStorage(STORAGE_KEY_SESSION, currentSession);
+  }
+
+  // ─── BACKEND SYNC: Push password change to server ───
+  try {
+    if (authToken) {
+      await apiFetch('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+    }
+  } catch { /* Best-effort sync */ }
+
+  return { success: true, message: 'Password changed successfully.' };
+}
+
+// ═══════ PASSWORD RESET (via email verification code) ═══════
+export async function requestPasswordReset(email) {
+  const emailKey = email.toLowerCase().trim();
+
+  // Check if user exists locally or on server
+  let userExists = !!userDB.get(emailKey);
+  if (!userExists) {
+    try {
+      const serverUp = await isServerUp();
+      if (serverUp) {
+        const apiResult = await apiFetch('/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ email: emailKey, password: '___probe___' }),
+        });
+        // 401 means user exists but wrong password; anything else means doesn't exist
+        userExists = apiResult.status === 401;
+      }
+    } catch { /* Best-effort */ }
+  }
+
+  if (!userExists) {
+    // Don't reveal if account exists — just pretend we sent the code
+    return { success: true, message: 'If an account exists with this email, a reset code has been generated.' };
+  }
+
+  const code = generateVerificationCode();
+  setVerificationCode(emailKey, code);
+
+  // In production this would send an email. For now, log it.
+  console.log(`[PasswordReset] Code for ${emailKey}: ${code}`);
+
+  return { success: true, message: 'If an account exists with this email, a reset code has been generated.' };
+}
+
+export async function resetPassword(email, code, newPassword) {
+  const emailKey = email.toLowerCase().trim();
+
+  if (!newPassword || newPassword.length < 6) {
+    return { success: false, error: 'Password must be at least 6 characters.' };
+  }
+
+  // Verify the reset code
+  const stored = verificationCodes[emailKey];
+  if (!stored) {
+    return { success: false, error: 'No reset code found. Please request a new one.' };
+  }
+  if (Date.now() > stored.expiresAt) {
+    delete verificationCodes[emailKey];
+    persistVerificationCodes();
+    return { success: false, error: 'Reset code has expired. Please request a new one.' };
+  }
+  if (stored.code !== code) {
+    return { success: false, error: 'Invalid reset code.' };
+  }
+
+  // Code verified — update password
+  const newHash = await hashPassword(newPassword);
+  const user = userDB.get(emailKey);
+  if (user) {
+    user.passwordHash = newHash;
+    userDB.set(emailKey, user);
+    persistUsers();
+  }
+
+  // Clear the verification code
+  delete verificationCodes[emailKey];
+  persistVerificationCodes();
+
+  // Sync to server
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      await apiFetch('/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey, code, newPassword }),
+      });
+    }
+  } catch { /* Best-effort */ }
+
+  return { success: true, message: 'Password has been reset. You can now sign in.' };
+}
+
+// ═══════ TOTP 2FA (Google Authenticator / Any TOTP App) ═══════
+// HMAC-SHA1 based TOTP — RFC 6238 compliant, 6-digit codes, 30s window
+
+async function hmacSha1(keyBytes, msgBytes) {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, msgBytes);
+  return new Uint8Array(sig);
+}
+
+function base32Encode(buffer) {
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const b of buffer) bits += b.toString(2).padStart(8, '0');
+  let out = '';
+  for (let i = 0; i < bits.length; i += 5) {
+    const chunk = bits.slice(i, i + 5).padEnd(5, '0');
+    out += CHARS[parseInt(chunk, 2)];
+  }
+  return out;
+}
+
+function base32Decode(str) {
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const c of str.toUpperCase()) {
+    const val = CHARS.indexOf(c);
+    if (val === -1) continue;
+    bits += val.toString(2).padStart(5, '0');
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) {
+    bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  }
+  return new Uint8Array(bytes);
+}
+
+function generateTOTPSecret() {
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  return base32Encode(bytes);
+}
+
+async function computeTOTP(secretBase32, timeStep) {
+  if (timeStep === undefined) timeStep = Math.floor(Date.now() / 30000);
+  const keyBytes = base32Decode(secretBase32);
+  const timeBytes = new Uint8Array(8);
+  let t = timeStep;
+  for (let i = 7; i >= 0; i--) {
+    timeBytes[i] = t & 0xff;
+    t = Math.floor(t / 256);
+  }
+  const hmac = await hmacSha1(keyBytes, timeBytes);
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset + 1] << 16 | hmac[offset + 2] << 8 | hmac[offset + 3]) % 1000000;
+  return code.toString().padStart(6, '0');
+}
+
+export function generate2FASecret(email) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  if (!user) return { success: false, error: 'User not found' };
+
+  const secret = generateTOTPSecret();
+  const issuer = '12Tribes';
+  const accountName = encodeURIComponent(user.email);
+  const otpauthUrl = `otpauth://totp/${issuer}:${accountName}?secret=${secret}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+
+  // Store secret temporarily until verified
+  user._pending2FASecret = secret;
+  userDB.set(emailKey, user);
+  persistUsers();
+
+  return { success: true, secret, otpauthUrl, qrData: otpauthUrl };
+}
+
+export async function verify2FASetup(email, code) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  if (!user) return { success: false, error: 'User not found' };
+  if (!user._pending2FASecret) return { success: false, error: 'No pending 2FA setup' };
+
+  // Check code against current and adjacent time steps (±1 window)
+  const timeStep = Math.floor(Date.now() / 30000);
+  for (let offset = -1; offset <= 1; offset++) {
+    const expected = await computeTOTP(user._pending2FASecret, timeStep + offset);
+    if (code === expected) {
+      user.twoFactorSecret = user._pending2FASecret;
+      user.twoFactorEnabled = true;
+      delete user._pending2FASecret;
+
+      // Generate 8 backup codes
+      user.twoFactorBackupCodes = Array.from({ length: 8 }, () => {
+        const arr = new Uint8Array(4);
+        crypto.getRandomValues(arr);
+        return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+      });
+
+      userDB.set(emailKey, user);
+      persistUsers();
+      return { success: true, backupCodes: [...user.twoFactorBackupCodes] };
+    }
+  }
+  return { success: false, error: 'Invalid code. Please try again.' };
+}
+
+export async function verify2FACode(email, code) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  if (!user) return { success: false, error: 'User not found' };
+  if (!user.twoFactorEnabled || !user.twoFactorSecret) return { success: false, error: '2FA is not enabled' };
+
+  // Check TOTP code (±1 window)
+  const timeStep = Math.floor(Date.now() / 30000);
+  for (let offset = -1; offset <= 1; offset++) {
+    const expected = await computeTOTP(user.twoFactorSecret, timeStep + offset);
+    if (code === expected) return { success: true };
+  }
+
+  // Check backup codes
+  if (user.twoFactorBackupCodes && user.twoFactorBackupCodes.includes(code)) {
+    user.twoFactorBackupCodes = user.twoFactorBackupCodes.filter(c => c !== code);
+    userDB.set(emailKey, user);
+    persistUsers();
+    return { success: true, usedBackupCode: true, remainingBackupCodes: user.twoFactorBackupCodes.length };
+  }
+
+  return { success: false, error: 'Invalid code.' };
+}
+
+export function disable2FA(email) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  if (!user) return { success: false, error: 'User not found' };
+
+  user.twoFactorEnabled = false;
+  delete user.twoFactorSecret;
+  delete user._pending2FASecret;
+  delete user.twoFactorBackupCodes;
+  userDB.set(emailKey, user);
+  persistUsers();
+  return { success: true };
+}
+
+export function is2FAEnabled(email) {
+  const emailKey = email.toLowerCase().trim();
+  const user = userDB.get(emailKey);
+  return user ? user.twoFactorEnabled === true : false;
+}
+
+export async function getCurrentTOTP(secret) {
+  return computeTOTP(secret);
+}
+
+// ═══════ SESSION ═══════
+export function setSession(user) {
+  currentSession = user;
+  saveToStorage(STORAGE_KEY_SESSION, user);
+}
+
+export function getSession() {
+  return currentSession;
+}
+
+export function logout() {
+  currentSession = null;
+  removeFromStorage(STORAGE_KEY_SESSION);
+  clearToken();
+}
+
+// ═══════ USER QUERIES ═══════
+export function getUserByEmail(email) {
+  return userDB.get(email.toLowerCase().trim()) || null;
+}
+
+export function getAllUsers() {
+  return Array.from(userDB.values());
+}
+
+export function getUserCount() {
+  return userDB.size;
+}
+
+// ═══════ LOGIN LOG QUERIES ═══════
+export function getLoginLog(userId) {
+  if (userId) return loginLog.filter(entry => entry.userId === userId);
+  return [...loginLog];
+}
+
+export function getLastLogin(userId) {
+  const userLogs = loginLog.filter(entry => entry.userId === userId);
+  return userLogs.length > 0 ? userLogs[userLogs.length - 1] : null;
+}
+
+// ═══════ CLEAR FAKE DATA ═══════
+// One-time migration: remove any pre-seeded fake investors from localStorage
+export function purgeSeededInvestors() {
+  const fakeEmails = [
+    'alice@12tribes.io', 'bob@12tribes.io', 'carol@12tribes.io', 'david@12tribes.io',
+    'emma@12tribes.io', 'frank@12tribes.io', 'grace@12tribes.io', 'henry@12tribes.io',
+    'iris@12tribes.io', 'jack@12tribes.io', 'karen@12tribes.io', 'liam@12tribes.io',
+  ];
+  let purged = 0;
+  fakeEmails.forEach(email => {
+    if (userDB.has(email)) {
+      userDB.delete(email);
+      purged++;
+    }
+  });
+  if (purged > 0) persistUsers();
+  return purged;
+}
+
+// Auto-purge on load — clean up any old fake data
+purgeSeededInvestors();

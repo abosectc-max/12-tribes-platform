@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+
+    <!-- PWA Meta -->
+    <meta name="theme-color" content="#0a0a1a" />
+    <meta name="description" content="12 Tribes — AI-Powered Multi-Asset Investment Platform" />
+    <meta name="application-name" content="12 Tribes" />
+
+    <!-- iOS PWA / Standalone Mode -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="12 Tribes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png" />
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- iOS Splash Screens (generated inline for major device sizes) -->
+    <!-- iPhone 15 Pro Max / 14 Pro Max (1290x2796) -->
+    <link rel="apple-touch-startup-image"
+      media="screen and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3)"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1290' height='2796'%3E%3Crect fill='%230a0a1a' width='1290' height='2796'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2300D4FF' stop-opacity='0.15'/%3E%3Cstop offset='1' stop-color='%23A855F7' stop-opacity='0.1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect fill='url(%23g)' width='1290' height='2796'/%3E%3Ctext x='645' y='1350' text-anchor='middle' fill='white' font-size='120' font-weight='900' font-family='-apple-system,sans-serif'%3E12%3C/text%3E%3Ctext x='645' y='1440' text-anchor='middle' fill='rgba(255,255,255,0.4)' font-size='40' font-weight='600' font-family='-apple-system,sans-serif' letter-spacing='8'%3ETRIBES%3C/text%3E%3C/svg%3E" />
+
+    <!-- iPhone 15 / 14 (1170x2532) -->
+    <link rel="apple-touch-startup-image"
+      media="screen and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1170' height='2532'%3E%3Crect fill='%230a0a1a' width='1170' height='2532'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2300D4FF' stop-opacity='0.15'/%3E%3Cstop offset='1' stop-color='%23A855F7' stop-opacity='0.1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect fill='url(%23g)' width='1170' height='2532'/%3E%3Ctext x='585' y='1220' text-anchor='middle' fill='white' font-size='110' font-weight='900' font-family='-apple-system,sans-serif'%3E12%3C/text%3E%3Ctext x='585' y='1300' text-anchor='middle' fill='rgba(255,255,255,0.4)' font-size='36' font-weight='600' font-family='-apple-system,sans-serif' letter-spacing='8'%3ETRIBES%3C/text%3E%3C/svg%3E" />
+
+    <!-- iPhone SE / 8 (750x1334) -->
+    <link rel="apple-touch-startup-image"
+      media="screen and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='750' height='1334'%3E%3Crect fill='%230a0a1a' width='750' height='1334'/%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2300D4FF' stop-opacity='0.15'/%3E%3Cstop offset='1' stop-color='%23A855F7' stop-opacity='0.1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect fill='url(%23g)' width='750' height='1334'/%3E%3Ctext x='375' y='640' text-anchor='middle' fill='white' font-size='80' font-weight='900' font-family='-apple-system,sans-serif'%3E12%3C/text%3E%3Ctext x='375' y='700' text-anchor='middle' fill='rgba(255,255,255,0.4)' font-size='28' font-weight='600' font-family='-apple-system,sans-serif' letter-spacing='6'%3ETRIBES%3C/text%3E%3C/svg%3E" />
+
+    <title>12 Tribes | AI Investment Platform</title>
+
+    <!-- PWA install & iOS safe area styling -->
+    <style>
+      /* Safe area padding for notched iPhones */
+      :root {
+        --sat: env(safe-area-inset-top);
+        --sar: env(safe-area-inset-right);
+        --sab: env(safe-area-inset-bottom);
+        --sal: env(safe-area-inset-left);
+      }
+
+      /* Prevent pull-to-refresh in standalone mode */
+      html {
+        overscroll-behavior-y: contain;
+      }
+
+      /* Prevent text selection on iOS tap */
+      body {
+        -webkit-user-select: none;
+        user-select: auto;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* Allow text selection in inputs/textareas */
+      input, textarea, [contenteditable] {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+
+      /* Smooth scrolling */
+      * {
+        -webkit-overflow-scrolling: touch;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

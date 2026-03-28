@@ -1,0 +1,733 @@
+import { useState, useEffect, useCallback, useMemo } from "react";
+import * as recharts from "recharts";
+import { useResponsive } from "../hooks/useResponsive";
+import { getAllUsers } from "../store/authStore.js";
+import { getWallet, INITIAL_BALANCE } from "../store/walletStore.js";
+import BrandLogo from "../components/BrandLogo.jsx";
+const {
+  AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadialBarChart, RadialBar, Legend
+} = recharts;
+
+// ═══════════════════════════════════════════
+//   12 TRIBES — MISSION CONTROL v1.0
+//   AI-Powered Investment Platform
+//   Apple Liquid Glass UI
+// ═══════════════════════════════════════════
+
+// === DYNAMIC INVESTOR DATA (from registered users) ===
+function getInvestors() {
+  return getAllUsers().map(u => ({
+    id: u.id,
+    name: u.name,
+    initial: INITIAL_BALANCE,
+    avatar: u.avatar || (u.firstName?.[0] || '') + (u.lastName?.[0] || ''),
+  }));
+}
+
+const ASSET_CLASSES = [
+  { name: "Stocks", pct: 25, notional: 15000, leverage: 1.5, effective: 22500, color: "#00D4FF", strategy: "Momentum + Mean Reversion", dailyReturn: 1.0, volatility: 2.0 },
+  { name: "Crypto", pct: 15, notional: 9000, leverage: 1.25, effective: 11250, color: "#A855F7", strategy: "Trend-following + Grid", dailyReturn: 1.5, volatility: 3.5 },
+  { name: "Forex", pct: 20, notional: 12000, leverage: 5.0, effective: 60000, color: "#10B981", strategy: "Carry Trade + Range", dailyReturn: 0.8, volatility: 1.5 },
+  { name: "Options", pct: 15, notional: 9000, leverage: 2.0, effective: 18000, color: "#F59E0B", strategy: "Vol Selling + Spreads", dailyReturn: 2.0, volatility: 4.5 },
+  { name: "Futures", pct: 10, notional: 6000, leverage: 10.0, effective: 60000, color: "#EF4444", strategy: "Micro Contracts + Hedge", dailyReturn: 1.2, volatility: 2.5 },
+  { name: "Cash", pct: 15, notional: 9000, leverage: 1.0, effective: 9000, color: "#6B7280", strategy: "Margin Buffer + Opportunity", dailyReturn: 0.0, volatility: 0.0 },
+];
+
+const AI_AGENTS = [
+  { id: "SENTINEL", name: "Sentinel", role: "Risk Monitor", status: "active", accuracy: 94.2, trades: 1247, icon: "🛡️" },
+  { id: "VIPER", name: "Viper", role: "Momentum Scanner", status: "active", accuracy: 87.6, trades: 892, icon: "⚡" },
+  { id: "ORACLE", name: "Oracle", role: "Macro Analyst", status: "active", accuracy: 91.3, trades: 456, icon: "🔮" },
+  { id: "PHOENIX", name: "Phoenix", role: "Self-Healing Engine", status: "active", accuracy: 96.1, trades: 2103, icon: "🔥" },
+  { id: "SPECTRE", name: "Spectre", role: "Options Strategist", status: "idle", accuracy: 89.8, trades: 634, icon: "👻" },
+  { id: "TITAN", name: "Titan", role: "Position Sizer", status: "active", accuracy: 92.7, trades: 1891, icon: "🏛️" },
+];
+
+// Generate Monte Carlo paths
+function generateMonteCarloPaths(initial, days, numPaths, meanReturn, stdReturn) {
+  const paths = [];
+  for (let p = 0; p < numPaths; p++) {
+    const path = [{ day: 0, value: initial }];
+    let val = initial;
+    for (let d = 1; d <= days; d++) {
+      const u1 = Math.random(); const u2 = Math.random();
+      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      const ret = meanReturn + stdReturn * z;
+      val *= (1 + ret);
+      if (d % 5 === 0 || d === days) path.push({ day: d, value: val });
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+
+// Generate growth projection data
+function generateGrowthData(initial, days, dailyReturn) {
+  const data = [];
+  let conservative = initial, base = initial, aggressive = initial;
+  for (let d = 0; d <= days; d += 5) {
+    data.push({
+      day: d,
+      conservative: Math.round(conservative),
+      base: Math.round(base),
+      aggressive: Math.round(aggressive),
+    });
+    for (let i = 0; i < 5 && d + i < days; i++) {
+      conservative *= (1 + dailyReturn * 0.5);
+      base *= (1 + dailyReturn);
+      aggressive *= (1 + dailyReturn * 1.5);
+    }
+  }
+  return data;
+}
+
+// Generate daily P&L data
+function generateDailyPnL(days) {
+  const data = [];
+  let cumulative = 0;
+  for (let d = 1; d <= days; d++) {
+    const pnl = (Math.random() - 0.35) * 1800;
+    cumulative += pnl;
+    data.push({ day: d, daily: Math.round(pnl), cumulative: Math.round(cumulative) });
+  }
+  return data;
+}
+
+// Generate trade log
+function generateTrades() {
+  const assets = ["AAPL", "BTC/USD", "EUR/USD", "SPY 450C", "MES", "TSLA", "ETH/USD", "GBP/JPY", "QQQ 380P", "MNQ"];
+  const types = ["LONG", "SHORT"];
+  const statuses = ["FILLED", "FILLED", "FILLED", "PARTIAL", "PENDING"];
+  const trades = [];
+  for (let i = 0; i < 25; i++) {
+    const asset = assets[Math.floor(Math.random() * assets.length)];
+    const type = types[Math.floor(Math.random() * types.length)];
+    const pnl = (Math.random() - 0.4) * 500;
+    trades.push({
+      id: `TRD_${String(i + 1).padStart(4, "0")}`,
+      time: `${String(9 + Math.floor(Math.random() * 8)).padStart(2, "0")}:${String(Math.floor(Math.random() * 60)).padStart(2, "0")}`,
+      asset, type,
+      qty: Math.floor(Math.random() * 100) + 1,
+      entry: (Math.random() * 500 + 10).toFixed(2),
+      pnl: pnl.toFixed(2),
+      status: statuses[Math.floor(Math.random() * statuses.length)],
+      agent: AI_AGENTS[Math.floor(Math.random() * AI_AGENTS.length)].name,
+    });
+  }
+  return trades.sort((a, b) => b.time.localeCompare(a.time));
+}
+
+// === STYLES ===
+const glassStyle = {
+  background: "rgba(255, 255, 255, 0.08)",
+  backdropFilter: "blur(40px) saturate(180%)",
+  WebkitBackdropFilter: "blur(40px) saturate(180%)",
+  border: "1px solid rgba(255, 255, 255, 0.15)",
+  borderRadius: "24px",
+  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+};
+
+const glassCardStyle = {
+  ...glassStyle,
+  padding: "24px",
+  transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+};
+
+const glassCardHoverStyle = {
+  ...glassCardStyle,
+  background: "rgba(255, 255, 255, 0.12)",
+  boxShadow: "0 12px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15)",
+  transform: "translateY(-2px)",
+};
+
+// === COMPONENTS ===
+
+function GlassCard({ children, style, className, onClick }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      style={{ ...(hovered ? glassCardHoverStyle : glassCardStyle), ...style }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={onClick}
+    >
+      {children}
+    </div>
+  );
+}
+
+function MetricCard({ label, value, change, prefix = "", suffix = "", color = "#00D4FF", isMobile = false }) {
+  const isPositive = typeof change === "number" ? change >= 0 : true;
+  return (
+    <GlassCard style={{ minWidth: isMobile ? 160 : 200, flex: "1 1 160px" }}>
+      <div style={{ fontSize: isMobile ? 10 : 12, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: isMobile ? 24 : 32, fontWeight: 700, color, lineHeight: 1.1 }}>
+        {prefix}{typeof value === "number" ? value.toLocaleString() : value}{suffix}
+      </div>
+      {change !== undefined && (
+        <div style={{ fontSize: isMobile ? 11 : 13, color: isPositive ? "#10B981" : "#EF4444", marginTop: 6, display: "flex", alignItems: "center", gap: 4 }}>
+          <span>{isPositive ? "▲" : "▼"}</span>
+          <span>{Math.abs(change).toFixed(2)}%</span>
+          {!isMobile && <span style={{ color: "rgba(255,255,255,0.3)", marginLeft: 4 }}>today</span>}
+        </div>
+      )}
+    </GlassCard>
+  );
+}
+
+function AgentCard({ agent, isMobile = false }) {
+  const statusColors = { active: "#10B981", idle: "#F59E0B", error: "#EF4444" };
+  return (
+    <GlassCard style={{ padding: isMobile ? 12 : 16, display: "flex", alignItems: "center", gap: isMobile ? 12 : 16, flexDirection: isMobile ? "column" : "row", textAlign: isMobile ? "center" : "left" }}>
+      <div style={{ fontSize: isMobile ? 28 : 32, width: isMobile ? 40 : 48, textAlign: "center", flexShrink: 0 }}>{agent.icon}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, justifyContent: isMobile ? "center" : "flex-start", flexWrap: "wrap" }}>
+          <span style={{ fontSize: isMobile ? 13 : 15, fontWeight: 600, color: "#fff" }}>{agent.name}</span>
+          <span style={{
+            width: 8, height: 8, borderRadius: "50%",
+            background: statusColors[agent.status],
+            boxShadow: `0 0 8px ${statusColors[agent.status]}`,
+          }} />
+        </div>
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{agent.role}</div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Accuracy: <span style={{ color: "#00D4FF" }}>{agent.accuracy}%</span></span>
+          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Trades: <span style={{ color: "#A855F7" }}>{agent.trades.toLocaleString()}</span></span>
+        </div>
+      </div>
+      <div style={{
+        padding: "4px 10px", borderRadius: 12, fontSize: 11, fontWeight: 600,
+        background: `${statusColors[agent.status]}22`, color: statusColors[agent.status],
+        textTransform: "uppercase",
+      }}>
+        {agent.status}
+      </div>
+    </GlassCard>
+  );
+}
+
+function AllocationChart({ isMobile = false }) {
+  const activeAssets = ASSET_CLASSES.filter(a => a.pct > 0);
+  const chartSize = isMobile ? 140 : 180;
+  return (
+    <GlassCard>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Capital Allocation</div>
+      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 16 : 24, flexDirection: isMobile ? "column" : "row" }}>
+        <div style={{ width: chartSize, height: chartSize, flexShrink: 0 }}>
+          <ResponsiveContainer>
+            <PieChart>
+              <Pie data={activeAssets} dataKey="pct" nameKey="name" cx="50%" cy="50%" innerRadius={isMobile ? 35 : 50} outerRadius={isMobile ? 60 : 80} paddingAngle={3} strokeWidth={0}>
+                {activeAssets.map((a, i) => <Cell key={i} fill={a.color} />)}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <div style={{ flex: 1, width: isMobile ? "100%" : "auto" }}>
+          {activeAssets.map(a => (
+            <div key={a.name} style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 10, marginBottom: 8, fontSize: isMobile ? 12 : 13 }}>
+              <div style={{ width: 8, height: 8, borderRadius: 2, background: a.color, flexShrink: 0 }} />
+              <span style={{ color: "rgba(255,255,255,0.7)", flex: 1, minWidth: 0 }}>{a.name}</span>
+              <span style={{ fontWeight: 600, color: "#fff", flexShrink: 0 }}>{a.pct}%</span>
+              {!isMobile && <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", flexShrink: 0 }}>${a.notional.toLocaleString()}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </GlassCard>
+  );
+}
+
+function GrowthProjection({ data, isMobile = false }) {
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 12, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 8 : 0 }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Growth Projection (252 Trading Days)</div>
+        <div style={{ display: "flex", gap: isMobile ? 8 : 16, flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
+          {[{ label: "Conservative", color: "#6B7280" }, { label: "Base (1.2%)", color: "#00D4FF" }, { label: "Aggressive", color: "#A855F7" }].map(l => (
+            <span key={l.label} style={{ fontSize: isMobile ? 10 : 11, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 8, height: 2, background: l.color, display: "inline-block" }} /> {!isMobile && l.label}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div style={{ height: isMobile ? 200 : 280 }}>
+        <ResponsiveContainer>
+          <AreaChart data={data}>
+            <defs>
+              <linearGradient id="gradBase" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#00D4FF" stopOpacity={0.3} />
+                <stop offset="100%" stopColor="#00D4FF" stopOpacity={0} />
+              </linearGradient>
+              <linearGradient id="gradAgg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#A855F7" stopOpacity={0.2} />
+                <stop offset="100%" stopColor="#A855F7" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <XAxis dataKey="day" stroke="rgba(255,255,255,0.3)" fontSize={11} tickFormatter={v => `D${v}`} />
+            <YAxis stroke="rgba(255,255,255,0.3)" fontSize={11} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+            <Tooltip
+              contentStyle={{ background: "rgba(0,0,0,0.8)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, backdropFilter: "blur(20px)" }}
+              labelStyle={{ color: "rgba(255,255,255,0.5)" }}
+              formatter={(v) => [`$${Number(v).toLocaleString()}`, ""]}
+            />
+            <Area type="monotone" dataKey="aggressive" stroke="#A855F7" fill="url(#gradAgg)" strokeWidth={2} dot={false} />
+            <Area type="monotone" dataKey="base" stroke="#00D4FF" fill="url(#gradBase)" strokeWidth={2} dot={false} />
+            <Area type="monotone" dataKey="conservative" stroke="#6B7280" fill="none" strokeWidth={1.5} strokeDasharray="4 4" dot={false} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </GlassCard>
+  );
+}
+
+function DailyPnLChart({ data, isMobile = false }) {
+  return (
+    <GlassCard>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Daily P&L (Last 30 Days)</div>
+      <div style={{ height: isMobile ? 180 : 220 }}>
+        <ResponsiveContainer>
+          <BarChart data={data.slice(-30)}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <XAxis dataKey="day" stroke="rgba(255,255,255,0.3)" fontSize={10} />
+            <YAxis stroke="rgba(255,255,255,0.3)" fontSize={10} tickFormatter={v => `$${v}`} />
+            <Tooltip
+              contentStyle={{ background: "rgba(0,0,0,0.8)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12 }}
+              formatter={(v) => [`$${Number(v).toLocaleString()}`, ""]}
+            />
+            <Bar dataKey="daily" radius={[4, 4, 0, 0]}>
+              {data.slice(-30).map((entry, i) => (
+                <Cell key={i} fill={entry.daily >= 0 ? "#10B981" : "#EF4444"} fillOpacity={0.8} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </GlassCard>
+  );
+}
+
+function TradeLog({ trades, isMobile = false }) {
+  return (
+    <GlassCard style={{ overflow: "hidden" }}>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Live Trade Feed</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+              {["Time", "ID", "Asset", "Side", "Qty", "Entry", "P&L", "Agent", "Status"].map(h => (
+                <th key={h} style={{ padding: "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 500, textTransform: "uppercase", letterSpacing: 1, fontSize: 10 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {trades.slice(0, 12).map((t, i) => (
+              <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>{t.time}</td>
+                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.4)", fontFamily: "monospace", fontSize: 10 }}>{t.id}</td>
+                <td style={{ padding: "10px 12px", color: "#fff", fontWeight: 600 }}>{t.asset}</td>
+                <td style={{ padding: "10px 12px" }}>
+                  <span style={{
+                    padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                    background: t.type === "LONG" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                    color: t.type === "LONG" ? "#10B981" : "#EF4444",
+                  }}>{t.type}</span>
+                </td>
+                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>{t.qty}</td>
+                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>${t.entry}</td>
+                <td style={{ padding: "10px 12px", fontFamily: "monospace", fontWeight: 600, color: parseFloat(t.pnl) >= 0 ? "#10B981" : "#EF4444" }}>
+                  {parseFloat(t.pnl) >= 0 ? "+" : ""}${t.pnl}
+                </td>
+                <td style={{ padding: "10px 12px", color: "#A855F7", fontSize: 11 }}>{t.agent}</td>
+                <td style={{ padding: "10px 12px" }}>
+                  <span style={{
+                    padding: "2px 8px", borderRadius: 6, fontSize: 10,
+                    background: t.status === "FILLED" ? "rgba(16,185,129,0.1)" : t.status === "PENDING" ? "rgba(245,158,11,0.1)" : "rgba(0,212,255,0.1)",
+                    color: t.status === "FILLED" ? "#10B981" : t.status === "PENDING" ? "#F59E0B" : "#00D4FF",
+                  }}>{t.status}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </GlassCard>
+  );
+}
+
+function InvestorTable({ totalAUM, isMobile = false, isTablet = false }) {
+  const investors = getInvestors();
+  const memberCount = investors.length;
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 12, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 6 : 0 }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Investor Roster</div>
+        <div style={{ fontSize: isMobile ? 11 : 12, color: "rgba(255,255,255,0.4)" }}>{memberCount} {memberCount === 1 ? 'Member' : 'Members'} | Equal Ownership</div>
+      </div>
+      {memberCount === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>No investors registered yet</div>
+      ) : (
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(240px, 1fr))", gap: isMobile ? 10 : 12 }}>
+        {investors.map(inv => {
+          const wallet = getWallet(inv.id);
+          const currentValue = wallet ? wallet.equity : (memberCount > 0 ? totalAUM / memberCount : 0);
+          const gain = currentValue - inv.initial;
+          const gainPct = inv.initial > 0 ? (gain / inv.initial * 100) : 0;
+          return (
+            <div key={inv.id} style={{
+              padding: isMobile ? 12 : 14, borderRadius: 16,
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+              display: "flex", alignItems: "center", gap: isMobile ? 10 : 12,
+            }}>
+              <div style={{
+                width: isMobile ? 36 : 40, height: isMobile ? 36 : 40, borderRadius: 12,
+                background: "linear-gradient(135deg, #00D4FF33, #A855F733)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: isMobile ? 12 : 13, fontWeight: 700, color: "#00D4FF", flexShrink: 0,
+              }}>{inv.avatar}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 600, color: "#fff" }}>{inv.name}</div>
+                <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)" }}>{memberCount > 0 ? (100 / memberCount).toFixed(2) : 0}% ownership</div>
+              </div>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 600, color: "#fff" }}>${currentValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                <div style={{ fontSize: isMobile ? 10 : 11, color: gain >= 0 ? "#10B981" : "#EF4444" }}>
+                  {gain >= 0 ? "+" : ""}{gainPct.toFixed(1)}%
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      )}
+    </GlassCard>
+  );
+}
+
+function RiskPanel({ isMobile = false, isTablet = false }) {
+  const metrics = [
+    { label: "Portfolio Beta", value: "1.24", status: "normal" },
+    { label: "Max Drawdown", value: "-4.8%", status: "normal" },
+    { label: "Sharpe Ratio", value: "1.87", status: "good" },
+    { label: "Sortino Ratio", value: "2.41", status: "good" },
+    { label: "VaR (95%)", value: "-$1,842", status: "warning" },
+    { label: "Margin Util.", value: "62%", status: "normal" },
+    { label: "Correlation", value: "0.38", status: "good" },
+    { label: "Win Rate", value: "64.2%", status: "good" },
+  ];
+  const statusColors = { good: "#10B981", normal: "#00D4FF", warning: "#F59E0B", critical: "#EF4444" };
+  return (
+    <GlassCard>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Risk Command Center</div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : isTablet ? "repeat(3, 1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: isMobile ? 8 : 10 }}>
+        {metrics.map(m => (
+          <div key={m.label} style={{
+            padding: isMobile ? 10 : 12, borderRadius: 14,
+            background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+          }}>
+            <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{m.label}</div>
+            <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color: statusColors[m.status] }}>{m.value}</div>
+          </div>
+        ))}
+      </div>
+    </GlassCard>
+  );
+}
+
+function SelfHealingPanel({ isMobile = false }) {
+  const [healEvents] = useState([
+    { time: "14:32", event: "Model drift detected on VIPER momentum scanner", action: "Retrained on 90-day rolling window", result: "Accuracy restored: 85.1% → 91.7%" },
+    { time: "13:15", event: "Correlation spike: BTC/SPY exceeded 0.70 threshold", action: "Reduced crypto allocation 15% → 10%, rebalanced to forex", result: "Portfolio correlation normalized to 0.42" },
+    { time: "11:48", event: "Slippage anomaly on EUR/USD entries", action: "Switched to limit orders, adjusted fill expectation model", result: "Avg slippage reduced from 2.1bps to 0.8bps" },
+    { time: "09:22", event: "Overnight gap risk detected on futures positions", action: "Tightened stop-losses, reduced MES position by 30%", result: "Gap exposure reduced from $3,200 to $1,100" },
+  ]);
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", alignItems: isMobile ? "flex-start" : "center", gap: isMobile ? 8 : 10, marginBottom: 12, flexDirection: isMobile ? "column" : "row" }}>
+        <span style={{ fontSize: isMobile ? 18 : 20, flexShrink: 0 }}>🔥</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Phoenix Self-Healing Engine</div>
+          <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)" }}>Autonomous model repair & portfolio rebalancing</div>
+        </div>
+        <div style={{
+          marginLeft: isMobile ? 0 : "auto", padding: "4px 10px", borderRadius: 12,
+          background: "rgba(16,185,129,0.15)", color: "#10B981", fontSize: isMobile ? 10 : 11, fontWeight: 600, flexShrink: 0
+        }}>ACTIVE</div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {healEvents.map((e, i) => (
+          <div key={i} style={{
+            padding: isMobile ? 10 : 12, borderRadius: 14,
+            background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+          }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
+              <span style={{ fontFamily: "monospace", fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)", flexShrink: 0 }}>{e.time}</span>
+              <span style={{ fontSize: isMobile ? 11 : 12, color: "#F59E0B" }}>⚠️ {e.event}</span>
+            </div>
+            <div style={{ fontSize: isMobile ? 11 : 12, color: "#00D4FF", marginBottom: 3 }}>→ {e.action}</div>
+            <div style={{ fontSize: isMobile ? 10 : 11, color: "#10B981" }}>✓ {e.result}</div>
+          </div>
+        ))}
+      </div>
+    </GlassCard>
+  );
+}
+
+function GrowthTable({ isMobile = false }) {
+  const rates = [0.008, 0.010, 0.012, 0.015, 0.020];
+  const days = [30, 60, 90, 120, 180, 252];
+  const initial = 60000;
+  return (
+    <GlassCard>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Capital Growth Matrix ($60,000 Initial)</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+              <th style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontSize: isMobile ? 9 : 10, letterSpacing: 1 }}>TIMEFRAME</th>
+              {rates.map(r => (
+                <th key={r} style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "right", color: r === 0.012 ? "#00D4FF" : "rgba(255,255,255,0.4)", fontSize: isMobile ? 9 : 10, letterSpacing: 1, whiteSpace: "nowrap" }}>
+                  {(r * 100).toFixed(1)}%
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {days.map(d => (
+              <tr key={d} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "rgba(255,255,255,0.6)", fontWeight: 600, whiteSpace: "nowrap" }}>{d} Days</td>
+                {rates.map(r => {
+                  const final_ = initial * Math.pow(1 + r - 0.0001, d);
+                  const ret = ((final_ / initial) - 1) * 100;
+                  return (
+                    <td key={r} style={{
+                      padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "right", fontFamily: "monospace",
+                      color: r === 0.012 ? "#00D4FF" : "#fff",
+                      fontWeight: r === 0.012 ? 700 : 400,
+                      whiteSpace: "nowrap",
+                    }}>
+                      ${final_.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      {!isMobile && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginLeft: 6 }}>+{ret.toFixed(0)}%</span>}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </GlassCard>
+  );
+}
+
+function AssetStrategyCards({ isMobile = false, isTablet = false }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(280px, 1fr))", gap: isMobile ? 12 : 16 }}>
+      {ASSET_CLASSES.filter(a => a.name !== "Cash").map(asset => (
+        <GlassCard key={asset.name} style={{ borderLeft: `3px solid ${asset.color}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: isMobile ? 15 : 16, fontWeight: 700, color: asset.color }}>{asset.name}</div>
+              <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{asset.strategy}</div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
+              <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: "#fff" }}>{asset.pct}%</div>
+              <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.4)" }}>allocation</div>
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: isMobile ? 6 : 8 }}>
+            {[
+              { label: "Notional", value: `$${asset.notional.toLocaleString()}` },
+              { label: "Leverage", value: `${asset.leverage}x` },
+              { label: "Effective", value: `$${asset.effective.toLocaleString()}` },
+              { label: "Daily Ret", value: `${asset.dailyReturn.toFixed(1)}%` },
+            ].map(m => (
+              <div key={m.label} style={{ padding: isMobile ? 6 : 8, borderRadius: 10, background: "rgba(255,255,255,0.03)" }}>
+                <div style={{ fontSize: isMobile ? 8 : 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>{m.label}</div>
+                <div style={{ fontSize: isMobile ? 12 : 14, fontWeight: 600, color: "#fff", marginTop: 2 }}>{m.value}</div>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      ))}
+    </div>
+  );
+}
+
+// === VIEWS ===
+
+function OverviewView({ growthData, pnlData, trades, totalAUM, isMobile, isTablet }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+      <div style={{ display: "flex", gap: isMobile ? 12 : 16, flexWrap: "wrap" }}>
+        <MetricCard label="Total AUM" value={totalAUM} prefix="$" change={1.18} color="#00D4FF" isMobile={isMobile} />
+        <MetricCard label="Daily P&L" value={724} prefix="$" change={1.21} color="#10B981" isMobile={isMobile} />
+        <MetricCard label="Active Agents" value={5} suffix="/6" color="#A855F7" isMobile={isMobile} />
+        <MetricCard label="Open Positions" value={18} color="#F59E0B" isMobile={isMobile} />
+        <MetricCard label="Win Rate" value="64.2" suffix="%" color="#10B981" isMobile={isMobile} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "1fr" : "2fr 1fr", gap: isMobile ? 16 : 20 }}>
+        <GrowthProjection data={growthData} isMobile={isMobile} />
+        <AllocationChart isMobile={isMobile} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: isMobile ? 16 : 20 }}>
+        <DailyPnLChart data={pnlData} isMobile={isMobile} />
+        <RiskPanel isMobile={isMobile} isTablet={isTablet} />
+      </div>
+      <TradeLog trades={trades} isMobile={isMobile} />
+    </div>
+  );
+}
+
+function AgentsView({ isMobile, isTablet }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(320px, 1fr))", gap: isMobile ? 12 : 16 }}>
+        {AI_AGENTS.map(a => <AgentCard key={a.id} agent={a} isMobile={isMobile} />)}
+      </div>
+      <SelfHealingPanel isMobile={isMobile} />
+    </div>
+  );
+}
+
+function CapitalView({ growthData, isMobile, isTablet }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+      <AssetStrategyCards isMobile={isMobile} isTablet={isTablet} />
+      <GrowthProjection data={growthData} isMobile={isMobile} />
+      <GrowthTable isMobile={isMobile} />
+    </div>
+  );
+}
+
+function InvestorsView({ totalAUM, isMobile, isTablet }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+      <div style={{ display: "flex", gap: isMobile ? 12 : 16, flexWrap: "wrap" }}>
+        <MetricCard label="Total AUM" value={totalAUM} prefix="$" color="#00D4FF" isMobile={isMobile} />
+        <MetricCard label="Per Investor" value={Math.round(totalAUM / 12)} prefix="$" color="#A855F7" isMobile={isMobile} />
+        <MetricCard label="Avg Gain" value={((totalAUM / 60000 - 1) * 100).toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
+        <MetricCard label="Members" value={12} color="#F59E0B" isMobile={isMobile} />
+      </div>
+      <InvestorTable totalAUM={totalAUM} isMobile={isMobile} isTablet={isTablet} />
+    </div>
+  );
+}
+
+// === MAIN APP ===
+
+export default function TwelveTribes_MissionControl() {
+  const { isMobile, isTablet, isDesktop } = useResponsive();
+  const [activeView, setActiveView] = useState("overview");
+  const [clock, setClock] = useState(new Date());
+  const [totalAUM, setTotalAUM] = useState(66410);
+
+  useEffect(() => {
+    const timer = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Simulate live AUM fluctuation
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTotalAUM(prev => prev + (Math.random() - 0.45) * 50);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const growthData = useMemo(() => generateGrowthData(60000, 252, 0.012), []);
+  const pnlData = useMemo(() => generateDailyPnL(90), []);
+  const trades = useMemo(() => generateTrades(), []);
+
+  const navItems = [
+    { id: "overview", label: "Overview", icon: "◉" },
+    { id: "capital", label: "Capital", icon: "◈" },
+    { id: "agents", label: "AI Agents", icon: "◆" },
+    { id: "investors", label: "Investors", icon: "◇" },
+  ];
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(135deg, #0a0a1a 0%, #0d1117 25%, #0a0f1e 50%, #111827 75%, #0a0a1a 100%)",
+      color: "#fff",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif",
+      overflow: "auto",
+    }}>
+      {/* Ambient glow effects */}
+      <div style={{ position: "fixed", top: -200, right: -200, width: 600, height: 600, background: "radial-gradient(circle, rgba(0,212,255,0.08) 0%, transparent 70%)", pointerEvents: "none" }} />
+      <div style={{ position: "fixed", bottom: -200, left: -100, width: 500, height: 500, background: "radial-gradient(circle, rgba(168,85,247,0.06) 0%, transparent 70%)", pointerEvents: "none" }} />
+
+      {/* Header */}
+      <div style={{
+        ...glassStyle,
+        borderRadius: 0,
+        borderTop: "none", borderLeft: "none", borderRight: "none",
+        padding: isMobile ? "12px 16px" : isTablet ? "14px 24px" : "16px 32px",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, zIndex: 100,
+        flexWrap: isMobile ? "wrap" : "nowrap",
+        gap: isMobile ? 8 : 16,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <BrandLogo size={40} />
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 2 }}>12 TRIBES</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", letterSpacing: 3, textTransform: "uppercase" }}>Mission Control</div>
+          </div>
+        </div>
+
+        <nav style={{ display: "flex", gap: 4, overflowX: isMobile ? "auto" : "visible", flex: isMobile ? "1 1 100%" : "0 1 auto", minWidth: 0 }}>
+          {navItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => setActiveView(item.id)}
+              style={{
+                padding: isMobile ? "6px 12px" : "8px 20px", borderRadius: 14, border: "none", cursor: "pointer",
+                fontSize: isMobile ? 12 : 13, fontWeight: 500, transition: "all 0.2s",
+                background: activeView === item.id ? "rgba(0,212,255,0.15)" : "transparent",
+                color: activeView === item.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              {!isMobile && <span style={{ marginRight: 6 }}>{item.icon}</span>}{isMobile ? item.icon : item.label}
+            </button>
+          ))}
+        </nav>
+
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 16, flexShrink: 0 }}>
+          <div style={{
+            padding: isMobile ? "4px 8px" : "6px 14px", borderRadius: 10,
+            background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)",
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10B981", boxShadow: "0 0 8px #10B981" }} />
+            {!isMobile && <span style={{ fontSize: 11, color: "#10B981", fontWeight: 600 }}>LIVE</span>}
+          </div>
+          {!isMobile && <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "monospace", color: "rgba(255,255,255,0.7)" }}>
+              {clock.toLocaleTimeString()}
+            </div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>
+              {clock.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+            </div>
+          </div>}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{ padding: isMobile ? "16px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto" }}>
+        {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={trades} totalAUM={Math.round(totalAUM)} isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "investors" && <InvestorsView totalAUM={Math.round(totalAUM)} isMobile={isMobile} isTablet={isTablet} />}
+      </div>
+
+      {/* Footer */}
+      <div style={{ padding: isMobile ? "12px 16px" : "16px 32px", textAlign: "center", fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.2)" }}>
+        12 TRIBES v1.0 | AI-Powered Investment Platform | Mission Control | All data simulated for demonstration
+      </div>
+    </div>
+  );
+}

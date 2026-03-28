@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: 12-tribes-api
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: echo "No build needed"
+    startCommand: node server/standalone.js
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://12-tribes-platform.vercel.app

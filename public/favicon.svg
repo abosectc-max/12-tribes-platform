@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <defs>
+    <linearGradient id="fg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFE082"/>
+      <stop offset="50%" stop-color="#D4AC0D"/>
+      <stop offset="100%" stop-color="#FFD54F"/>
+    </linearGradient>
+    <linearGradient id="rg" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#5BA3E8"/>
+      <stop offset="100%" stop-color="#3ECF7F"/>
+    </linearGradient>
+    <clipPath id="fc"><circle cx="20" cy="20" r="16"/></clipPath>
+  </defs>
+  <rect width="40" height="40" rx="10" fill="#091833"/>
+  <circle cx="20" cy="20" r="17.5" fill="none" stroke="url(#rg)" stroke-width="1.2" opacity="0.7"/>
+  <g clip-path="url(#fc)">
+    <circle cx="20" cy="20" r="16" fill="#0A1E40"/>
+    <!-- Bold mesh -->
+    <polygon points="20,5 14,13 26,13" fill="rgba(91,163,232,0.1)" stroke="#5BA3E8" stroke-width="1"/>
+    <polygon points="14,13 8,20 20,20" fill="rgba(91,163,232,0.07)" stroke="#5BA3E8" stroke-width="0.8"/>
+    <polygon points="26,13 32,20 20,20" fill="rgba(91,163,232,0.07)" stroke="#5BA3E8" stroke-width="0.8"/>
+    <polygon points="8,20 6,28 15,27" fill="rgba(77,201,176,0.07)" stroke="#4DC9B0" stroke-width="0.8"/>
+    <polygon points="32,20 34,28 25,27" fill="rgba(77,201,176,0.07)" stroke="#4DC9B0" stroke-width="0.8"/>
+    <polygon points="15,27 12,33 22,32" fill="rgba(62,207,127,0.06)" stroke="#3ECF7F" stroke-width="0.7"/>
+    <polygon points="25,27 28,33 22,32" fill="rgba(62,207,127,0.06)" stroke="#3ECF7F" stroke-width="0.7"/>
+    <!-- Gold arrow -->
+    <polygon points="20,4 18,9 22,9" fill="#FFD54F"/>
+  </g>
+  <text x="50%" y="56%" dominant-baseline="middle" text-anchor="middle" fill="url(#fg)" font-family="-apple-system,sans-serif" font-size="15" font-weight="900" stroke="#D4AC0D" stroke-width="0.3">12</text>
+</svg>
