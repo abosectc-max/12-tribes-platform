@@ -971,7 +971,7 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
 
         {/* Nav Items */}
         <div style={{ flex: 1, padding: "12px 12px", overflowY: "auto" }}>
-          {SIDEBAR_ITEMS.map(item => {
+          {[...SIDEBAR_ITEMS, ...(investor?.role === 'admin' ? [{ id: "admin", label: "Admin Panel", icon: "⚙" }] : [])].map(item => {
             const active = activeTab === item.id;
             return (
               <button key={item.id}
@@ -2122,6 +2122,11 @@ function PortfolioDashboard({ investor, onLogout }) {
           {activeTab === "settings" && (
             <SettingsView investor={investor} isMobile={isMobile} />
           )}
+
+          {/* ═══ ADMIN PANEL ═══ */}
+          {activeTab === "admin" && investor?.role === 'admin' && (
+            <AdminPanel investor={investor} isMobile={isMobile} />
+          )}
         </div>
 
         {/* Footer */}
@@ -2685,4 +2690,182 @@ export default function TwelveTribes_InvestorPortal() {
   }
 
   return <PortfolioDashboard investor={user} onLogout={handleLogout} />;
+}
+
+
+// ════════════════════════════════════════
+//   ADMIN PANEL — Access Request Management
+// ════════════════════════════════════════
+
+const ADMIN_API_BASE = (() => {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  return `http://${hostname}:4000/api`;
+})();
+
+function AdminPanel({ investor, isMobile }) {
+  const [requests, setRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [actionLoading, setActionLoading] = useState(null); // request id being acted on
+
+  const token = (() => {
+    try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
+  })();
+
+  const fetchRequests = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/access-requests`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (resp.status === 403) { setError("Admin access required."); setLoading(false); return; }
+      const data = await resp.json();
+      if (Array.isArray(data)) setRequests(data);
+      else setError(data.error || "Failed to load requests.");
+    } catch {
+      setError("Network error loading requests.");
+    }
+    setLoading(false);
+  }, [token]);
+
+  useEffect(() => { fetchRequests(); }, [fetchRequests]);
+
+  const handleAction = async (requestId, status) => {
+    setActionLoading(requestId);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/access-requests/${requestId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ status }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status, reviewed_at: new Date().toISOString() } : r));
+      }
+    } catch { /* silent */ }
+    setActionLoading(null);
+  };
+
+  const glass = {
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(40px) saturate(180%)",
+    WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 20,
+  };
+
+  const pending = requests.filter(r => r.status === 'pending');
+  const approved = requests.filter(r => r.status === 'approved');
+  const denied = requests.filter(r => r.status === 'denied');
+
+  const statusBadge = (status) => {
+    const colors = { pending: '#F59E0B', approved: '#10B981', denied: '#EF4444' };
+    return {
+      display: 'inline-block', padding: '3px 10px', borderRadius: 8,
+      fontSize: 11, fontWeight: 600, letterSpacing: 0.5,
+      background: `${colors[status]}20`, color: colors[status],
+      textTransform: 'uppercase',
+    };
+  };
+
+  return (
+    <div style={{ padding: isMobile ? 16 : 0 }}>
+      <h2 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 800, color: '#fff', margin: '0 0 8px' }}>Admin Panel</h2>
+      <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', margin: '0 0 24px' }}>Manage access requests and user approvals</p>
+
+      {/* Stats Row */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+        {[
+          { label: 'Pending', count: pending.length, color: '#F59E0B' },
+          { label: 'Approved', count: approved.length, color: '#10B981' },
+          { label: 'Denied', count: denied.length, color: '#EF4444' },
+        ].map(s => (
+          <div key={s.label} style={{ ...glass, padding: '16px 24px', flex: '1 1 120px', textAlign: 'center' }}>
+            <div style={{ fontSize: 28, fontWeight: 800, color: s.color }}>{s.count}</div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {loading && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading requests...</div>}
+      {error && <div style={{ color: '#EF4444', textAlign: 'center', padding: 20 }}>{error}</div>}
+
+      {!loading && !error && requests.length === 0 && (
+        <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>◇</div>
+          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No access requests yet</div>
+        </div>
+      )}
+
+      {/* Pending Requests */}
+      {pending.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#F59E0B', margin: '0 0 12px' }}>Pending Requests ({pending.length})</h3>
+          {pending.map(r => (
+            <div key={r.id} style={{ ...glass, padding: 16, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: 10,
+                background: 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(168,85,247,0.2))',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 13, fontWeight: 700, color: '#00D4FF', flexShrink: 0,
+              }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
+              <div style={{ flex: 1, minWidth: 150 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{r.email}</div>
+                {r.message && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 4, fontStyle: 'italic' }}>"{r.message}"</div>}
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>Submitted {new Date(r.submitted_at).toLocaleString()}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button onClick={() => handleAction(r.id, 'approved')} disabled={actionLoading === r.id}
+                  style={{
+                    padding: '8px 16px', borderRadius: 10, border: 'none',
+                    background: 'rgba(16,185,129,0.2)', color: '#10B981',
+                    fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  }}>Approve</button>
+                <button onClick={() => handleAction(r.id, 'denied')} disabled={actionLoading === r.id}
+                  style={{
+                    padding: '8px 16px', borderRadius: 10, border: 'none',
+                    background: 'rgba(239,68,68,0.15)', color: '#EF4444',
+                    fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  }}>Deny</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Approved & Denied */}
+      {[...approved, ...denied].length > 0 && (
+        <div>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: 'rgba(255,255,255,0.5)', margin: '0 0 12px' }}>Reviewed ({approved.length + denied.length})</h3>
+          {[...approved, ...denied].map(r => (
+            <div key={r.id} style={{ ...glass, padding: 14, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 12, opacity: 0.7, flexWrap: 'wrap' }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 9,
+                background: 'rgba(255,255,255,0.05)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.4)', flexShrink: 0,
+              }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{r.email}</div>
+              </div>
+              <span style={statusBadge(r.status)}>{r.status}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Refresh Button */}
+      <div style={{ textAlign: 'center', marginTop: 24 }}>
+        <button onClick={fetchRequests} style={{
+          padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
+          background: 'transparent', color: 'rgba(255,255,255,0.5)',
+          fontSize: 13, cursor: 'pointer',
+        }}>Refresh</button>
+      </div>
+    </div>
+  );
 }

@@ -55,6 +55,7 @@ class JsonDB {
     this._load('broker_connections');
     this._load('risk_events');
     this._load('order_queue');
+    this._load('access_requests');
 
     // Seed AI agents if empty
     if (this.tables.agent_stats.length === 0) {
@@ -567,6 +568,18 @@ api.post('/api/auth/register', async (req, res) => {
     return json(res, 409, { error: 'Email already registered' });
   }
 
+  // Gate: require approved access request (skip if no requests exist yet — first user is admin)
+  const totalUsers = db.count('users');
+  if (totalUsers > 0) {
+    const accessReq = db.findOne('access_requests', r => r.email === email.toLowerCase());
+    if (!accessReq || accessReq.status !== 'approved') {
+      return json(res, 403, { error: 'Access not yet approved. Please submit a request and wait for admin approval.' });
+    }
+  }
+
+  // First user becomes admin automatically
+  const isFirstUser = db.count('users') === 0;
+
   const user = db.insert('users', {
     email: email.toLowerCase(),
     password_hash: hashPassword(password),
@@ -574,7 +587,7 @@ api.post('/api/auth/register', async (req, res) => {
     last_name: lastName,
     phone: phone || '',
     avatar: (firstName[0] + lastName[0]).toUpperCase(),
-    role: 'investor',
+    role: isFirstUser ? 'admin' : 'investor',
     status: 'active',
     trading_mode: 'paper',
     login_count: 1,
@@ -604,7 +617,7 @@ api.post('/api/auth/register', async (req, res) => {
   const token = createJWT({ id: user.id, email: user.email, role: user.role });
 
   json(res, 201, {
-    user: { id: user.id, email: user.email, firstName, lastName, phone: user.phone, avatar: user.avatar, role: 'investor', tradingMode: 'paper', isNewUser: true },
+    user: { id: user.id, email: user.email, firstName, lastName, phone: user.phone, avatar: user.avatar, role: user.role, tradingMode: 'paper', isNewUser: true },
     accessToken: token,
   });
 });
@@ -684,6 +697,17 @@ api.post('/api/auth/reset-password', async (req, res) => {
 api.get('/api/auth/me', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user) return json(res, 404, { error: 'User not found' });
+
+  // Auto-promote first registered user to admin if no admin exists
+  const adminExists = db.findOne('users', u => u.role === 'admin');
+  if (!adminExists) {
+    const allUsers = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+    if (allUsers.length > 0 && allUsers[0].id === user.id) {
+      user.role = 'admin';
+      db._save('users');
+    }
+  }
+
   json(res, 200, {
     id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name,
     avatar: user.avatar, role: user.role, tradingMode: user.trading_mode,
@@ -695,6 +719,86 @@ api.get('/api/auth/me', auth, (req, res) => {
 api.get('/api/auth/login-history', auth, (req, res) => {
   const logs = db.findMany('login_log', l => l.user_id === req.userId).slice(-50).reverse();
   json(res, 200, logs);
+});
+
+// ─── ACCESS REQUESTS (waitlist / approval gate) ───
+
+// Submit a request (public — no auth)
+api.post('/api/access-requests', async (req, res) => {
+  const body = await readBody(req);
+  const { firstName, lastName, email, message } = body;
+
+  if (!firstName || !lastName || !email) {
+    return json(res, 400, { error: 'firstName, lastName, and email are required' });
+  }
+  if (!email.includes('@') || !email.includes('.')) {
+    return json(res, 400, { error: 'Invalid email address' });
+  }
+
+  // Check for duplicate
+  const existing = db.findOne('access_requests', r => r.email === email.toLowerCase());
+  if (existing) {
+    if (existing.status === 'approved') return json(res, 200, { status: 'approved', message: 'You have already been approved. You may create an account.' });
+    if (existing.status === 'pending') return json(res, 200, { status: 'pending', message: 'Your request is already pending review.' });
+    if (existing.status === 'denied') return json(res, 200, { status: 'denied', message: 'Your previous request was not approved. Contact support for more information.' });
+  }
+
+  // Also check if they already have an account
+  const existingUser = db.findOne('users', u => u.email === email.toLowerCase());
+  if (existingUser) {
+    return json(res, 200, { status: 'approved', message: 'An account with this email already exists. Please sign in.' });
+  }
+
+  const request = db.insert('access_requests', {
+    first_name: firstName,
+    last_name: lastName,
+    email: email.toLowerCase(),
+    message: message || '',
+    status: 'pending',
+    submitted_at: new Date().toISOString(),
+  });
+
+  json(res, 201, { status: 'pending', message: 'Your request has been submitted. You will be notified when approved.', id: request.id });
+});
+
+// Check request status by email (public — no auth)
+api.get('/api/access-requests/status', (req, res) => {
+  const email = (req.query.email || '').toLowerCase();
+  if (!email) return json(res, 400, { error: 'Email query parameter required' });
+
+  const request = db.findOne('access_requests', r => r.email === email);
+  if (!request) return json(res, 404, { error: 'No request found for this email' });
+
+  json(res, 200, { status: request.status, email: request.email, submittedAt: request.submitted_at });
+});
+
+// List all requests (admin only — auth required, first user = admin)
+api.get('/api/access-requests', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const requests = db.findMany('access_requests').sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
+  json(res, 200, requests);
+});
+
+// Approve or deny a request (admin only)
+api.put('/api/access-requests/:requestId', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  const { status } = body; // 'approved' or 'denied'
+  if (!['approved', 'denied'].includes(status)) return json(res, 400, { error: 'Status must be "approved" or "denied"' });
+
+  const request = db.update('access_requests', r => r.id === req.params.requestId, {
+    status,
+    reviewed_by: req.userId,
+    reviewed_at: new Date().toISOString(),
+  });
+
+  if (!request) return json(res, 404, { error: 'Request not found' });
+
+  json(res, 200, { success: true, request });
 });
 
 // ─── FUND SETTINGS (cross-device sync) ───

@@ -1,7 +1,13 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { useResponsive } from '../hooks/useResponsive.js';
 import BrandLogo from '../components/BrandLogo.jsx';
+
+const API_BASE = (() => {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  return `http://${hostname}:4000/api`;
+})();
 
 // ═══════════════════════════════════════════
 //   12 TRIBES — PLATFORM LANDING PAGE v1.0
@@ -288,26 +294,8 @@ export default function TwelveTribes_Landing() {
         </div>
       </section>
 
-      {/* CTA */}
-      <section style={{ padding: isMobile ? "30px 16px 50px" : "60px 48px 100px", textAlign: "center" }}>
-        <div style={{
-          ...glass({ padding: isMobile ? "30px 20px" : "60px 48px" }),
-          maxWidth: 800, margin: "0 auto",
-          background: "linear-gradient(135deg, rgba(0,212,255,0.08), rgba(168,85,247,0.06))",
-        }}>
-          <h2 style={{ fontSize: isMobile ? 20 : 32, fontWeight: 800, color: "#fff", margin: "0 0 16px" }}>Ready to Join the Tribe?</h2>
-          <p style={{ fontSize: isMobile ? 13 : 16, color: "rgba(255,255,255,0.5)", margin: "0 0 32px" }}>
-            12 investors. 6 AI agents. One unified edge.
-          </p>
-          <Link to="/investor-portal" style={{
-            padding: "16px 48px", borderRadius: 18, border: "none",
-            background: "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff",
-            fontSize: 16, fontWeight: 700, cursor: "pointer",
-            boxShadow: "0 6px 24px rgba(0,212,255,0.35)",
-            display: "inline-flex", alignItems: "center",
-          }}>Request Access</Link>
-        </div>
-      </section>
+      {/* CTA — Request Access Waitlist Form */}
+      <RequestAccessSection isMobile={isMobile} glass={glass} />
 
       {/* Footer */}
       <footer style={{
@@ -327,5 +315,116 @@ export default function TwelveTribes_Landing() {
         </div>
       </footer>
     </div>
+  );
+}
+
+
+// ═══════ REQUEST ACCESS WAITLIST FORM ═══════
+function RequestAccessSection({ isMobile, glass }) {
+  const [formState, setFormState] = useState("idle"); // idle | submitting | submitted | error
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [responseMsg, setResponseMsg] = useState("");
+
+  const inputStyle = {
+    width: "100%", padding: "12px 16px", borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.15)", background: "rgba(0,0,0,0.3)",
+    color: "#fff", fontSize: 14, outline: "none", boxSizing: "border-box",
+    transition: "border-color 0.2s",
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!firstName.trim() || !lastName.trim() || !email.trim()) return;
+    setFormState("submitting");
+    try {
+      const resp = await fetch(`${API_BASE}/access-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim(), message: message.trim() }),
+      });
+      const data = await resp.json();
+      if (data.status === "approved") {
+        setResponseMsg("You're approved! Head to Sign In to create your account.");
+      } else if (data.status === "pending") {
+        setResponseMsg(data.message || "Request submitted! We'll notify you when approved.");
+      } else if (data.status === "denied") {
+        setResponseMsg(data.message || "Your request was not approved.");
+      } else if (data.error) {
+        setResponseMsg(data.error);
+        setFormState("error");
+        return;
+      }
+      setFormState("submitted");
+    } catch (err) {
+      setResponseMsg("Network error. Please try again.");
+      setFormState("error");
+    }
+  };
+
+  if (formState === "submitted") {
+    return (
+      <section style={{ padding: isMobile ? "30px 16px 50px" : "60px 48px 100px", textAlign: "center" }}>
+        <div style={{
+          ...glass({ padding: isMobile ? "30px 20px" : "60px 48px" }),
+          maxWidth: 800, margin: "0 auto",
+          background: "linear-gradient(135deg, rgba(0,212,255,0.08), rgba(168,85,247,0.06))",
+        }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
+          <h2 style={{ fontSize: isMobile ? 20 : 28, fontWeight: 800, color: "#fff", margin: "0 0 12px" }}>Request Received</h2>
+          <p style={{ fontSize: isMobile ? 13 : 16, color: "rgba(255,255,255,0.6)", margin: 0, lineHeight: 1.6 }}>
+            {responseMsg}
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section style={{ padding: isMobile ? "30px 16px 50px" : "60px 48px 100px", textAlign: "center" }}>
+      <div style={{
+        ...glass({ padding: isMobile ? "30px 20px" : "60px 48px" }),
+        maxWidth: 800, margin: "0 auto",
+        background: "linear-gradient(135deg, rgba(0,212,255,0.08), rgba(168,85,247,0.06))",
+      }}>
+        <h2 style={{ fontSize: isMobile ? 20 : 32, fontWeight: 800, color: "#fff", margin: "0 0 8px" }}>Ready to Join the Tribe?</h2>
+        <p style={{ fontSize: isMobile ? 13 : 16, color: "rgba(255,255,255,0.5)", margin: "0 0 28px" }}>
+          12 investors. 6 AI agents. One unified edge. Request access below.
+        </p>
+
+        <form onSubmit={handleSubmit} style={{
+          display: "flex", flexDirection: "column", gap: 12,
+          maxWidth: 480, margin: "0 auto", textAlign: "left",
+        }}>
+          <div style={{ display: "flex", gap: 12, flexDirection: isMobile ? "column" : "row" }}>
+            <input type="text" placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} required
+              style={inputStyle} onFocus={e => e.target.style.borderColor = "rgba(0,212,255,0.5)"} onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.15)"} />
+            <input type="text" placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} required
+              style={inputStyle} onFocus={e => e.target.style.borderColor = "rgba(0,212,255,0.5)"} onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.15)"} />
+          </div>
+          <input type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)} required
+            style={inputStyle} onFocus={e => e.target.style.borderColor = "rgba(0,212,255,0.5)"} onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.15)"} />
+          <textarea placeholder="Why do you want to join? (optional)" value={message} onChange={e => setMessage(e.target.value)}
+            rows={3} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
+            onFocus={e => e.target.style.borderColor = "rgba(0,212,255,0.5)"} onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.15)"} />
+
+          {formState === "error" && (
+            <div style={{ color: "#ff6b6b", fontSize: 13, textAlign: "center" }}>{responseMsg}</div>
+          )}
+
+          <button type="submit" disabled={formState === "submitting"} style={{
+            padding: "14px 48px", borderRadius: 18, border: "none",
+            background: formState === "submitting" ? "rgba(255,255,255,0.1)" : "linear-gradient(135deg, #00D4FF, #A855F7)",
+            color: "#fff", fontSize: 16, fontWeight: 700, cursor: formState === "submitting" ? "wait" : "pointer",
+            boxShadow: "0 6px 24px rgba(0,212,255,0.35)", marginTop: 8,
+            transition: "all 0.3s", opacity: formState === "submitting" ? 0.7 : 1,
+          }}>
+            {formState === "submitting" ? "Submitting..." : "Request Access"}
+          </button>
+        </form>
+      </div>
+    </section>
   );
 }

@@ -499,7 +499,13 @@ export async function loginWithEmail(email, password) {
         isNewUser: false,
         emailVerified: true, // Server-verified
         serverId: serverUser.id,
+        role: serverUser.role || 'investor',
       };
+      userDB.set(emailKey, localUser);
+      persistUsers();
+    } else if (serverUser.role) {
+      // Update role from server if changed (e.g. promoted to admin)
+      localUser.role = serverUser.role;
       userDB.set(emailKey, localUser);
       persistUsers();
     }
@@ -507,7 +513,7 @@ export async function loginWithEmail(email, password) {
     // Record login
     recordLogin({ ...localUser, method: 'email' });
 
-    currentSession = { ...localUser, isNewUser: false };
+    currentSession = { ...localUser, role: serverUser.role || localUser.role || 'investor', isNewUser: false };
     saveToStorage(STORAGE_KEY_SESSION, currentSession);
     return { success: true, user: currentSession };
   }
