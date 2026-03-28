@@ -113,11 +113,23 @@ export function ensureWallet(user) {
 
 // ═══════ MARKET DATA ═══════
 const DEFAULT_PRICES = {
+  // Large-cap stocks
   "AAPL": 227.50, "MSFT": 422.30, "NVDA": 138.20, "TSLA": 278.40,
   "AMZN": 198.60, "GOOGL": 175.80, "META": 612.40, "JPM": 248.90,
+  // Momentum & growth
+  "AMD": 164.30, "PLTR": 72.80, "COIN": 248.50,
+  // Stable / value
+  "JNJ": 158.20, "VOO": 478.60,
+  // Crypto
   "BTC": 87432, "ETH": 3287, "SOL": 187.50, "AVAX": 38.20,
+  "DOGE": 0.1742, "XRP": 2.18, "ADA": 0.72,
+  // Recovery / small-cap
+  "F": 11.40, "BAC": 42.80, "WISH": 5.20, "RIOT": 12.60, "GE": 174.30, "CCIV": 24.50,
+  // Forex
   "EUR/USD": 1.0842, "GBP/USD": 1.2934, "USD/JPY": 150.85, "AUD/USD": 0.6521,
+  // ETFs & indices
   "SPY": 521.47, "QQQ": 441.22, "GLD": 284.70, "TLT": 87.30,
+  "IWM": 202.40, "EEM": 42.70,
 };
 
 function initPrices() {

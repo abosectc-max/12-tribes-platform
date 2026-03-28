@@ -1622,7 +1622,7 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
         setSessionStats(prev => ({
           ...prev,
           trades: prev.trades + 1,
-          pnl: prev.pnl + (trade.estimatedPnL || 0),
+          pnl: prev.pnl + (trade.pnl || trade.estimatedPnL || 0),
         }));
         if (onTick) onTick();
       }

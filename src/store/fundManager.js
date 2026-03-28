@@ -69,6 +69,7 @@ const AI_AGENTS = [
 const MARKET_SYMBOLS = {
   momentum: ['NVDA', 'TSLA', 'META', 'AMD', 'PLTR', 'COIN'],
   stable: ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'VOO'],
+  conservative: ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'GLD'],
   volatile: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'ADA'],
   recovery: ['F', 'BAC', 'WISH', 'RIOT', 'GE', 'CCIV'],
   large_position: ['SPY', 'QQQ', 'IWM', 'EEM', 'AAPL', 'MSFT'],
@@ -316,8 +317,8 @@ export const simulateAgentTrade = (investorId) => {
 
   const symbol = tradableSymbols[Math.floor(Math.random() * tradableSymbols.length)];
 
-  // Conservative agent: 50% chance of no trade
-  if (agent.personality === 'conservative' && Math.random() < 0.5) {
+  // Conservative agent: 20% chance of no trade (cautious but active)
+  if (agent.personality === 'conservative' && Math.random() < 0.2) {
     return {
       agent: agentName, symbol, side: 'NONE', quantity: 0, price: 0,
       reason: 'Market conditions not ideal for trading',

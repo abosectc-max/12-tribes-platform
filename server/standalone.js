@@ -224,9 +224,14 @@ class Router {
 const DEFAULT_PRICES = {
   "AAPL": 227.50, "MSFT": 422.30, "NVDA": 138.20, "TSLA": 278.40,
   "AMZN": 198.60, "GOOGL": 175.80, "META": 612.40, "JPM": 248.90,
+  "AMD": 164.30, "PLTR": 72.80, "COIN": 248.50,
+  "JNJ": 158.20, "VOO": 478.60,
   "BTC": 87432, "ETH": 3287, "SOL": 187.50, "AVAX": 38.20,
+  "DOGE": 0.1742, "XRP": 2.18, "ADA": 0.72,
+  "F": 11.40, "BAC": 42.80, "WISH": 5.20, "RIOT": 12.60, "GE": 174.30, "CCIV": 24.50,
   "EUR/USD": 1.0842, "GBP/USD": 1.2934, "USD/JPY": 150.85, "AUD/USD": 0.6521,
   "SPY": 521.47, "QQQ": 441.22, "GLD": 284.70, "TLT": 87.30,
+  "IWM": 202.40, "EEM": 42.70,
 };
 
 const marketPrices = { ...DEFAULT_PRICES };
@@ -234,7 +239,7 @@ const marketPrices = { ...DEFAULT_PRICES };
 function tickPrices() {
   for (const symbol of Object.keys(marketPrices)) {
     const price = marketPrices[symbol];
-    const vol = symbol.includes('/') ? 0.0003 : ['BTC','ETH','SOL','AVAX'].includes(symbol) ? 0.002 : 0.001;
+    const vol = symbol.includes('/') ? 0.0003 : ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(symbol) ? 0.002 : 0.001;
     marketPrices[symbol] = parseFloat((price + price * (Math.random() - 0.498) * vol).toFixed(price < 10 ? 4 : 2));
   }
   updatePositionValues();
