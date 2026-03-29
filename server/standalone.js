@@ -1405,6 +1405,32 @@ api.put('/api/access-requests/:requestId', auth, async (req, res) => {
   json(res, 200, { success: true, request, emailSent: emailResult?.success || false, emailError: emailResult?.success ? null : (emailResult?.reason || null) });
 });
 
+// Resend approval/denial email (admin only)
+api.post('/api/access-requests/:requestId/resend-email', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const request = db.findOne('access_requests', r => r.id === req.params.requestId);
+  if (!request) return json(res, 404, { error: 'Request not found' });
+  if (!request.email) return json(res, 400, { error: 'Request has no email address' });
+  if (!['approved', 'denied'].includes(request.status)) return json(res, 400, { error: 'Request must be approved or denied to resend email' });
+
+  let emailResult = null;
+  try {
+    if (request.status === 'approved') {
+      emailResult = await sendEmail(request.email, `${APP_NAME} — Access Approved!`, accessApprovedEmail(request.first_name || 'Investor'));
+    } else {
+      emailResult = await sendEmail(request.email, `${APP_NAME} — Access Request Update`, accessDeniedEmail(request.first_name || 'Investor'));
+    }
+    console.log(`[ACCESS] Resend ${request.status} email to ${request.email} — ${emailResult?.success ? 'SENT' : 'FAILED: ' + (emailResult?.reason || 'unknown')}`);
+  } catch (err) {
+    console.error(`[ACCESS] Resend email error for ${request.email}:`, err.message);
+    emailResult = { success: false, reason: err.message };
+  }
+
+  json(res, 200, { success: true, emailSent: emailResult?.success || false, emailError: emailResult?.success ? null : (emailResult?.reason || null) });
+});
+
 // ─── ADMIN: LIST ALL USERS ───
 api.get('/api/admin/users', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);

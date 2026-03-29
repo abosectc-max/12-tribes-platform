@@ -3028,6 +3028,27 @@ function AdminPanel({ investor, isMobile }) {
     setActionLoading(null);
   };
 
+  const handleResendEmail = async (requestId, email) => {
+    setActionLoading(requestId);
+    setActionError('');
+    setActionSuccess('');
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/access-requests/${requestId}/resend-email`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      const data = await resp.json();
+      if (data.emailSent) {
+        setActionSuccess(`Approval email re-sent to ${email}`);
+      } else {
+        setActionError(`Email failed: ${data.emailError || 'Unknown error'}`);
+      }
+    } catch (err) {
+      setActionError(`Network error: ${err.message || 'Could not reach server.'}`);
+    }
+    setActionLoading(null);
+  };
+
   const handleDeleteUser = async (userId, userEmail) => {
     if (!window.confirm(`Permanently delete ${userEmail}? This will close all their positions and remove their account. This action cannot be undone.`)) return;
     setDeleteLoading(userId);
@@ -3195,6 +3216,12 @@ function AdminPanel({ investor, isMobile }) {
                     <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{r.email}</div>
                   </div>
                   <span style={statusBadge(r.status)}>{r.status}</span>
+                  {r.status === 'approved' && (
+                    <button onClick={() => handleResendEmail(r.id, r.email)} disabled={actionLoading === r.id}
+                      style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(0,212,255,0.25)', background: 'rgba(0,212,255,0.08)', color: '#00D4FF', fontSize: 11, fontWeight: 600, cursor: 'pointer', marginLeft: 4 }}>
+                      {actionLoading === r.id ? '...' : '✉ Resend Email'}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
