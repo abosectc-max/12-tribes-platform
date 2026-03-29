@@ -58,11 +58,11 @@ setInterval(() => {
 
 // Risk management defaults
 const RISK = {
-  maxPositionSizePct: 10,
-  maxDailyLossPct: 5,
-  maxDrawdownPct: 15,
-  killSwitchDrawdownPct: 25,
-  maxOrdersPerMinute: 10,
+  maxPositionSizePct: 15,      // Allow larger positions for growth
+  maxDailyLossPct: 8,          // Wider daily loss limit for active trading
+  maxDrawdownPct: 20,          // Allow deeper drawdown during growth phase
+  killSwitchDrawdownPct: 35,   // Emergency kill at 35%
+  maxOrdersPerMinute: 20,      // Higher frequency for compounding
   confirmationThreshold: 10000,
 };
 
@@ -275,13 +275,107 @@ function roundTo(value, decimals) {
   return Math.round(value * factor) / factor;
 }
 
+// ═══════════════════════════════════════════
+//   PRICE HISTORY + REGIME DETECTION
+//   Tracks rolling windows for each symbol
+//   so agents can detect trends/momentum
+// ═══════════════════════════════════════════
+const PRICE_HISTORY_LEN = 120; // ~4 minutes of 2s ticks
+const priceHistory = {};
+const symbolRegimes = {}; // 'trending_up' | 'trending_down' | 'ranging'
+
+for (const sym of Object.keys(DEFAULT_PRICES)) {
+  priceHistory[sym] = [DEFAULT_PRICES[sym]];
+  symbolRegimes[sym] = 'ranging';
+}
+
+// ─── Technical Indicators (computed from price history) ───
+function sma(arr, n) {
+  if (arr.length < n) return arr.reduce((a, b) => a + b, 0) / arr.length;
+  const slice = arr.slice(-n);
+  return slice.reduce((a, b) => a + b, 0) / n;
+}
+
+function ema(arr, n) {
+  const k = 2 / (n + 1);
+  let e = arr[0];
+  for (let i = 1; i < arr.length; i++) e = arr[i] * k + e * (1 - k);
+  return e;
+}
+
+function rsi(arr, period = 14) {
+  if (arr.length < period + 1) return 50;
+  let gains = 0, losses = 0;
+  const recent = arr.slice(-(period + 1));
+  for (let i = 1; i < recent.length; i++) {
+    const diff = recent[i] - recent[i - 1];
+    if (diff > 0) gains += diff;
+    else losses -= diff;
+  }
+  if (losses === 0) return 100;
+  const rs = (gains / period) / (losses / period);
+  return 100 - (100 / (1 + rs));
+}
+
+function momentum(arr, lookback = 20) {
+  if (arr.length < lookback + 1) return 0;
+  return (arr[arr.length - 1] / arr[arr.length - 1 - lookback] - 1) * 100;
+}
+
+function volatility(arr, n = 20) {
+  if (arr.length < n) return 0;
+  const slice = arr.slice(-n);
+  const mean = slice.reduce((a, b) => a + b, 0) / n;
+  const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+  return Math.sqrt(variance) / mean * 100; // % volatility
+}
+
+function detectRegime(hist) {
+  if (hist.length < 30) return 'ranging';
+  const shortSma = sma(hist, 10);
+  const longSma = sma(hist, 30);
+  const mom = momentum(hist, 20);
+  if (shortSma > longSma * 1.001 && mom > 0.3) return 'trending_up';
+  if (shortSma < longSma * 0.999 && mom < -0.3) return 'trending_down';
+  return 'ranging';
+}
+
+// ─── Price tick with micro-trend persistence ───
+// Prices exhibit short-term trends (momentum) that agents can exploit
+const trendState = {}; // per-symbol trend drift
+for (const sym of Object.keys(DEFAULT_PRICES)) {
+  trendState[sym] = { drift: 0, duration: 0, maxDuration: 30 + Math.floor(Math.random() * 60) };
+}
+
 function tickPrices() {
   for (const symbol of Object.keys(marketPrices)) {
     const price = marketPrices[symbol];
-    const vol = symbol.includes('/') ? 0.0003 : ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(symbol) ? 0.002 : 0.001;
+    const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(symbol);
+    const isFx = symbol.includes('/');
+    const baseVol = isFx ? 0.0003 : isCrypto ? 0.002 : 0.001;
+
+    // Micro-trend system: prices have short-lived directional biases
+    let ts = trendState[symbol];
+    ts.duration++;
+    if (ts.duration >= ts.maxDuration) {
+      // New micro-trend
+      ts.drift = (Math.random() - 0.45) * baseVol * 2; // slight upward bias overall
+      ts.duration = 0;
+      ts.maxDuration = 20 + Math.floor(Math.random() * 80);
+    }
+
+    const noise = (Math.random() - 0.5) * baseVol;
+    const change = ts.drift + noise;
     const decimals = price < 10 ? 4 : 2;
-    // Math.random() - 0.5 centers the random walk (no directional bias)
-    marketPrices[symbol] = roundTo(price + price * (Math.random() - 0.5) * vol, decimals);
+    marketPrices[symbol] = roundTo(price * (1 + change), decimals);
+
+    // Track history
+    if (!priceHistory[symbol]) priceHistory[symbol] = [];
+    priceHistory[symbol].push(marketPrices[symbol]);
+    if (priceHistory[symbol].length > PRICE_HISTORY_LEN) priceHistory[symbol].shift();
+
+    // Update regime
+    symbolRegimes[symbol] = detectRegime(priceHistory[symbol]);
   }
   updatePositionValues();
 }
@@ -1688,13 +1782,147 @@ const AI_AGENTS = [
 
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
-  maxOpenPositions: 12,        // Per user — raised for 6 concurrent agents
-  maxDailyTrades: 80,          // Per user — 6 agents need room
-  positionSizePct: 0.025,      // 2.5% of equity per trade (conservative with 6 agents)
-  consensusThreshold: 0.5,     // 50%+ agents must agree for trade
+  maxOpenPositions: 15,        // Per user — raised for aggressive growth
+  maxDailyTrades: 150,         // Per user — high-frequency for compounding
+  baseSizePct: 0.04,           // 4% of equity per trade (aggressive growth)
+  winnerSizePct: 0.06,         // 6% for high-conviction signals
+  consensusThreshold: 0.3,     // Lower threshold — act on strong signals fast
+  minSignalStrength: 0.6,      // Minimum signal quality to trade
 };
 
 let autoTradeTickCount = 0;
+
+// ═══════════════════════════════════════════
+//   SELF-HEALING ADAPTIVE FEEDBACK SYSTEM
+//   Tracks per-agent and per-symbol performance
+//   Adjusts confidence multipliers in real-time
+// ═══════════════════════════════════════════
+const agentPerformance = {}; // { agentName: { wins, losses, recentPnl[], adaptiveConfidence } }
+const symbolPerformance = {}; // { symbol: { wins, losses, avgPnl, bestSide } }
+
+function getAgentPerf(name) {
+  if (!agentPerformance[name]) {
+    agentPerformance[name] = { wins: 0, losses: 0, recentPnl: [], adaptiveConfidence: 1.0, streak: 0 };
+  }
+  return agentPerformance[name];
+}
+
+function getSymbolPerf(symbol) {
+  if (!symbolPerformance[symbol]) {
+    symbolPerformance[symbol] = { wins: 0, losses: 0, longWins: 0, longLosses: 0, shortWins: 0, shortLosses: 0, totalPnl: 0 };
+  }
+  return symbolPerformance[symbol];
+}
+
+// Called after every trade close to update the learning system
+function updatePerformanceFeedback(agentName, symbol, side, pnl) {
+  const ap = getAgentPerf(agentName);
+  const sp = getSymbolPerf(symbol);
+
+  if (pnl >= 0) {
+    ap.wins++;
+    ap.streak = Math.max(0, ap.streak) + 1;
+    sp.wins++;
+    if (side === 'LONG') sp.longWins++; else sp.shortWins++;
+  } else {
+    ap.losses++;
+    ap.streak = Math.min(0, ap.streak) - 1;
+    sp.losses++;
+    if (side === 'LONG') sp.longLosses++; else sp.shortLosses++;
+  }
+
+  ap.recentPnl.push(pnl);
+  if (ap.recentPnl.length > 20) ap.recentPnl.shift();
+  sp.totalPnl += pnl;
+
+  // Self-healing: adjust agent confidence based on recent performance
+  const recentWins = ap.recentPnl.filter(p => p >= 0).length;
+  const recentWinRate = ap.recentPnl.length > 5 ? recentWins / ap.recentPnl.length : 0.5;
+
+  // Agents that are winning get boosted; losing agents get dampened
+  if (recentWinRate > 0.6) ap.adaptiveConfidence = Math.min(1.5, 1.0 + (recentWinRate - 0.5));
+  else if (recentWinRate < 0.35) ap.adaptiveConfidence = Math.max(0.3, recentWinRate + 0.15);
+  else ap.adaptiveConfidence = 0.8 + recentWinRate * 0.4;
+}
+
+// ─── Signal Quality Scoring ───
+// Uses technical indicators to generate a signal score [-1, +1]
+// Positive = bullish, Negative = bearish, abs value = strength
+function computeSignal(symbol, agentStyle) {
+  const hist = priceHistory[symbol];
+  if (!hist || hist.length < 30) return { score: 0, reason: 'Insufficient data' };
+
+  const price = marketPrices[symbol];
+  const sma10 = sma(hist, 10);
+  const sma30 = sma(hist, 30);
+  const ema10 = ema(hist, 10);
+  const rsiVal = rsi(hist, 14);
+  const mom = momentum(hist, 20);
+  const vol = volatility(hist, 20);
+  const regime = symbolRegimes[symbol];
+
+  let score = 0;
+  let reasons = [];
+
+  // Trend following signals
+  if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'FUNDAMENTAL_ANALYST') {
+    if (sma10 > sma30 && mom > 0.1) { score += 0.35; reasons.push('Uptrend (SMA cross)'); }
+    else if (sma10 < sma30 && mom < -0.1) { score -= 0.35; reasons.push('Downtrend (SMA cross)'); }
+
+    if (ema10 > price * 0.998 && ema10 < price * 1.005) {
+      // Price near EMA support in uptrend = buy signal
+      if (regime === 'trending_up') { score += 0.25; reasons.push('EMA support bounce'); }
+    }
+  }
+
+  // Momentum signals
+  if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'VOLATILITY_TRADER') {
+    if (mom > 0.5) { score += 0.3; reasons.push(`Momentum +${mom.toFixed(1)}%`); }
+    else if (mom < -0.5) { score -= 0.3; reasons.push(`Momentum ${mom.toFixed(1)}%`); }
+  }
+
+  // RSI signals
+  if (rsiVal < 30) { score += 0.2; reasons.push(`RSI oversold (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 70) { score -= 0.15; reasons.push(`RSI overbought (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 45 && rsiVal < 55 && regime === 'trending_up') { score += 0.1; reasons.push('RSI neutral in uptrend'); }
+
+  // Regime bonus
+  if (regime === 'trending_up') { score += 0.15; reasons.push('Bullish regime'); }
+  else if (regime === 'trending_down') { score -= 0.15; reasons.push('Bearish regime'); }
+
+  // Volatility filter — higher vol = higher reward opportunity
+  if (vol > 0.5 && agentStyle === 'VOLATILITY_TRADER') {
+    score *= 1.2;
+    reasons.push(`High vol (${vol.toFixed(1)}%)`);
+  }
+
+  // Recovery specialist — looks for oversold bounces
+  if (agentStyle === 'RECOVERY_SPECIALIST') {
+    if (rsiVal < 25 && mom < -0.5) { score += 0.4; reasons.push('Deep oversold — recovery play'); }
+    if (rsiVal < 35 && regime === 'ranging') { score += 0.2; reasons.push('Mean reversion setup'); }
+  }
+
+  // Symbol performance bias — prefer historically profitable symbols/sides
+  const sp = getSymbolPerf(symbol);
+  const totalSymTrades = sp.wins + sp.losses;
+  if (totalSymTrades > 5) {
+    const symWinRate = sp.wins / totalSymTrades;
+    if (symWinRate > 0.6) { score *= 1.15; reasons.push(`High win-rate symbol (${(symWinRate*100).toFixed(0)}%)`); }
+    else if (symWinRate < 0.35) { score *= 0.7; reasons.push(`Low win-rate — reduced size`); }
+
+    // Prefer the historically winning side
+    const longWR = sp.longWins / Math.max(1, sp.longWins + sp.longLosses);
+    const shortWR = sp.shortWins / Math.max(1, sp.shortWins + sp.shortLosses);
+    if (score > 0 && longWR > 0.6) score *= 1.1;
+    if (score < 0 && shortWR > 0.6) score *= 1.1;
+  }
+
+  return {
+    score: Math.max(-1, Math.min(1, score)),
+    reason: reasons.join(' | ') || 'No clear signal',
+    indicators: { sma10, sma30, rsiVal, mom, vol, regime },
+  };
+}
 
 function runAutoTradeTick() {
   autoTradeTickCount++;
@@ -1716,7 +1944,7 @@ function runAutoTradeTick() {
 
 /**
  * ALL 6 agents run concurrently each tick.
- * Each agent evaluates its own symbols, then the collective makes consensus decisions.
+ * Signal-based entries with self-healing feedback loop.
  */
 function runAllAgents(userId, fundData) {
   const wallet = db.findOne('wallets', w => w.user_id === userId);
@@ -1727,160 +1955,139 @@ function runAllAgents(userId, fundData) {
   const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
   if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) return;
 
-  const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
+  let openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
 
-  // ─── PHASE 1: Sentinel (Risk Manager) reviews open positions ───
+  // ─── PHASE 1: Adaptive position management — trail stops, take profits ───
   if (openPositions.length > 0) {
-    sentinelRiskReview(userId, openPositions);
+    adaptivePositionManagement(userId, openPositions);
+    // Refresh after potential closes
+    openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
   }
 
-  // ─── PHASE 2: Titan (Position Manager) scales/trims existing positions ───
-  if (openPositions.length > 0) {
-    titanPositionManagement(userId, openPositions, wallet);
-  }
-
-  // ─── PHASE 3: All signal agents generate trade proposals ───
+  // ─── PHASE 2: Signal generation from all agents ───
   const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
-  const proposals = [];
+  const allSignals = [];
 
   for (const agent of signalAgents) {
-    const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined);
+    const agentPerf = getAgentPerf(agent.name);
+    const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined && priceHistory[s]?.length >= 30);
     if (tradable.length === 0) continue;
 
-    // Each agent picks their top opportunity
-    const symbol = tradable[Math.floor(Math.random() * tradable.length)];
-    const rand = Math.random();
-    const side = rand < agent.longBias ? 'LONG' : 'SHORT';
-    const confidence = 0.5 + Math.random() * 0.5; // 0.5-1.0
+    // Each agent scores ALL its symbols and picks the best
+    let bestSignal = null;
+    for (const symbol of tradable) {
+      const signal = computeSignal(symbol, agent.role);
+      const adjustedScore = signal.score * agentPerf.adaptiveConfidence;
 
-    proposals.push({
-      agent: agent.name,
-      symbol,
-      side,
-      confidence,
-      reason: side === 'LONG' ? agent.reasons.long : agent.reasons.short,
-    });
+      if (!bestSignal || Math.abs(adjustedScore) > Math.abs(bestSignal.adjustedScore)) {
+        bestSignal = { symbol, ...signal, adjustedScore, agent: agent.name };
+      }
+    }
+
+    if (bestSignal && Math.abs(bestSignal.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength) {
+      allSignals.push(bestSignal);
+    }
   }
 
-  // ─── PHASE 4: Consensus — group proposals by symbol, execute if consensus ───
-  const symbolVotes = {};
-  for (const p of proposals) {
-    if (!symbolVotes[p.symbol]) symbolVotes[p.symbol] = { long: [], short: [], total: 0 };
-    symbolVotes[p.symbol].total++;
-    if (p.side === 'LONG') symbolVotes[p.symbol].long.push(p);
-    else symbolVotes[p.symbol].short.push(p);
-  }
+  // ─── PHASE 3: Rank signals by strength, execute top opportunities ───
+  allSignals.sort((a, b) => Math.abs(b.adjustedScore) - Math.abs(a.adjustedScore));
 
-  // Execute trades where multiple agents agree (or single high-confidence)
-  for (const [symbol, votes] of Object.entries(symbolVotes)) {
+  for (const signal of allSignals) {
     if (openPositions.length >= AUTO_TRADE_CONFIG.maxOpenPositions) break;
 
-    // Already have a position in this symbol? Skip new entry.
-    if (openPositions.some(p => p.symbol === symbol)) continue;
+    // Skip if already have position in this symbol
+    if (openPositions.some(p => p.symbol === signal.symbol)) continue;
 
-    const longVotes = votes.long.length;
-    const shortVotes = votes.short.length;
-    const totalVoters = proposals.length;
+    const side = signal.adjustedScore > 0 ? 'LONG' : 'SHORT';
+    const strength = Math.abs(signal.adjustedScore);
 
-    let side, reason, leadAgent;
-
-    if (longVotes > shortVotes && longVotes / totalVoters >= AUTO_TRADE_CONFIG.consensusThreshold) {
-      side = 'LONG';
-      const best = votes.long.sort((a, b) => b.confidence - a.confidence)[0];
-      leadAgent = best.agent;
-      reason = `Consensus LONG (${longVotes}/${totalVoters} agents) — ${best.reason}`;
-    } else if (shortVotes > longVotes && shortVotes / totalVoters >= AUTO_TRADE_CONFIG.consensusThreshold) {
-      side = 'SHORT';
-      const best = votes.short.sort((a, b) => b.confidence - a.confidence)[0];
-      leadAgent = best.agent;
-      reason = `Consensus SHORT (${shortVotes}/${totalVoters} agents) — ${best.reason}`;
-    } else if (votes.total === 1) {
-      // Single agent proposal — execute if confidence > 0.75
-      const single = votes.long[0] || votes.short[0];
-      if (single.confidence < 0.75) continue;
-      side = single.side;
-      leadAgent = single.agent;
-      reason = `Solo signal (${(single.confidence * 100).toFixed(0)}% confidence) — ${single.reason}`;
-    } else {
-      continue; // No consensus
-    }
-
-    // Position sizing
-    const price = marketPrices[symbol];
+    // Dynamic position sizing — stronger signals get larger positions
+    const price = marketPrices[signal.symbol];
     if (!price) continue;
     const equity = wallet.equity || wallet.balance || 100000;
-    const maxPosValue = equity * AUTO_TRADE_CONFIG.positionSizePct;
+    const sizePct = strength > 0.8 ? AUTO_TRADE_CONFIG.winnerSizePct : AUTO_TRADE_CONFIG.baseSizePct;
+    const maxPosValue = equity * sizePct;
     const quantity = Math.max(1, Math.floor(maxPosValue / price));
 
-    const result = executeTrade(userId, { symbol, side, quantity, agent: leadAgent, price });
+    const result = executeTrade(userId, { symbol: signal.symbol, side, quantity, agent: signal.agent, price });
     if (result.success) {
-      logAutoTrade(userId, leadAgent, symbol, side, quantity, reason);
+      const reason = `${side} signal (${(strength * 100).toFixed(0)}% strength) — ${signal.reason}`;
+      logAutoTrade(userId, signal.agent, signal.symbol, side, quantity, reason);
+      openPositions.push(result.position); // Track for max position check
     }
   }
 }
 
 /**
- * Sentinel agent — reviews all open positions for risk and closes bad ones
+ * Adaptive position management — replaces static Sentinel + Titan
+ * Uses trailing stops, momentum-based exits, and profit locking
  */
-function sentinelRiskReview(userId, openPositions) {
+function adaptivePositionManagement(userId, openPositions) {
   for (const pos of openPositions) {
     const currentPrice = marketPrices[pos.symbol] || pos.current_price;
     const dir = pos.side === 'LONG' ? 1 : -1;
     const pnlPct = ((currentPrice / pos.entry_price) - 1) * 100 * dir;
-
-    // Close if loss exceeds -5% (stop-loss)
-    if (pnlPct < -5) {
-      closePosition(userId, pos.id);
-      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-        `Risk stop — ${pnlPct.toFixed(1)}% loss exceeds threshold`);
-      continue;
-    }
-
-    // Close if profit exceeds +10% (take-profit)
-    if (pnlPct > 10) {
-      closePosition(userId, pos.id);
-      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-        `Take profit — locking in ${pnlPct.toFixed(1)}% gain`);
-      continue;
-    }
-
-    // Close if held too long (> 2 hours with no significant gain)
     const holdMs = Date.now() - new Date(pos.opened_at).getTime();
-    if (holdMs > 7200000 && pnlPct < 1) {
+    const holdMinutes = holdMs / 60000;
+
+    const hist = priceHistory[pos.symbol] || [];
+    const regime = symbolRegimes[pos.symbol] || 'ranging';
+    const mom = hist.length >= 20 ? momentum(hist, 10) : 0;
+
+    // ─── STOP-LOSS: Adaptive based on volatility ───
+    const vol = hist.length >= 20 ? volatility(hist, 20) : 1;
+    const stopLoss = -Math.max(1.5, Math.min(4, vol * 2)); // Dynamic: -1.5% to -4%
+
+    if (pnlPct < stopLoss) {
       closePosition(userId, pos.id);
+      updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-        `Time exit — held ${Math.round(holdMs / 60000)}min with ${pnlPct.toFixed(1)}% return`);
+        `Adaptive stop — ${pnlPct.toFixed(1)}% loss (vol-adjusted limit: ${stopLoss.toFixed(1)}%)`);
+      continue;
     }
-  }
-}
 
-/**
- * Titan agent — manages position sizing, scales winners
- */
-function titanPositionManagement(userId, openPositions, wallet) {
-  // Only act on ~20% of ticks to avoid over-trading
-  if (Math.random() > 0.2) return;
+    // ─── TAKE PROFIT: Lock in gains with trailing logic ───
+    // Aggressive: take profit starting at +2% but let big winners run
+    if (pnlPct > 2) {
+      // Check if momentum is still favorable — let winners ride
+      const trendAligned = (pos.side === 'LONG' && mom > 0.1) || (pos.side === 'SHORT' && mom < -0.1);
+      const regimeAligned = (pos.side === 'LONG' && regime === 'trending_up') || (pos.side === 'SHORT' && regime === 'trending_down');
 
-  for (const pos of openPositions) {
-    const currentPrice = marketPrices[pos.symbol] || pos.current_price;
-    const dir = pos.side === 'LONG' ? 1 : -1;
-    const pnlPct = ((currentPrice / pos.entry_price) - 1) * 100 * dir;
+      // If trend still aligned and profit < 8%, let it run
+      if (trendAligned && regimeAligned && pnlPct < 8) continue;
 
-    // Scale into winners: if up > 3%, add to position (if room)
-    if (pnlPct > 3 && openPositions.length < AUTO_TRADE_CONFIG.maxOpenPositions) {
-      const equity = wallet.equity || wallet.balance || 100000;
-      const addValue = equity * 0.015; // Add 1.5% of equity
-      const addQty = Math.max(1, Math.floor(addValue / currentPrice));
-
-      const result = executeTrade(userId, {
-        symbol: pos.symbol, side: pos.side, quantity: addQty,
-        agent: 'Titan', price: currentPrice,
-      });
-      if (result.success) {
-        logAutoTrade(userId, 'Titan', pos.symbol, pos.side, addQty,
-          `Scaling winner — adding to ${pnlPct.toFixed(1)}% gainer`);
+      // If momentum fading or profit > 5% in non-trending market, take it
+      if (!trendAligned || pnlPct > 5 || (pnlPct > 3 && regime === 'ranging')) {
+        closePosition(userId, pos.id);
+        updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+        logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+          `Profit lock — ${pnlPct.toFixed(1)}% gain${!trendAligned ? ' (momentum fading)' : ''}`);
+        continue;
       }
-      break; // Only scale one position per tick
+    }
+
+    // ─── TIME EXIT: Close stale positions that aren't moving ───
+    if (holdMinutes > 30 && Math.abs(pnlPct) < 0.5) {
+      closePosition(userId, pos.id);
+      updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+      logAutoTrade(userId, 'Titan', pos.symbol, 'CLOSE', pos.quantity,
+        `Time exit — ${holdMinutes.toFixed(0)}min with ${pnlPct.toFixed(1)}% (freeing capital)`);
+      continue;
+    }
+
+    // ─── REGIME REVERSAL EXIT: Close if market regime flipped against position ───
+    if (pos.side === 'LONG' && regime === 'trending_down' && pnlPct < 1) {
+      closePosition(userId, pos.id);
+      updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+        `Regime reversal — market turned bearish (${pnlPct.toFixed(1)}%)`);
+      continue;
+    }
+    if (pos.side === 'SHORT' && regime === 'trending_up' && pnlPct < 1) {
+      closePosition(userId, pos.id);
+      updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+        `Regime reversal — market turned bullish (${pnlPct.toFixed(1)}%)`);
     }
   }
 }
