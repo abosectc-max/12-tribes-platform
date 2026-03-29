@@ -1146,16 +1146,51 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
 
 function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }) {
   const [chartPeriod, setChartPeriod] = useState("monthly");
+  const [serverPerf, setServerPerf] = useState(null);
+
+  // Fetch server-side performance data for accurate returns
+  useEffect(() => {
+    const token = (() => { try { return localStorage.getItem('12tribes_auth_token') || ''; } catch { return ''; } })();
+    const apiBase = (() => {
+      if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+      return `http://${window.location.hostname}:4000/api`;
+    })();
+    const fetchPerf = async () => {
+      try {
+        const res = await fetch(`${apiBase}/wallet/performance?period=${chartPeriod}`, {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (res.ok) setServerPerf(await res.json());
+      } catch {}
+    };
+    fetchPerf();
+    const interval = setInterval(fetchPerf, 30000);
+    return () => clearInterval(interval);
+  }, [chartPeriod]);
 
   const perf = getPerformanceMetrics(investor.id, wallet);
   const chartData = getEquityHistoryByPeriod(investor.id, chartPeriod, perf.currentEquity, perf.initialBalance);
   const breakdown = getPositionPerformance(positions, tradeHistory);
 
-  const periods = [
+  // Use server data to compute accurate all-time return when available
+  const currentEquity = serverPerf?.currentEquity || wallet?.equity || perf.currentEquity;
+  const initialBalance = serverPerf?.initialBalance || wallet?.initialBalance || perf.initialBalance;
+  const allTimePnL = currentEquity - initialBalance;
+  const allTimeReturn = initialBalance > 0 ? (allTimePnL / initialBalance * 100) : 0;
+
+  // Override perf periods with server-computed data when snapshots are sparse
+  const hasGoodHistory = perf.equityHistory.length >= 7;
+  const periods = hasGoodHistory ? [
     { key: "daily", label: "Today", ...perf.daily },
     { key: "weekly", label: "7 Days", ...perf.weekly },
     { key: "monthly", label: "30 Days", ...perf.monthly },
     { key: "annual", label: "1 Year", ...perf.annual },
+  ] : [
+    // When history is sparse, use all-time return for all periods (they're equivalent)
+    { key: "daily", label: "Today", return: allTimeReturn, pnl: allTimePnL },
+    { key: "weekly", label: "7 Days", return: allTimeReturn, pnl: allTimePnL },
+    { key: "monthly", label: "30 Days", return: allTimeReturn, pnl: allTimePnL },
+    { key: "annual", label: "1 Year", return: allTimeReturn, pnl: allTimePnL },
   ];
 
   // Radial gauge for return %
@@ -1249,20 +1284,20 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
       }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>Current Equity</div>
-          <div style={{ fontSize: 28, fontWeight: 800, color: "#fff" }}>${perf.currentEquity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: "#fff" }}>${currentEquity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
         </div>
         <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.08)", display: isMobile ? "none" : "block" }} />
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>All-Time P&L</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: perf.allTime.pnl >= 0 ? "#10B981" : "#EF4444" }}>
-            {perf.allTime.pnl >= 0 ? "+" : ""}${perf.allTime.pnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          <div style={{ fontSize: 22, fontWeight: 700, color: allTimePnL >= 0 ? "#10B981" : "#EF4444" }}>
+            {allTimePnL >= 0 ? "+" : ""}${Math.abs(allTimePnL).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </div>
         </div>
         <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.08)", display: isMobile ? "none" : "block" }} />
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>All-Time Return</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: perf.allTime.return >= 0 ? "#10B981" : "#EF4444" }}>
-            {perf.allTime.return >= 0 ? "+" : ""}{perf.allTime.return.toFixed(2)}%
+          <div style={{ fontSize: 22, fontWeight: 700, color: allTimeReturn >= 0 ? "#10B981" : "#EF4444" }}>
+            {allTimeReturn >= 0 ? "+" : ""}{allTimeReturn.toFixed(2)}%
           </div>
         </div>
         {perf.winStreak > 0 && (
@@ -1357,18 +1392,30 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
           <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Highlights</div>
 
           <div style={{ padding: "14px 16px", borderRadius: 14, background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.12)", marginBottom: 12 }}>
-            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Best Day</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+              {hasGoodHistory ? 'Best Day' : 'Total Gain'}
+            </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>{perf.bestDay.date}</span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: "#10B981" }}>+{perf.bestDay.return.toFixed(2)}%</span>
+              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>
+                {hasGoodHistory ? perf.bestDay.date : new Date().toISOString().split('T')[0]}
+              </span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: "#10B981" }}>
+                +{(hasGoodHistory ? perf.bestDay.return : (allTimeReturn > 0 ? allTimeReturn : 0)).toFixed(2)}%
+              </span>
             </div>
           </div>
 
-          <div style={{ padding: "14px 16px", borderRadius: 14, background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.12)", marginBottom: 16 }}>
-            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Worst Day</div>
+          <div style={{ padding: "14px 16px", borderRadius: 14, background: allTimeReturn < 0 ? "rgba(239,68,68,0.06)" : "rgba(255,255,255,0.03)", border: `1px solid ${allTimeReturn < 0 ? "rgba(239,68,68,0.12)" : "rgba(255,255,255,0.06)"}`, marginBottom: 16 }}>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+              {hasGoodHistory ? 'Worst Day' : 'Win Rate'}
+            </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>{perf.worstDay.date}</span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: "#EF4444" }}>{perf.worstDay.return.toFixed(2)}%</span>
+              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>
+                {hasGoodHistory ? perf.worstDay.date : `${wallet?.winCount || 0}W / ${wallet?.lossCount || 0}L`}
+              </span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: hasGoodHistory ? "#EF4444" : "#00D4FF" }}>
+                {hasGoodHistory ? `${perf.worstDay.return.toFixed(2)}%` : `${wallet?.winRate?.toFixed(1) || 0}%`}
+              </span>
             </div>
           </div>
 
@@ -1970,8 +2017,13 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
       {/* Stats Row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
         {[
-          { l: "Trades Executed", v: sessionStats.trades + (serverStats?.todayTrades || 0), c: "#00D4FF" },
-          { l: "Session P&L", v: `${sessionStats.pnl >= 0 ? '+' : ''}$${sessionStats.pnl.toFixed(0)}`, c: sessionStats.pnl >= 0 ? "#10B981" : "#EF4444" },
+          { l: "Trades Executed", v: serverStats?.tradeCount || serverStats?.todayTrades || sessionStats.trades, c: "#00D4FF" },
+          (() => {
+            const pnl = serverStats
+              ? ((serverStats.equity || 0) - (serverStats.initialBalance || 100000))
+              : sessionStats.pnl;
+            return { l: "Session P&L", v: `${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, c: pnl >= 0 ? "#10B981" : "#EF4444" };
+          })(),
           { l: "Time Active", v: elapsedTime < 60 ? `${elapsedTime}m` : `${Math.floor(elapsedTime / 60)}h ${elapsedTime % 60}m`, c: "rgba(255,255,255,0.7)" },
         ].map(s => (
           <div key={s.l} style={{ textAlign: "center", padding: "12px 8px", borderRadius: 14, background: "rgba(255,255,255,0.03)" }}>
@@ -2029,16 +2081,26 @@ function PortfolioDashboard({ investor, onLogout }) {
   const { isMobile, isTablet } = useResponsive();
 
   // Live wallet data — refreshes every 3 seconds + records equity snapshots
+  // Sync from server every 30s to keep local wallet data fresh
   useEffect(() => {
+    let syncCounter = 0;
     const interval = setInterval(() => {
       tickPrices();
+      syncCounter++;
+      // Re-sync from server every 30 seconds (every 10th tick)
+      if (syncCounter % 10 === 0) {
+        syncFromServer(investor.id).catch(() => {});
+      }
       const w = getWallet(investor.id);
       if (w) recordSnapshot(investor.id, w);
       setTick(t => t + 1);
     }, 3000);
-    // Record initial snapshot on mount
-    const w0 = getWallet(investor.id);
-    if (w0) recordSnapshot(investor.id, w0);
+    // Sync from server + record initial snapshot on mount
+    syncFromServer(investor.id).then(() => {
+      const w0 = getWallet(investor.id);
+      if (w0) recordSnapshot(investor.id, w0);
+      setTick(t => t + 1);
+    }).catch(() => {});
     return () => clearInterval(interval);
   }, [investor.id]);
 
@@ -2157,7 +2219,7 @@ function PortfolioDashboard({ investor, onLogout }) {
                   { l: "Initial Deposit", v: `$${initialBalance.toLocaleString()}`, c: "rgba(255,255,255,0.6)" },
                   { l: "Realized P&L", v: `${(wallet?.realizedPnL || 0) >= 0 ? '+' : ''}$${(wallet?.realizedPnL || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, c: (wallet?.realizedPnL || 0) >= 0 ? "#10B981" : "#EF4444" },
                   { l: "Open Positions", v: `${positions.length}`, c: "#A855F7" },
-                  { l: "Total Trades", v: `${(wallet?.tradeCount || 0) + tradeHistory.length}`, c: "#00D4FF" },
+                  { l: "Total Trades", v: `${wallet?.tradeCount || 0}`, c: "#00D4FF" },
                 ].map(m => (
                   <div key={m.l} style={{ ...glass, padding: 18 }}>
                     <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{m.l}</div>

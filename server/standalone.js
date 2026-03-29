@@ -2232,6 +2232,34 @@ function runAutoTradeTick() {
       console.error(`[AutoTrader] Error for user ${userId}:`, err.message);
     }
   }
+
+  // Record equity snapshots for all wallets every ~5 minutes (every 10 ticks at 30s interval)
+  if (autoTradeTickCount % 10 === 0) {
+    const wallets = db.findMany('wallets');
+    const now = new Date();
+    const dateKey = now.toISOString().split('T')[0];
+    const hourKey = now.getHours();
+    for (const wallet of wallets) {
+      // Check if we already have a snapshot for this user/date/hour
+      const existing = db.findOne('snapshots', s => s.user_id === wallet.user_id && s.date === dateKey && s.hour === hourKey);
+      if (existing) {
+        // Update existing snapshot
+        db.update('snapshots', s => s.id === existing.id, {
+          equity: wallet.equity, balance: wallet.balance,
+          unrealized_pnl: wallet.unrealized_pnl, realized_pnl: wallet.realized_pnl,
+          position_count: db.count('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN'),
+        });
+      } else {
+        db.insert('snapshots', {
+          user_id: wallet.user_id,
+          equity: wallet.equity, balance: wallet.balance,
+          unrealized_pnl: wallet.unrealized_pnl, realized_pnl: wallet.realized_pnl,
+          position_count: db.count('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN'),
+          date: dateKey, hour: hourKey,
+        });
+      }
+    }
+  }
 }
 
 /**
@@ -2442,6 +2470,10 @@ api.get('/api/auto-trading/status', auth, (req, res) => {
     startedAt: settings?.data?.autoTrading?.tradingStartedAt || null,
     equity: wallet?.equity || 0,
     balance: wallet?.balance || 0,
+    initialBalance: wallet?.initial_balance || 100000,
+    realizedPnL: wallet?.realized_pnl || 0,
+    unrealizedPnL: wallet?.unrealized_pnl || 0,
+    tradeCount: wallet?.trade_count || 0,
     tickCount: autoTradeTickCount,
   });
 });
