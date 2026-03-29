@@ -8,7 +8,7 @@ import {
   generate2FASecret, verify2FASetup, verify2FACode, is2FAEnabled, disable2FA,
   requestPasswordReset, resetPassword,
 } from '../store/authStore.js';
-import { createWallet, ensureWallet, getWallet, getPositions, getTradeHistory, tickPrices, getMarketPrices } from '../store/walletStore.js';
+import { createWallet, ensureWallet, getWallet, getPositions, getTradeHistory, tickPrices, getMarketPrices, syncFromServer } from '../store/walletStore.js';
 import { recordSnapshot, getPerformanceMetrics, getEquityHistoryByPeriod, getPositionPerformance } from '../store/performanceTracker.js';
 import {
   initFundManager, getFundSettings, updateFundSettings,
@@ -2704,7 +2704,11 @@ function TermsAcceptanceScreen({ user, onAccept }) {
 export default function TwelveTribes_InvestorPortal() {
   // Restore session from localStorage on mount — wallet data persists across logouts
   const savedSession = getSession();
-  if (savedSession) ensureWallet(savedSession); // Ensure wallet exists for restored sessions
+  if (savedSession) {
+    ensureWallet(savedSession);
+    // Hydrate from server — overwrites stale localStorage with authoritative server state
+    syncFromServer(savedSession.id).catch(() => {});
+  }
   const [user, setUser] = useState(savedSession || null);
   const [phase, setPhase] = useState(() => {
     if (!savedSession) return "auth";
@@ -2715,6 +2719,8 @@ export default function TwelveTribes_InvestorPortal() {
   const handleAuth = (authenticatedUser) => {
     // Ensure wallet exists for returning users (creates $100K wallet if missing)
     ensureWallet(authenticatedUser);
+    // Pull authoritative state from server (wallet, positions, trades, agent stats)
+    syncFromServer(authenticatedUser.id).catch(() => {});
     setUser(authenticatedUser);
     // Check if 2FA is required
     if (is2FAEnabled(authenticatedUser.email) && !authenticatedUser.isNewUser) {

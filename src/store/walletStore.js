@@ -352,4 +352,142 @@ export function getDataSource() {
   return walletState.dataSource || 'simulated';
 }
 
+// ═══════ SERVER SYNC — Single Source of Truth ═══════
+const SYNC_API_BASE = (() => {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  return `http://${hostname}:4000/api`;
+})();
+
+function getSyncToken() {
+  try { return localStorage.getItem('12tribes_auth_token') || null; } catch { return null; }
+}
+
+/**
+ * Hydrate local walletState from server database.
+ * Call this on every login / page load so any device sees the same data.
+ */
+export async function syncFromServer(userId) {
+  const token = getSyncToken();
+  if (!token) return false;
+
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    // Parallel fetch: wallet, positions, trade history, agent stats, prices
+    const [walletRes, posRes, histRes, agentRes, priceRes] = await Promise.allSettled([
+      fetch(`${SYNC_API_BASE}/wallet`, { headers, signal: controller.signal }),
+      fetch(`${SYNC_API_BASE}/trading/positions`, { headers, signal: controller.signal }),
+      fetch(`${SYNC_API_BASE}/trading/history`, { headers, signal: controller.signal }),
+      fetch(`${SYNC_API_BASE}/market/agents`, { headers, signal: controller.signal }),
+      fetch(`${SYNC_API_BASE}/market/prices`, { headers, signal: controller.signal }),
+    ]);
+
+    // Wallet
+    if (walletRes.status === 'fulfilled' && walletRes.value.ok) {
+      const w = await walletRes.value.json();
+      walletState.wallets[userId] = {
+        id: userId,
+        name: w.name || '',
+        avatar: w.avatar || '',
+        balance: w.balance ?? INITIAL_BALANCE,
+        initialBalance: w.initialBalance ?? INITIAL_BALANCE,
+        equity: w.equity ?? w.balance ?? INITIAL_BALANCE,
+        unrealizedPnL: w.unrealizedPnL ?? 0,
+        realizedPnL: w.realizedPnL ?? 0,
+        tradeCount: w.tradeCount ?? 0,
+        winCount: w.winCount ?? 0,
+        lossCount: w.lossCount ?? 0,
+        depositAmount: w.initialBalance ?? INITIAL_BALANCE,
+        depositTimestamp: w.depositTimestamp || new Date().toISOString(),
+        createdAt: w.depositTimestamp || new Date().toISOString(),
+      };
+      persistWallets();
+    }
+
+    // Positions (server uses snake_case)
+    if (posRes.status === 'fulfilled' && posRes.value.ok) {
+      const positions = await posRes.value.json();
+      walletState.positions = positions.map(p => ({
+        id: p.id,
+        symbol: p.symbol,
+        side: p.side,
+        quantity: p.quantity,
+        entryPrice: p.entry_price,
+        currentPrice: p.current_price || p.entry_price,
+        investorId: userId,
+        agent: p.agent || 'Oracle',
+        openTime: new Date(p.opened_at).getTime(),
+        openTimestamp: p.opened_at,
+        unrealizedPnL: p.unrealized_pnl || 0,
+        returnPct: p.return_pct || 0,
+        status: 'OPEN',
+      }));
+      persistPositions();
+    }
+
+    // Trade history
+    if (histRes.status === 'fulfilled' && histRes.value.ok) {
+      const trades = await histRes.value.json();
+      walletState.tradeHistory = trades.map(t => ({
+        id: t.id || t.position_id,
+        symbol: t.symbol,
+        side: t.side,
+        quantity: t.quantity,
+        entryPrice: t.entry_price,
+        closePrice: t.close_price,
+        investorId: userId,
+        agent: t.agent || 'Oracle',
+        openTime: new Date(t.opened_at).getTime(),
+        closeTime: new Date(t.closed_at).getTime(),
+        closeTimestamp: t.closed_at,
+        realizedPnL: t.realized_pnl || 0,
+        returnPct: parseFloat(t.return_pct) || 0,
+        status: 'CLOSED',
+      }));
+      persistHistory();
+    }
+
+    // Agent stats
+    if (agentRes.status === 'fulfilled' && agentRes.value.ok) {
+      const agents = await agentRes.value.json();
+      if (Array.isArray(agents)) {
+        agents.forEach(a => {
+          walletState.agentStats[a.agent_name] = {
+            name: a.agent_name,
+            totalTrades: a.total_trades || 0,
+            wins: a.wins || 0,
+            losses: a.losses || 0,
+            totalPnL: a.total_pnl || 0,
+            bestTrade: a.best_trade || 0,
+            worstTrade: a.worst_trade || 0,
+            avgReturn: a.avg_return || 0,
+          };
+        });
+        persistAgentStats();
+      }
+    }
+
+    // Market prices
+    if (priceRes.status === 'fulfilled' && priceRes.value.ok) {
+      const prices = await priceRes.value.json();
+      if (prices && typeof prices === 'object') {
+        Object.entries(prices).forEach(([symbol, price]) => {
+          if (typeof price === 'number') walletState.marketPrices[symbol] = price;
+        });
+      }
+    }
+
+    clearTimeout(timeout);
+    console.log('[WalletStore] Server sync complete — wallet, positions, history, agents hydrated');
+    return true;
+  } catch (err) {
+    clearTimeout(timeout);
+    console.warn('[WalletStore] Server sync failed (using local cache):', err.message);
+    return false;
+  }
+}
+
 export { executeTrade, closePosition, tickPrices, INITIAL_BALANCE, AI_AGENTS };

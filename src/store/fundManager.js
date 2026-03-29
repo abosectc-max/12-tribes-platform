@@ -55,14 +55,14 @@ async function pullSettingsFromServer() {
   return null;
 }
 
-// Available AI agents with distinct trading personalities
+// Available AI agents with distinct roles in the collective
 const AI_AGENTS = [
-  { name: 'Viper', personality: 'momentum' },
-  { name: 'Oracle', personality: 'stable' },
-  { name: 'Spectre', personality: 'volatile' },
-  { name: 'Sentinel', personality: 'conservative' },
-  { name: 'Phoenix', personality: 'recovery' },
-  { name: 'Titan', personality: 'large_position' },
+  { name: 'Viper',    role: 'SIGNAL_SCANNER',        personality: 'momentum' },
+  { name: 'Oracle',   role: 'FUNDAMENTAL_ANALYST',    personality: 'stable' },
+  { name: 'Spectre',  role: 'VOLATILITY_TRADER',      personality: 'volatile' },
+  { name: 'Sentinel', role: 'RISK_MANAGER',           personality: 'conservative' },
+  { name: 'Phoenix',  role: 'RECOVERY_SPECIALIST',    personality: 'recovery' },
+  { name: 'Titan',    role: 'POSITION_SIZER',         personality: 'large_position' },
 ];
 
 // Market symbols by agent personality preference

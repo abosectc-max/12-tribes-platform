@@ -1066,30 +1066,66 @@ const priceInterval = setInterval(() => {
 //   Runs independently of browser — 24/7
 // ═══════════════════════════════════════════
 
+// ─── AGENT DEFINITIONS: Each agent has a DISTINCT role in the collective ───
 const AI_AGENTS = [
-  { name: 'Viper',    personality: 'momentum' },
-  { name: 'Oracle',   personality: 'stable' },
-  { name: 'Spectre',  personality: 'volatile' },
-  { name: 'Sentinel', personality: 'conservative' },
-  { name: 'Phoenix',  personality: 'recovery' },
-  { name: 'Titan',    personality: 'large_position' },
+  {
+    name: 'Viper',
+    role: 'SIGNAL_SCANNER',
+    description: 'Scans momentum and breakout signals across growth/tech',
+    symbols: ['NVDA', 'TSLA', 'META', 'AMD', 'PLTR', 'COIN'],
+    longBias: 0.65,           // 65% long bias (trend following)
+    reasons: { long: 'Momentum breakout detected', short: 'Trend exhaustion — taking profit' },
+  },
+  {
+    name: 'Oracle',
+    role: 'FUNDAMENTAL_ANALYST',
+    description: 'Value investing — analyzes fundamentals, picks stable compounders',
+    symbols: ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'VOO'],
+    longBias: 0.70,           // 70% long bias (value buyer)
+    reasons: { long: 'Undervalued entry — strong fundamentals', short: 'Overvaluation detected — trimming' },
+  },
+  {
+    name: 'Spectre',
+    role: 'VOLATILITY_TRADER',
+    description: 'Exploits volatility in crypto and high-beta assets',
+    symbols: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'ADA'],
+    longBias: 0.55,           // 55% long bias (balanced vol trader)
+    reasons: { long: 'Vol breakout — riding momentum', short: 'Mean reversion short — overbought' },
+  },
+  {
+    name: 'Sentinel',
+    role: 'RISK_MANAGER',
+    description: 'Monitors portfolio risk, hedges, closes losing positions',
+    symbols: ['GLD', 'TLT', 'SPY', 'QQQ', 'AAPL', 'MSFT'],
+    longBias: 0.60,
+    isRiskManager: true,       // Special role: reviews open positions for risk
+    reasons: { long: 'Hedging — defensive position', short: 'Risk-off rotation — reducing exposure' },
+  },
+  {
+    name: 'Phoenix',
+    role: 'RECOVERY_SPECIALIST',
+    description: 'Finds turnaround plays in beaten-down sectors',
+    symbols: ['F', 'BAC', 'WISH', 'RIOT', 'GE', 'CCIV'],
+    longBias: 0.60,
+    reasons: { long: 'Recovery catalyst identified', short: 'Dead cat bounce — exiting' },
+  },
+  {
+    name: 'Titan',
+    role: 'POSITION_SIZER',
+    description: 'Manages position sizes, scales winners, trims losers',
+    symbols: ['SPY', 'QQQ', 'IWM', 'EEM', 'AAPL', 'MSFT'],
+    longBias: 0.55,
+    isPositionManager: true,   // Special role: scales existing positions
+    reasons: { long: 'Scaling into winner — conviction high', short: 'Sector rotation — reallocating capital' },
+  },
 ];
-
-const AGENT_SYMBOLS = {
-  momentum:       ['NVDA', 'TSLA', 'META', 'AMD', 'PLTR', 'COIN'],
-  stable:         ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'VOO'],
-  conservative:   ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'GLD'],
-  volatile:       ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'ADA'],
-  recovery:       ['F', 'BAC', 'WISH', 'RIOT', 'GE', 'CCIV'],
-  large_position: ['SPY', 'QQQ', 'IWM', 'EEM', 'AAPL', 'MSFT'],
-};
 
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
-  maxOpenPositions: 8,         // Per user
-  maxDailyTrades: 50,          // Per user
-  positionSizePct: 0.03,       // 3% of equity per trade
-  conservativeSkipRate: 0.20,  // Sentinel skips 20% of ticks
+  maxOpenPositions: 12,        // Per user — raised for 6 concurrent agents
+  maxDailyTrades: 80,          // Per user — 6 agents need room
+  positionSizePct: 0.025,      // 2.5% of equity per trade (conservative with 6 agents)
+  consensusThreshold: 0.5,     // 50%+ agents must agree for trade
 };
 
 let autoTradeTickCount = 0;
@@ -1097,7 +1133,6 @@ let autoTradeTickCount = 0;
 function runAutoTradeTick() {
   autoTradeTickCount++;
 
-  // Find all users with auto-trading enabled via fund_settings
   const allFundSettings = db.findMany('fund_settings');
 
   for (const settingsRecord of allFundSettings) {
@@ -1106,86 +1141,181 @@ function runAutoTradeTick() {
     if (!data || !data.autoTrading || !data.autoTrading.isAutoTrading) continue;
 
     try {
-      serverAgentTrade(userId, data);
+      runAllAgents(userId, data);
     } catch (err) {
       console.error(`[AutoTrader] Error for user ${userId}:`, err.message);
     }
   }
 }
 
-function serverAgentTrade(userId, fundData) {
+/**
+ * ALL 6 agents run concurrently each tick.
+ * Each agent evaluates its own symbols, then the collective makes consensus decisions.
+ */
+function runAllAgents(userId, fundData) {
   const wallet = db.findOne('wallets', w => w.user_id === userId);
   if (!wallet || wallet.kill_switch_active) return;
 
-  // Pick random agent
-  const activeAgents = fundData.autoTrading.agentsActive || AI_AGENTS.map(a => a.name);
-  if (activeAgents.length === 0) return;
-
-  const agentName = activeAgents[Math.floor(Math.random() * activeAgents.length)];
-  const agent = AI_AGENTS.find(a => a.name === agentName);
-  if (!agent) return;
-
-  // Conservative agent sometimes skips
-  if (agent.personality === 'conservative' && Math.random() < AUTO_TRADE_CONFIG.conservativeSkipRate) return;
-
-  // Get tradable symbols for this agent's personality
-  const preferredSymbols = AGENT_SYMBOLS[agent.personality] || AGENT_SYMBOLS.stable;
-  const tradable = preferredSymbols.filter(s => marketPrices[s] !== undefined);
-  if (tradable.length === 0) return;
-
-  const symbol = tradable[Math.floor(Math.random() * tradable.length)];
-  const price = marketPrices[symbol];
-
-  // Check daily trade limit
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
   const todayTrades = db.count('trades', t => t.user_id === userId && new Date(t.closed_at) >= todayStart);
   const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
   if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) return;
 
-  // Check open positions
   const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
 
-  // Close existing position (50% chance if we have open ones from same agent)
-  const agentPositions = openPositions.filter(p => p.agent === agentName);
-  if (agentPositions.length > 0 && Math.random() < 0.5) {
-    const posToClose = agentPositions[Math.floor(Math.random() * agentPositions.length)];
-    closePosition(userId, posToClose.id);
-    logAutoTrade(userId, agentName, symbol, 'CLOSE', 0, 'Position management');
-    return;
+  // ─── PHASE 1: Sentinel (Risk Manager) reviews open positions ───
+  if (openPositions.length > 0) {
+    sentinelRiskReview(userId, openPositions);
   }
 
-  // Cap open positions
-  if (openPositions.length >= AUTO_TRADE_CONFIG.maxOpenPositions) {
-    // Close oldest position
-    const sorted = openPositions.sort((a, b) => (a.opened_at || '').localeCompare(b.opened_at || ''));
-    if (sorted.length > 0) closePosition(userId, sorted[0].id);
-    return;
+  // ─── PHASE 2: Titan (Position Manager) scales/trims existing positions ───
+  if (openPositions.length > 0) {
+    titanPositionManagement(userId, openPositions, wallet);
   }
 
-  // Determine side based on agent personality
-  const rand = Math.random();
-  let side, reason;
-  if (agent.personality === 'momentum') {
-    side = rand < 0.65 ? 'LONG' : 'SHORT'; reason = rand < 0.65 ? 'Momentum signal detected' : 'Trend exhaustion short';
-  } else if (agent.personality === 'stable' || agent.personality === 'conservative') {
-    side = rand < 0.6 ? 'LONG' : 'SHORT'; reason = rand < 0.6 ? 'Value entry point' : 'Portfolio rebalance';
-  } else if (agent.personality === 'volatile') {
-    side = rand < 0.55 ? 'LONG' : 'SHORT'; reason = rand < 0.55 ? 'Volatility breakout' : 'Mean reversion short';
-  } else if (agent.personality === 'recovery') {
-    side = rand < 0.6 ? 'LONG' : 'SHORT'; reason = rand < 0.6 ? 'Recovery signal' : 'Dead cat bounce short';
-  } else {
-    side = rand < 0.55 ? 'LONG' : 'SHORT'; reason = rand < 0.55 ? 'Large position entry' : 'Sector rotation';
+  // ─── PHASE 3: All signal agents generate trade proposals ───
+  const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+  const proposals = [];
+
+  for (const agent of signalAgents) {
+    const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined);
+    if (tradable.length === 0) continue;
+
+    // Each agent picks their top opportunity
+    const symbol = tradable[Math.floor(Math.random() * tradable.length)];
+    const rand = Math.random();
+    const side = rand < agent.longBias ? 'LONG' : 'SHORT';
+    const confidence = 0.5 + Math.random() * 0.5; // 0.5-1.0
+
+    proposals.push({
+      agent: agent.name,
+      symbol,
+      side,
+      confidence,
+      reason: side === 'LONG' ? agent.reasons.long : agent.reasons.short,
+    });
   }
 
-  // Position sizing — 3% of equity
-  const equity = wallet.equity || wallet.balance || 100000;
-  const maxPositionValue = equity * AUTO_TRADE_CONFIG.positionSizePct;
-  const quantity = Math.max(1, Math.floor(maxPositionValue / price));
+  // ─── PHASE 4: Consensus — group proposals by symbol, execute if consensus ───
+  const symbolVotes = {};
+  for (const p of proposals) {
+    if (!symbolVotes[p.symbol]) symbolVotes[p.symbol] = { long: [], short: [], total: 0 };
+    symbolVotes[p.symbol].total++;
+    if (p.side === 'LONG') symbolVotes[p.symbol].long.push(p);
+    else symbolVotes[p.symbol].short.push(p);
+  }
 
-  // Execute
-  const result = executeTrade(userId, { symbol, side, quantity, agent: agentName, price });
-  if (result.success) {
-    logAutoTrade(userId, agentName, symbol, side, quantity, reason);
+  // Execute trades where multiple agents agree (or single high-confidence)
+  for (const [symbol, votes] of Object.entries(symbolVotes)) {
+    if (openPositions.length >= AUTO_TRADE_CONFIG.maxOpenPositions) break;
+
+    // Already have a position in this symbol? Skip new entry.
+    if (openPositions.some(p => p.symbol === symbol)) continue;
+
+    const longVotes = votes.long.length;
+    const shortVotes = votes.short.length;
+    const totalVoters = proposals.length;
+
+    let side, reason, leadAgent;
+
+    if (longVotes > shortVotes && longVotes / totalVoters >= AUTO_TRADE_CONFIG.consensusThreshold) {
+      side = 'LONG';
+      const best = votes.long.sort((a, b) => b.confidence - a.confidence)[0];
+      leadAgent = best.agent;
+      reason = `Consensus LONG (${longVotes}/${totalVoters} agents) — ${best.reason}`;
+    } else if (shortVotes > longVotes && shortVotes / totalVoters >= AUTO_TRADE_CONFIG.consensusThreshold) {
+      side = 'SHORT';
+      const best = votes.short.sort((a, b) => b.confidence - a.confidence)[0];
+      leadAgent = best.agent;
+      reason = `Consensus SHORT (${shortVotes}/${totalVoters} agents) — ${best.reason}`;
+    } else if (votes.total === 1) {
+      // Single agent proposal — execute if confidence > 0.75
+      const single = votes.long[0] || votes.short[0];
+      if (single.confidence < 0.75) continue;
+      side = single.side;
+      leadAgent = single.agent;
+      reason = `Solo signal (${(single.confidence * 100).toFixed(0)}% confidence) — ${single.reason}`;
+    } else {
+      continue; // No consensus
+    }
+
+    // Position sizing
+    const price = marketPrices[symbol];
+    if (!price) continue;
+    const equity = wallet.equity || wallet.balance || 100000;
+    const maxPosValue = equity * AUTO_TRADE_CONFIG.positionSizePct;
+    const quantity = Math.max(1, Math.floor(maxPosValue / price));
+
+    const result = executeTrade(userId, { symbol, side, quantity, agent: leadAgent, price });
+    if (result.success) {
+      logAutoTrade(userId, leadAgent, symbol, side, quantity, reason);
+    }
+  }
+}
+
+/**
+ * Sentinel agent — reviews all open positions for risk and closes bad ones
+ */
+function sentinelRiskReview(userId, openPositions) {
+  for (const pos of openPositions) {
+    const currentPrice = marketPrices[pos.symbol] || pos.current_price;
+    const dir = pos.side === 'LONG' ? 1 : -1;
+    const pnlPct = ((currentPrice / pos.entry_price) - 1) * 100 * dir;
+
+    // Close if loss exceeds -5% (stop-loss)
+    if (pnlPct < -5) {
+      closePosition(userId, pos.id);
+      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+        `Risk stop — ${pnlPct.toFixed(1)}% loss exceeds threshold`);
+      continue;
+    }
+
+    // Close if profit exceeds +10% (take-profit)
+    if (pnlPct > 10) {
+      closePosition(userId, pos.id);
+      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+        `Take profit — locking in ${pnlPct.toFixed(1)}% gain`);
+      continue;
+    }
+
+    // Close if held too long (> 2 hours with no significant gain)
+    const holdMs = Date.now() - new Date(pos.opened_at).getTime();
+    if (holdMs > 7200000 && pnlPct < 1) {
+      closePosition(userId, pos.id);
+      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+        `Time exit — held ${Math.round(holdMs / 60000)}min with ${pnlPct.toFixed(1)}% return`);
+    }
+  }
+}
+
+/**
+ * Titan agent — manages position sizing, scales winners
+ */
+function titanPositionManagement(userId, openPositions, wallet) {
+  // Only act on ~20% of ticks to avoid over-trading
+  if (Math.random() > 0.2) return;
+
+  for (const pos of openPositions) {
+    const currentPrice = marketPrices[pos.symbol] || pos.current_price;
+    const dir = pos.side === 'LONG' ? 1 : -1;
+    const pnlPct = ((currentPrice / pos.entry_price) - 1) * 100 * dir;
+
+    // Scale into winners: if up > 3%, add to position (if room)
+    if (pnlPct > 3 && openPositions.length < AUTO_TRADE_CONFIG.maxOpenPositions) {
+      const equity = wallet.equity || wallet.balance || 100000;
+      const addValue = equity * 0.015; // Add 1.5% of equity
+      const addQty = Math.max(1, Math.floor(addValue / currentPrice));
+
+      const result = executeTrade(userId, {
+        symbol: pos.symbol, side: pos.side, quantity: addQty,
+        agent: 'Titan', price: currentPrice,
+      });
+      if (result.success) {
+        logAutoTrade(userId, 'Titan', pos.symbol, pos.side, addQty,
+          `Scaling winner — adding to ${pnlPct.toFixed(1)}% gainer`);
+      }
+      break; // Only scale one position per tick
+    }
   }
 }
 
@@ -1241,7 +1371,7 @@ api.get('/api/auto-trading/status', auth, (req, res) => {
     isActive,
     openPositions: positions.length,
     todayTrades,
-    agents: AI_AGENTS.map(a => a.name),
+    agents: AI_AGENTS.map(a => ({ name: a.name, role: a.role, description: a.description })),
     activeAgents: settings?.data?.autoTrading?.agentsActive || [],
     tradingMode: settings?.data?.autoTrading?.tradingMode || 'balanced',
     startedAt: settings?.data?.autoTrading?.tradingStartedAt || null,
