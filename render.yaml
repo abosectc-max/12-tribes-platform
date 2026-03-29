@@ -3,11 +3,17 @@ services:
     name: 12-tribes-api
     runtime: node
     region: oregon
-    plan: free
+    plan: starter
     buildCommand: echo "No build needed"
     startCommand: node server/standalone.js
+    disk:
+      name: tribes-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_URL
         value: https://12-tribes-platform.vercel.app
+      - key: DATA_DIR
+        value: /data

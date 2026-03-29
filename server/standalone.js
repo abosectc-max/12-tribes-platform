@@ -22,7 +22,7 @@ const __dirname = dirname(__filename);
 const PORT = parseInt(process.env.PORT || '4000', 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const JWT_SECRET = process.env.JWT_SECRET || 'tribes-dev-secret-' + randomBytes(16).toString('hex');
-const DATA_DIR = join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR || join(__dirname, 'data');
 const INITIAL_BALANCE = 100000;  // $100,000 virtual wallet
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
@@ -2018,3 +2018,11 @@ function shutdown(sig) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// ─── Crash protection: prevent unhandled errors from killing the process ───
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled rejection:', reason);
+});
