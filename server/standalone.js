@@ -1943,6 +1943,120 @@ api.get('/api/market/prices', (req, res) => {
   json(res, 200, { prices: marketPrices, symbols: Object.keys(marketPrices), timestamp: Date.now() });
 });
 
+// ─── MARKET: RESEARCH ───
+// Comprehensive research endpoint — technical analysis, AI signals, and agent insights
+api.get('/api/market/research/:symbol', (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  const price = marketPrices[symbol];
+  if (price === undefined) {
+    return json(res, 404, { error: `Symbol "${symbol}" not found. Available: ${Object.keys(marketPrices).join(', ')}` });
+  }
+
+  const hist = priceHistory[symbol] || [price];
+  const regime = symbolRegimes[symbol] || 'ranging';
+
+  // Technical indicators
+  const sma10 = sma(hist, 10);
+  const sma30 = sma(hist, 30);
+  const ema12 = ema(hist, 12);
+  const ema26 = ema(hist, 26);
+  const macd = ema12 - ema26;
+  const currentRsi = rsi(hist);
+  const mom20 = momentum(hist, 20);
+  const vol20 = volatility(hist, 20);
+
+  // Support/Resistance from price history
+  const sortedPrices = [...hist].sort((a, b) => a - b);
+  const support = sortedPrices[Math.floor(sortedPrices.length * 0.1)] || price * 0.97;
+  const resistance = sortedPrices[Math.floor(sortedPrices.length * 0.9)] || price * 1.03;
+
+  // Session high/low
+  const high = Math.max(...hist);
+  const low = Math.min(...hist);
+  const open = hist[0] || price;
+  const changePct = open > 0 ? ((price - open) / open * 100) : 0;
+
+  // Classify asset
+  const isCrypto = ['BTC', 'ETH', 'SOL', 'AVAX', 'DOGE', 'XRP', 'ADA'].includes(symbol);
+  const isFx = symbol.includes('/');
+  const isEtf = ['SPY', 'QQQ', 'GLD', 'TLT', 'IWM', 'EEM', 'VOO'].includes(symbol);
+  const assetClass = isCrypto ? 'Cryptocurrency' : isFx ? 'Forex' : isEtf ? 'ETF' : 'Stock';
+
+  // Which AI agents track this symbol
+  const trackingAgents = AI_AGENTS.filter(a => a.symbols.includes(symbol)).map(a => ({
+    name: a.name, role: a.role, description: a.description,
+  }));
+
+  // Generate AI signal assessment
+  let signalStrength = 0; // -100 to +100
+  let signals = [];
+
+  // RSI signal
+  if (currentRsi > 70) { signals.push({ indicator: 'RSI', signal: 'OVERBOUGHT', detail: `RSI at ${currentRsi.toFixed(1)} — potential reversal zone`, weight: -25 }); signalStrength -= 25; }
+  else if (currentRsi < 30) { signals.push({ indicator: 'RSI', signal: 'OVERSOLD', detail: `RSI at ${currentRsi.toFixed(1)} — potential bounce zone`, weight: 25 }); signalStrength += 25; }
+  else { signals.push({ indicator: 'RSI', signal: 'NEUTRAL', detail: `RSI at ${currentRsi.toFixed(1)} — mid-range`, weight: 0 }); }
+
+  // Trend signal
+  if (regime === 'trending_up') { signals.push({ indicator: 'TREND', signal: 'BULLISH', detail: 'Short-term SMA above long-term SMA with positive momentum', weight: 20 }); signalStrength += 20; }
+  else if (regime === 'trending_down') { signals.push({ indicator: 'TREND', signal: 'BEARISH', detail: 'Short-term SMA below long-term SMA with negative momentum', weight: -20 }); signalStrength -= 20; }
+  else { signals.push({ indicator: 'TREND', signal: 'RANGING', detail: 'No clear trend direction — market in consolidation', weight: 0 }); }
+
+  // MACD signal
+  if (macd > 0 && ema12 > ema26) { signals.push({ indicator: 'MACD', signal: 'BULLISH', detail: 'MACD positive — bullish crossover in effect', weight: 15 }); signalStrength += 15; }
+  else if (macd < 0) { signals.push({ indicator: 'MACD', signal: 'BEARISH', detail: 'MACD negative — bearish pressure', weight: -15 }); signalStrength -= 15; }
+
+  // Momentum signal
+  if (mom20 > 1) { signals.push({ indicator: 'MOMENTUM', signal: 'STRONG', detail: `${mom20.toFixed(2)}% gain over 20 periods`, weight: 15 }); signalStrength += 15; }
+  else if (mom20 < -1) { signals.push({ indicator: 'MOMENTUM', signal: 'WEAK', detail: `${mom20.toFixed(2)}% decline over 20 periods`, weight: -15 }); signalStrength -= 15; }
+
+  // Volatility signal
+  if (vol20 > 3) { signals.push({ indicator: 'VOLATILITY', signal: 'HIGH', detail: `${vol20.toFixed(2)}% — elevated risk, wider stops recommended`, weight: -5 }); signalStrength -= 5; }
+  else { signals.push({ indicator: 'VOLATILITY', signal: 'NORMAL', detail: `${vol20.toFixed(2)}% — standard conditions`, weight: 0 }); }
+
+  // Support/Resistance proximity
+  const distToSupport = ((price - support) / price * 100);
+  const distToResistance = ((resistance - price) / price * 100);
+  if (distToSupport < 0.5) { signals.push({ indicator: 'SUPPORT', signal: 'NEAR_SUPPORT', detail: `Price ${distToSupport.toFixed(2)}% from support at $${support.toFixed(2)}`, weight: 10 }); signalStrength += 10; }
+  if (distToResistance < 0.5) { signals.push({ indicator: 'RESISTANCE', signal: 'NEAR_RESISTANCE', detail: `Price ${distToResistance.toFixed(2)}% from resistance at $${resistance.toFixed(2)}`, weight: -10 }); signalStrength -= 10; }
+
+  // Clamp signal strength
+  signalStrength = Math.max(-100, Math.min(100, signalStrength));
+
+  // AI verdict
+  let verdict, verdictDetail;
+  if (signalStrength >= 30) { verdict = 'BULLISH'; verdictDetail = 'Multiple indicators align bullish. Consider long entry with tight risk management.'; }
+  else if (signalStrength >= 10) { verdict = 'LEAN_BULLISH'; verdictDetail = 'Slight bullish bias. Wait for confirmation before committing size.'; }
+  else if (signalStrength <= -30) { verdict = 'BEARISH'; verdictDetail = 'Multiple indicators signal bearish pressure. Consider reducing exposure or short entry.'; }
+  else if (signalStrength <= -10) { verdict = 'LEAN_BEARISH'; verdictDetail = 'Slight bearish bias. Monitor for breakdown before acting.'; }
+  else { verdict = 'NEUTRAL'; verdictDetail = 'No clear directional bias. Range-bound conditions favor patience or mean-reversion strategies.'; }
+
+  json(res, 200, {
+    symbol, assetClass, price, open, high, low,
+    changePct: roundTo(changePct, 4),
+    technicals: {
+      sma10: roundTo(sma10, 4), sma30: roundTo(sma30, 4),
+      ema12: roundTo(ema12, 4), ema26: roundTo(ema26, 4),
+      macd: roundTo(macd, 4), rsi: roundTo(currentRsi, 2),
+      momentum: roundTo(mom20, 4), volatility: roundTo(vol20, 4),
+      regime,
+    },
+    levels: { support: roundTo(support, 4), resistance: roundTo(resistance, 4) },
+    signals,
+    aiVerdict: { verdict, signalStrength, detail: verdictDetail },
+    agents: trackingAgents,
+    priceHistory: hist.slice(-60).map((p, i) => ({ tick: i, price: p })),
+    timestamp: Date.now(),
+  });
+});
+
+// ─── MARKET: SEARCH SYMBOLS ───
+api.get('/api/market/search', (req, res) => {
+  const q = (req.query.q || '').toUpperCase();
+  if (!q) return json(res, 200, { results: Object.keys(marketPrices) });
+  const results = Object.keys(marketPrices).filter(s => s.includes(q));
+  json(res, 200, { results });
+});
+
 // ─── MARKET: AGENTS ───
 api.get('/api/market/agents', (req, res) => {
   json(res, 200, db.findMany('agent_stats'));
@@ -2074,12 +2188,15 @@ const AI_AGENTS = [
 
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
-  maxOpenPositions: 15,        // Per user — raised for aggressive growth
-  maxDailyTrades: 150,         // Per user — high-frequency for compounding
-  baseSizePct: 0.04,           // 4% of equity per trade (aggressive growth)
-  winnerSizePct: 0.06,         // 6% for high-conviction signals
+  maxOpenPositions: 12,        // Per user — slightly reduced for quality > quantity
+  maxDailyTrades: 120,         // Per user — focused on high-quality setups
+  baseSizePct: 0.035,          // 3.5% of equity per trade (balanced growth)
+  winnerSizePct: 0.055,        // 5.5% for high-conviction signals
+  eliteSizePct: 0.07,          // 7% for multi-indicator confluence trades
   consensusThreshold: 0.3,     // Lower threshold — act on strong signals fast
-  minSignalStrength: 0.6,      // Minimum signal quality to trade
+  minSignalStrength: 0.65,     // Slightly higher minimum — filter out marginal trades
+  maxCorrelatedPositions: 3,   // Max positions in same asset class
+  maxDrawdownPct: 15,          // Kill switch trigger at -15% from peak equity
 };
 
 let autoTradeTickCount = 0;
@@ -2137,82 +2254,114 @@ function updatePerformanceFeedback(agentName, symbol, side, pnl) {
   else ap.adaptiveConfidence = 0.8 + recentWinRate * 0.4;
 }
 
-// ─── Signal Quality Scoring ───
-// Uses technical indicators to generate a signal score [-1, +1]
-// Positive = bullish, Negative = bearish, abs value = strength
+// ─── Signal Quality Scoring v2 ───
+// Multi-indicator confluence system: more agreement = stronger signal
+// Tracks indicator alignment count for position sizing tiers
 function computeSignal(symbol, agentStyle) {
   const hist = priceHistory[symbol];
-  if (!hist || hist.length < 30) return { score: 0, reason: 'Insufficient data' };
+  if (!hist || hist.length < 30) return { score: 0, reason: 'Insufficient data', confluence: 0 };
 
   const price = marketPrices[symbol];
   const sma10 = sma(hist, 10);
   const sma30 = sma(hist, 30);
   const ema10 = ema(hist, 10);
+  const ema12 = ema(hist, 12);
+  const ema26 = ema(hist, 26);
+  const macdVal = ema12 - ema26;
   const rsiVal = rsi(hist, 14);
   const mom = momentum(hist, 20);
+  const mom10 = momentum(hist, 10); // short-term momentum
   const vol = volatility(hist, 20);
   const regime = symbolRegimes[symbol];
 
   let score = 0;
   let reasons = [];
+  let confluenceBullish = 0; // count of aligned bullish indicators
+  let confluenceBearish = 0; // count of aligned bearish indicators
 
-  // Trend following signals
+  // ─── TREND SIGNALS ───
   if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'FUNDAMENTAL_ANALYST') {
-    if (sma10 > sma30 && mom > 0.1) { score += 0.35; reasons.push('Uptrend (SMA cross)'); }
-    else if (sma10 < sma30 && mom < -0.1) { score -= 0.35; reasons.push('Downtrend (SMA cross)'); }
+    // SMA crossover
+    if (sma10 > sma30 && mom > 0.1) { score += 0.3; confluenceBullish++; reasons.push('Uptrend (SMA cross)'); }
+    else if (sma10 < sma30 && mom < -0.1) { score -= 0.3; confluenceBearish++; reasons.push('Downtrend (SMA cross)'); }
 
-    if (ema10 > price * 0.998 && ema10 < price * 1.005) {
-      // Price near EMA support in uptrend = buy signal
-      if (regime === 'trending_up') { score += 0.25; reasons.push('EMA support bounce'); }
+    // EMA support/resistance bounce
+    if (ema10 > price * 0.998 && ema10 < price * 1.005 && regime === 'trending_up') {
+      score += 0.2; confluenceBullish++; reasons.push('EMA support bounce');
     }
+
+    // MACD crossover signal
+    if (macdVal > 0 && ema12 > ema26) { score += 0.15; confluenceBullish++; reasons.push('MACD bullish'); }
+    else if (macdVal < 0 && ema12 < ema26) { score -= 0.15; confluenceBearish++; reasons.push('MACD bearish'); }
   }
 
-  // Momentum signals
+  // ─── MOMENTUM SIGNALS ───
   if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'VOLATILITY_TRADER') {
-    if (mom > 0.5) { score += 0.3; reasons.push(`Momentum +${mom.toFixed(1)}%`); }
-    else if (mom < -0.5) { score -= 0.3; reasons.push(`Momentum ${mom.toFixed(1)}%`); }
+    if (mom > 0.5) { score += 0.25; confluenceBullish++; reasons.push(`Momentum +${mom.toFixed(1)}%`); }
+    else if (mom < -0.5) { score -= 0.25; confluenceBearish++; reasons.push(`Momentum ${mom.toFixed(1)}%`); }
+
+    // Short-term acceleration — momentum of momentum
+    if (mom10 > 0.2 && mom > 0) { score += 0.1; reasons.push('Accelerating upward'); }
+    else if (mom10 < -0.2 && mom < 0) { score -= 0.1; reasons.push('Accelerating downward'); }
   }
 
-  // RSI signals
-  if (rsiVal < 30) { score += 0.2; reasons.push(`RSI oversold (${rsiVal.toFixed(0)})`); }
-  else if (rsiVal > 70) { score -= 0.15; reasons.push(`RSI overbought (${rsiVal.toFixed(0)})`); }
-  else if (rsiVal > 45 && rsiVal < 55 && regime === 'trending_up') { score += 0.1; reasons.push('RSI neutral in uptrend'); }
+  // ─── RSI SIGNALS (improved with divergence detection) ───
+  if (rsiVal < 28) { score += 0.25; confluenceBullish++; reasons.push(`RSI deeply oversold (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal < 35 && mom10 > 0) { score += 0.15; confluenceBullish++; reasons.push(`RSI recovering from oversold (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 72) { score -= 0.2; confluenceBearish++; reasons.push(`RSI overbought (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 65 && mom10 < 0) { score -= 0.1; confluenceBearish++; reasons.push(`RSI fading from overbought (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 45 && rsiVal < 55 && regime === 'trending_up') { score += 0.08; reasons.push('RSI neutral in uptrend'); }
 
-  // Regime bonus
-  if (regime === 'trending_up') { score += 0.15; reasons.push('Bullish regime'); }
-  else if (regime === 'trending_down') { score -= 0.15; reasons.push('Bearish regime'); }
+  // ─── REGIME BONUS ───
+  if (regime === 'trending_up') { score += 0.12; confluenceBullish++; reasons.push('Bullish regime'); }
+  else if (regime === 'trending_down') { score -= 0.12; confluenceBearish++; reasons.push('Bearish regime'); }
 
-  // Volatility filter — higher vol = higher reward opportunity
+  // ─── VOLATILITY CONTEXT ───
   if (vol > 0.5 && agentStyle === 'VOLATILITY_TRADER') {
-    score *= 1.2;
-    reasons.push(`High vol (${vol.toFixed(1)}%)`);
+    score *= 1.2; reasons.push(`High vol (${vol.toFixed(1)}%)`);
+  }
+  // Penalize low-volatility environments for momentum traders
+  if (vol < 0.15 && (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'VOLATILITY_TRADER')) {
+    score *= 0.7; reasons.push('Low vol — reduced conviction');
   }
 
-  // Recovery specialist — looks for oversold bounces
+  // ─── RECOVERY SPECIALIST — oversold bounces with confluence ───
   if (agentStyle === 'RECOVERY_SPECIALIST') {
-    if (rsiVal < 25 && mom < -0.5) { score += 0.4; reasons.push('Deep oversold — recovery play'); }
-    if (rsiVal < 35 && regime === 'ranging') { score += 0.2; reasons.push('Mean reversion setup'); }
+    if (rsiVal < 25 && mom < -0.5) { score += 0.4; confluenceBullish++; reasons.push('Deep oversold — recovery play'); }
+    if (rsiVal < 35 && regime === 'ranging' && mom10 > 0) { score += 0.25; confluenceBullish++; reasons.push('Mean reversion setup with momentum shift'); }
+    if (rsiVal < 35 && regime === 'ranging') { score += 0.15; reasons.push('Mean reversion setup'); }
   }
 
-  // Symbol performance bias — prefer historically profitable symbols/sides
+  // ─── MULTI-INDICATOR CONFLUENCE BONUS ───
+  // When 3+ indicators agree, the signal is much higher quality
+  const confluence = Math.max(confluenceBullish, confluenceBearish);
+  if (confluence >= 4) { score *= 1.4; reasons.push(`Strong confluence (${confluence} indicators)`); }
+  else if (confluence >= 3) { score *= 1.2; reasons.push(`Good confluence (${confluence} indicators)`); }
+
+  // ─── HISTORICAL PERFORMANCE BIAS ───
   const sp = getSymbolPerf(symbol);
   const totalSymTrades = sp.wins + sp.losses;
   if (totalSymTrades > 5) {
     const symWinRate = sp.wins / totalSymTrades;
     if (symWinRate > 0.6) { score *= 1.15; reasons.push(`High win-rate symbol (${(symWinRate*100).toFixed(0)}%)`); }
-    else if (symWinRate < 0.35) { score *= 0.7; reasons.push(`Low win-rate — reduced size`); }
+    else if (symWinRate < 0.3) { score *= 0.5; reasons.push(`Poor symbol — heavily reduced`); }
+    else if (symWinRate < 0.4) { score *= 0.75; reasons.push(`Low win-rate — reduced size`); }
 
     // Prefer the historically winning side
     const longWR = sp.longWins / Math.max(1, sp.longWins + sp.longLosses);
     const shortWR = sp.shortWins / Math.max(1, sp.shortWins + sp.shortLosses);
-    if (score > 0 && longWR > 0.6) score *= 1.1;
-    if (score < 0 && shortWR > 0.6) score *= 1.1;
+    if (score > 0 && longWR > 0.55) score *= 1.1;
+    if (score < 0 && shortWR > 0.55) score *= 1.1;
+    // Avoid sides with very poor track record
+    if (score > 0 && longWR < 0.3 && (sp.longWins + sp.longLosses) > 3) { score *= 0.5; reasons.push('Poor long history — dampened'); }
+    if (score < 0 && shortWR < 0.3 && (sp.shortWins + sp.shortLosses) > 3) { score *= 0.5; reasons.push('Poor short history — dampened'); }
   }
 
   return {
     score: Math.max(-1, Math.min(1, score)),
     reason: reasons.join(' | ') || 'No clear signal',
     indicators: { sma10, sma30, rsiVal, mom, vol, regime },
+    confluence,
   };
 }
 
@@ -2312,28 +2461,63 @@ function runAllAgents(userId, fundData) {
   // ─── PHASE 3: Rank signals by strength, execute top opportunities ───
   allSignals.sort((a, b) => Math.abs(b.adjustedScore) - Math.abs(a.adjustedScore));
 
+  // Asset class categorization for correlation limiting
+  const getAssetClass = (sym) => {
+    if (['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(sym)) return 'crypto';
+    if (sym.includes('/')) return 'forex';
+    if (['SPY','QQQ','GLD','TLT','IWM','EEM','VOO'].includes(sym)) return 'etf';
+    return 'stock';
+  };
+
   for (const signal of allSignals) {
     if (openPositions.length >= AUTO_TRADE_CONFIG.maxOpenPositions) break;
 
     // Skip if already have position in this symbol
     if (openPositions.some(p => p.symbol === signal.symbol)) continue;
 
+    // Correlation limiting — max positions per asset class
+    const assetClass = getAssetClass(signal.symbol);
+    const classCount = openPositions.filter(p => getAssetClass(p.symbol) === assetClass).length;
+    if (classCount >= AUTO_TRADE_CONFIG.maxCorrelatedPositions) continue;
+
     const side = signal.adjustedScore > 0 ? 'LONG' : 'SHORT';
     const strength = Math.abs(signal.adjustedScore);
 
-    // Dynamic position sizing — stronger signals get larger positions
+    // Tiered position sizing based on signal confluence
     const price = marketPrices[signal.symbol];
     if (!price) continue;
     const equity = wallet.equity || wallet.balance || 100000;
-    const sizePct = strength > 0.8 ? AUTO_TRADE_CONFIG.winnerSizePct : AUTO_TRADE_CONFIG.baseSizePct;
+
+    // Drawdown protection — reduce size when in drawdown
+    const drawdownPct = wallet.initial_balance > 0
+      ? ((equity / wallet.initial_balance) - 1) * 100 : 0;
+    const drawdownMultiplier = drawdownPct < -10 ? 0.5 : drawdownPct < -5 ? 0.75 : 1.0;
+
+    // Kill switch check
+    if (drawdownPct < -AUTO_TRADE_CONFIG.maxDrawdownPct) {
+      wallet.kill_switch_active = true;
+      db._save('wallets');
+      console.log(`[AutoTrader] KILL SWITCH for user ${userId} — drawdown ${drawdownPct.toFixed(1)}%`);
+      break;
+    }
+
+    // Confluence-based sizing: elite > winner > base
+    let sizePct;
+    if (signal.confluence >= 4 && strength > 0.8) sizePct = AUTO_TRADE_CONFIG.eliteSizePct;
+    else if (signal.confluence >= 3 || strength > 0.8) sizePct = AUTO_TRADE_CONFIG.winnerSizePct;
+    else sizePct = AUTO_TRADE_CONFIG.baseSizePct;
+
+    sizePct *= drawdownMultiplier;
+
     const maxPosValue = equity * sizePct;
     const quantity = Math.max(1, Math.floor(maxPosValue / price));
 
     const result = executeTrade(userId, { symbol: signal.symbol, side, quantity, agent: signal.agent, price });
     if (result.success) {
-      const reason = `${side} signal (${(strength * 100).toFixed(0)}% strength) — ${signal.reason}`;
+      const tier = signal.confluence >= 4 ? 'ELITE' : signal.confluence >= 3 ? 'HIGH' : 'BASE';
+      const reason = `[${tier}] ${side} signal (${(strength * 100).toFixed(0)}% str, ${signal.confluence} confluence) — ${signal.reason}`;
       logAutoTrade(userId, signal.agent, signal.symbol, side, quantity, reason);
-      openPositions.push(result.position); // Track for max position check
+      openPositions.push(result.position);
     }
   }
 }
@@ -2354,40 +2538,62 @@ function adaptivePositionManagement(userId, openPositions) {
     const regime = symbolRegimes[pos.symbol] || 'ranging';
     const mom = hist.length >= 20 ? momentum(hist, 10) : 0;
 
-    // ─── STOP-LOSS: Adaptive based on volatility ───
+    // ─── STOP-LOSS: Adaptive based on volatility + agent streak ───
     const vol = hist.length >= 20 ? volatility(hist, 20) : 1;
-    const stopLoss = -Math.max(1.5, Math.min(4, vol * 2)); // Dynamic: -1.5% to -4%
+    const agentP = getAgentPerf(pos.agent || 'Unknown');
+    // Tighten stops on losing streaks: -3 streak = 0.7x stop distance
+    const streakFactor = agentP.streak < -2 ? 0.7 : agentP.streak < 0 ? 0.85 : 1.0;
+    const stopLoss = -Math.max(1.2, Math.min(3.5, vol * 2 * streakFactor)); // Dynamic: -1.2% to -3.5%
 
     if (pnlPct < stopLoss) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-        `Adaptive stop — ${pnlPct.toFixed(1)}% loss (vol-adjusted limit: ${stopLoss.toFixed(1)}%)`);
+        `Adaptive stop — ${pnlPct.toFixed(1)}% loss (limit: ${stopLoss.toFixed(1)}%, streak: ${agentP.streak})`);
       continue;
     }
 
-    // ─── TAKE PROFIT: Lock in gains with trailing logic ───
-    // Aggressive: take profit starting at +2% but let big winners run
-    if (pnlPct > 2) {
-      // Check if momentum is still favorable — let winners ride
-      const trendAligned = (pos.side === 'LONG' && mom > 0.1) || (pos.side === 'SHORT' && mom < -0.1);
+    // ─── TRAILING STOP: Lock in profits progressively ───
+    // Once in profit, set a trailing stop that ratchets up
+    if (pnlPct > 1.5) {
+      // Trailing stop = peak PnL minus trail distance
+      // Trail narrows as profit grows: at +2% trail 1%, at +5% trail 1.5%, at +8% trail 2%
+      const trailDist = pnlPct < 3 ? 1.0 : pnlPct < 6 ? 1.5 : 2.0;
+      const trailingStop = pnlPct - trailDist;
+
+      // Check if price has retraced from a higher level
+      // We don't store peak PnL, so we use momentum as a proxy for reversal
+      const trendAligned = (pos.side === 'LONG' && mom > 0.05) || (pos.side === 'SHORT' && mom < -0.05);
       const regimeAligned = (pos.side === 'LONG' && regime === 'trending_up') || (pos.side === 'SHORT' && regime === 'trending_down');
 
-      // If trend still aligned and profit < 8%, let it run
-      if (trendAligned && regimeAligned && pnlPct < 8) continue;
+      // Let big winners run in aligned trends
+      if (trendAligned && regimeAligned && pnlPct < 10) continue;
 
-      // If momentum fading or profit > 5% in non-trending market, take it
-      if (!trendAligned || pnlPct > 5 || (pnlPct > 3 && regime === 'ranging')) {
+      // Take profit if momentum fading or big enough gain
+      if (!trendAligned || pnlPct > 6 || (pnlPct > 3 && regime === 'ranging')) {
         closePosition(userId, pos.id);
         updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
         logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-          `Profit lock — ${pnlPct.toFixed(1)}% gain${!trendAligned ? ' (momentum fading)' : ''}`);
+          `Trailing stop — ${pnlPct.toFixed(1)}% gain${!trendAligned ? ' (momentum fading)' : ''}`);
+        continue;
+      }
+    }
+
+    // ─── EARLY EXIT: Cut losers faster when momentum confirms ───
+    if (pnlPct < -0.5 && holdMinutes > 5) {
+      const againstMom = (pos.side === 'LONG' && mom < -0.3) || (pos.side === 'SHORT' && mom > 0.3);
+      const againstRegime = (pos.side === 'LONG' && regime === 'trending_down') || (pos.side === 'SHORT' && regime === 'trending_up');
+      if (againstMom && againstRegime) {
+        closePosition(userId, pos.id);
+        updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+        logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+          `Early cut — ${pnlPct.toFixed(1)}% with adverse momentum + regime`);
         continue;
       }
     }
 
     // ─── TIME EXIT: Close stale positions that aren't moving ───
-    if (holdMinutes > 30 && Math.abs(pnlPct) < 0.5) {
+    if (holdMinutes > 20 && Math.abs(pnlPct) < 0.3) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Titan', pos.symbol, 'CLOSE', pos.quantity,
