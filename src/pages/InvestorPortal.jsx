@@ -28,20 +28,20 @@ const {
 //   Apple Liquid Glass UI
 // ═══════════════════════════════════════════
 
-// === GLASS STYLES ===
+// === GRAPHITE GLASS STYLES ===
 const glass = {
-  background: "rgba(255,255,255,0.07)",
-  backdropFilter: "blur(40px) saturate(180%)",
-  WebkitBackdropFilter: "blur(40px) saturate(180%)",
-  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(38,38,42,0.85)",
+  backdropFilter: "blur(40px) saturate(150%)",
+  WebkitBackdropFilter: "blur(40px) saturate(150%)",
+  border: "1px solid rgba(255,255,255,0.08)",
   borderRadius: "24px",
-  boxShadow: "0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
 };
 
 const inputStyle = {
   width: "100%", padding: "14px 18px", borderRadius: 16,
-  border: "1px solid rgba(255,255,255,0.12)",
-  background: "rgba(255,255,255,0.05)", color: "#fff", fontSize: 15,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(30,30,34,0.9)", color: "#fff", fontSize: 15,
   outline: "none", transition: "all 0.2s", boxSizing: "border-box",
   fontFamily: "inherit",
 };
@@ -1036,6 +1036,7 @@ const SIDEBAR_ITEMS = [
   { id: "statements", label: "Statements", icon: "▣" },
   { id: "paper-trading", label: "Paper Trading", icon: "⬢" },
   { id: "fund-management", label: "Fund Mgmt", icon: "⟐" },
+  { id: "feedback", label: "Feedback", icon: "✉" },
   { id: "settings", label: "Settings", icon: "◇" },
 ];
 
@@ -1118,6 +1119,33 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
               </button>
             );
           })}
+
+          {/* Divider — External Pages */}
+          <div style={{ margin: "12px 0 8px", padding: "0 16px" }}>
+            <div style={{ height: 1, background: "rgba(255,255,255,0.06)" }} />
+            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", marginTop: 10, letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 600 }}>Platform Tools</div>
+          </div>
+          {[
+            { path: "/mission-control", label: "Command Center", icon: "◉" },
+            { path: "/trading-engine", label: "Trading Engine", icon: "◆" },
+            { path: "/risk-analytics", label: "Risk Analytics", icon: "◇" },
+            { path: "/market-intel", label: "Market Intel", icon: "▤" },
+          ].map(item => (
+            <a key={item.path} href={item.path}
+              style={{
+                width: "100%", padding: "12px 16px", borderRadius: 14, border: "none",
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                marginBottom: 4, textDecoration: "none",
+                background: "transparent",
+                color: "rgba(255,255,255,0.4)",
+                fontSize: 14, fontWeight: 500,
+                transition: "all 0.15s", textAlign: "left", boxSizing: "border-box",
+              }}>
+              <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{item.icon}</span>
+              {item.label}
+              <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.4 }}>↗</span>
+            </a>
+          ))}
         </div>
 
         {/* Sign Out */}
@@ -1550,7 +1578,7 @@ function ResearchView({ isMobile }) {
   };
 
   const glass = {
-    background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(38,38,42,0.8)", border: "1px solid rgba(255,255,255,0.06)",
     borderRadius: 18, backdropFilter: "blur(20px)",
   };
 
@@ -1960,12 +1988,12 @@ function FundManagementView({ investorId, wallet, isMobile }) {
   const wMethod = settings?.withdrawal?.method || 'bank_transfer';
 
   const glassStyle = {
-    background: "rgba(255,255,255,0.07)",
-    backdropFilter: "blur(40px) saturate(180%)",
-    WebkitBackdropFilter: "blur(40px) saturate(180%)",
-    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(38,38,42,0.85)",
+    backdropFilter: "blur(40px) saturate(150%)",
+    WebkitBackdropFilter: "blur(40px) saturate(150%)",
+    border: "1px solid rgba(255,255,255,0.08)",
     borderRadius: 24,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
   };
 
   const pillBtn = (active, color = "#00D4FF") => ({
@@ -2341,12 +2369,12 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
     : 0;
 
   const glassStyle = {
-    background: "rgba(255,255,255,0.07)",
-    backdropFilter: "blur(40px) saturate(180%)",
-    WebkitBackdropFilter: "blur(40px) saturate(180%)",
-    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(38,38,42,0.85)",
+    backdropFilter: "blur(40px) saturate(150%)",
+    WebkitBackdropFilter: "blur(40px) saturate(150%)",
+    border: "1px solid rgba(255,255,255,0.08)",
     borderRadius: 24,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
   };
 
   if (!tradingActive && !isStarting) {
@@ -2832,6 +2860,11 @@ function PortfolioDashboard({ investor, onLogout }) {
             <FundManagementView investorId={investor.id} wallet={wallet} isMobile={isMobile} />
           )}
 
+          {/* ═══ FEEDBACK VIEW ═══ */}
+          {activeTab === "feedback" && (
+            <FeedbackView investor={investor} isMobile={isMobile} />
+          )}
+
           {/* ═══ SETTINGS VIEW ═══ */}
           {activeTab === "settings" && (
             <SettingsView investor={investor} isMobile={isMobile} />
@@ -2851,6 +2884,228 @@ function PortfolioDashboard({ investor, onLogout }) {
     </div>
   );
 }
+
+// ════════════════════════════════════════
+//   FEEDBACK VIEW — Submit & View Feedback
+// ════════════════════════════════════════
+
+const FEEDBACK_CATEGORIES = [
+  { id: 'general', label: 'General', icon: '💬' },
+  { id: 'feature', label: 'Feature Request', icon: '✨' },
+  { id: 'bug', label: 'Bug Report', icon: '🐛' },
+  { id: 'ui', label: 'UI/UX', icon: '🎨' },
+  { id: 'performance', label: 'Performance', icon: '⚡' },
+  { id: 'other', label: 'Other', icon: '📋' },
+];
+
+function FeedbackView({ investor, isMobile }) {
+  const [category, setCategory] = useState('general');
+  const [message, setMessage] = useState('');
+  const [rating, setRating] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState('');
+  const [myFeedback, setMyFeedback] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  const API = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) || 'https://one2-tribes-api.onrender.com/api';
+  const token = getSession()?.token;
+
+  useEffect(() => {
+    fetchMyFeedback();
+  }, []);
+
+  const fetchMyFeedback = async () => {
+    try {
+      const r = await fetch(`${API}/feedback`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) {
+        const data = await r.json();
+        setMyFeedback(data.feedback || []);
+      }
+    } catch {}
+    setLoadingHistory(false);
+  };
+
+  const handleSubmit = async () => {
+    if (!message.trim()) { setError('Please enter your feedback'); return; }
+    setSubmitting(true);
+    setError('');
+    try {
+      const r = await fetch(`${API}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ category, message: message.trim(), rating: rating || null }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        setSubmitted(true);
+        setMessage('');
+        setRating(0);
+        setCategory('general');
+        fetchMyFeedback();
+        setTimeout(() => setSubmitted(false), 4000);
+      } else {
+        setError(data.error || 'Failed to submit feedback');
+      }
+    } catch { setError('Network error. Please try again.'); }
+    setSubmitting(false);
+  };
+
+  const glassStyle = {
+    background: "rgba(38,38,42,0.85)",
+    backdropFilter: "blur(40px) saturate(150%)",
+    WebkitBackdropFilter: "blur(40px) saturate(150%)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 24,
+    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
+  };
+
+  const statusColors = {
+    new: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF', label: 'New' },
+    reviewed: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7', label: 'Reviewed' },
+    resolved: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E', label: 'Resolved' },
+    declined: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444', label: 'Declined' },
+  };
+
+  return (
+    <div style={{ padding: isMobile ? "16px 12px" : "24px 32px", maxWidth: 800 }}>
+      <h2 style={{ fontSize: 22, fontWeight: 700, color: "#fff", marginBottom: 6 }}>Feedback</h2>
+      <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, marginBottom: 24 }}>
+        Help us improve the platform. Your feedback goes directly to the team.
+      </p>
+
+      {/* Submit Feedback Card */}
+      <div style={{ ...glassStyle, padding: isMobile ? 20 : 28, marginBottom: 24 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Submit Feedback</div>
+
+        {/* Category Selection */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 8 }}>Category</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {FEEDBACK_CATEGORIES.map(cat => (
+              <button key={cat.id} onClick={() => setCategory(cat.id)} style={{
+                padding: "8px 14px", borderRadius: 12, cursor: "pointer",
+                border: category === cat.id ? "1px solid rgba(0,212,255,0.3)" : "1px solid rgba(255,255,255,0.06)",
+                background: category === cat.id ? "rgba(0,212,255,0.1)" : "rgba(30,30,34,0.6)",
+                color: category === cat.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
+                fontSize: 12, fontWeight: 600, transition: "all 0.15s",
+              }}>
+                {cat.icon} {cat.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Rating */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 8 }}>Rating (optional)</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[1, 2, 3, 4, 5].map(star => (
+              <button key={star} onClick={() => setRating(star === rating ? 0 : star)} style={{
+                width: 36, height: 36, borderRadius: 10, cursor: "pointer",
+                border: "1px solid rgba(255,255,255,0.06)",
+                background: star <= rating ? "rgba(255,186,0,0.15)" : "rgba(30,30,34,0.6)",
+                color: star <= rating ? "#FFBA00" : "rgba(255,255,255,0.2)",
+                fontSize: 16, transition: "all 0.15s",
+              }}>★</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Message */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 8 }}>Your Feedback</div>
+          <textarea
+            value={message}
+            onChange={e => setMessage(e.target.value)}
+            placeholder="Tell us what you think, report an issue, or suggest an improvement..."
+            maxLength={2000}
+            style={{
+              width: "100%", minHeight: 120, padding: "14px 16px", borderRadius: 16,
+              border: "1px solid rgba(255,255,255,0.08)", background: "rgba(30,30,34,0.9)",
+              color: "#fff", fontSize: 14, outline: "none", resize: "vertical",
+              fontFamily: "inherit", boxSizing: "border-box",
+            }}
+          />
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginTop: 4, textAlign: "right" }}>
+            {message.length}/2000
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ padding: "10px 14px", borderRadius: 12, background: "rgba(239,68,68,0.1)", color: "#EF4444", fontSize: 12, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+
+        {submitted && (
+          <div style={{ padding: "10px 14px", borderRadius: 12, background: "rgba(34,197,94,0.1)", color: "#22C55E", fontSize: 12, marginBottom: 12 }}>
+            ✓ Feedback submitted successfully. Thank you!
+          </div>
+        )}
+
+        <button onClick={handleSubmit} disabled={submitting || !message.trim()} style={{
+          width: "100%", padding: "14px 0", borderRadius: 14, border: "none", cursor: submitting ? "wait" : "pointer",
+          background: message.trim() ? "linear-gradient(135deg, #00D4FF, #A855F7)" : "rgba(255,255,255,0.06)",
+          color: "#fff", fontSize: 14, fontWeight: 700, transition: "all 0.2s",
+          opacity: submitting ? 0.6 : 1,
+        }}>
+          {submitting ? 'Submitting...' : 'Submit Feedback'}
+        </button>
+      </div>
+
+      {/* Previous Feedback */}
+      <div style={{ ...glassStyle, padding: isMobile ? 20 : 28 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Your Submissions</div>
+        {loadingHistory ? (
+          <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, textAlign: "center", padding: 20 }}>Loading...</div>
+        ) : myFeedback.length === 0 ? (
+          <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 13, textAlign: "center", padding: 30 }}>
+            No feedback submitted yet. We'd love to hear from you!
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {myFeedback.map(fb => {
+              const sc = statusColors[fb.status] || statusColors.new;
+              const cat = FEEDBACK_CATEGORIES.find(c => c.id === fb.category);
+              return (
+                <div key={fb.id} style={{
+                  padding: "14px 16px", borderRadius: 16,
+                  background: "rgba(30,30,34,0.6)", border: "1px solid rgba(255,255,255,0.06)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 11, padding: "3px 8px", borderRadius: 8, background: sc.bg, color: sc.color, fontWeight: 600 }}>{sc.label}</span>
+                      {cat && <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>{cat.icon} {cat.label}</span>}
+                    </div>
+                    <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)" }}>
+                      {new Date(fb.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
+                    {fb.message}
+                  </div>
+                  {fb.rating > 0 && (
+                    <div style={{ marginTop: 6, fontSize: 12, color: "#FFBA00" }}>
+                      {'★'.repeat(fb.rating)}{'☆'.repeat(5 - fb.rating)}
+                    </div>
+                  )}
+                  {fb.adminNotes && (
+                    <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.12)" }}>
+                      <div style={{ fontSize: 10, color: "#A855F7", fontWeight: 600, marginBottom: 4 }}>Admin Response</div>
+                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", lineHeight: 1.4 }}>{fb.adminNotes}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 // ════════════════════════════════════════
 //   SETTINGS VIEW — Password, 2FA, Account
@@ -3210,10 +3465,10 @@ function TermsAcceptanceScreen({ user, onAccept }) {
   };
 
   const glassStyle = {
-    background: "rgba(255,255,255,0.07)",
-    backdropFilter: "blur(40px) saturate(180%)",
-    WebkitBackdropFilter: "blur(40px) saturate(180%)",
-    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(38,38,42,0.85)",
+    backdropFilter: "blur(40px) saturate(150%)",
+    WebkitBackdropFilter: "blur(40px) saturate(150%)",
+    border: "1px solid rgba(255,255,255,0.08)",
     borderRadius: 24,
   };
 
@@ -3430,12 +3685,14 @@ function AdminPanel({ investor, isMobile }) {
   const [usersLoading, setUsersLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState(null);
-  const [activeSection, setActiveSection] = useState('requests'); // 'requests' | 'users' | 'health' | 'qa'
+  const [activeSection, setActiveSection] = useState('requests'); // 'requests' | 'users' | 'health' | 'qa' | 'feedback'
   const [healthData, setHealthData] = useState(null);
   const [healthLoading, setHealthLoading] = useState(false);
   const [qaReports, setQaReports] = useState([]);
   const [qaLoading, setQaLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(null);
+  const [adminFeedback, setAdminFeedback] = useState([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [createForm, setCreateForm] = useState({ email: '', firstName: '', lastName: '', role: 'investor' });
   const [createLoading, setCreateLoading] = useState(false);
@@ -3498,7 +3755,26 @@ function AdminPanel({ investor, isMobile }) {
     setQaLoading(false);
   }, [token]);
 
-  useEffect(() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); }, [fetchRequests, fetchUsers, fetchHealth, fetchQaReports]);
+  const fetchAdminFeedback = useCallback(async () => {
+    setFeedbackLoading(true);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/feedback`, { headers: authHeaders });
+      if (resp.ok) { const data = await resp.json(); setAdminFeedback(data.feedback || []); }
+    } catch { /* silent */ }
+    setFeedbackLoading(false);
+  }, [token]);
+
+  const updateFeedbackStatus = async (fbId, status, adminNotes) => {
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/feedback/${fbId}`, {
+        method: 'PUT', headers: authHeaders,
+        body: JSON.stringify({ status, ...(adminNotes !== undefined ? { adminNotes } : {}) }),
+      });
+      if (resp.ok) fetchAdminFeedback();
+    } catch { /* silent */ }
+  };
+
+  useEffect(() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); }, [fetchRequests, fetchUsers, fetchHealth, fetchQaReports, fetchAdminFeedback]);
 
   // Auto-refresh health every 30s when on health tab
   useEffect(() => {
@@ -3644,10 +3920,10 @@ function AdminPanel({ investor, isMobile }) {
   };
 
   const glass = {
-    background: "rgba(255,255,255,0.04)",
-    backdropFilter: "blur(40px) saturate(180%)",
-    WebkitBackdropFilter: "blur(40px) saturate(180%)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(34,34,38,0.85)",
+    backdropFilter: "blur(40px) saturate(150%)",
+    WebkitBackdropFilter: "blur(40px) saturate(150%)",
+    border: "1px solid rgba(255,255,255,0.06)",
     borderRadius: 20,
   };
 
@@ -3688,6 +3964,9 @@ function AdminPanel({ investor, isMobile }) {
         </button>
         <button onClick={() => { setActiveSection('qa'); fetchQaReports(); }} style={tabStyle(activeSection === 'qa')}>
           QA Reports {qaReports.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(168,85,247,0.3)', color: '#A855F7', fontSize: 10, fontWeight: 800 }}>{qaReports.length}</span>}
+        </button>
+        <button onClick={() => { setActiveSection('feedback'); fetchAdminFeedback(); }} style={tabStyle(activeSection === 'feedback')}>
+          Feedback {adminFeedback.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(0,212,255,0.2)', color: '#00D4FF', fontSize: 10, fontWeight: 800 }}>{adminFeedback.length}</span>}
         </button>
       </div>
 
@@ -4040,9 +4319,79 @@ function AdminPanel({ investor, isMobile }) {
         </>
       )}
 
+      {/* ═══ FEEDBACK MANAGEMENT ═══ */}
+      {activeSection === 'feedback' && (
+        <>
+          {feedbackLoading && adminFeedback.length === 0 && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading feedback...</div>}
+
+          {!feedbackLoading && adminFeedback.length === 0 && (
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>✉</div>
+              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No feedback received yet</div>
+            </div>
+          )}
+
+          {adminFeedback.length > 0 && adminFeedback.map(fb => {
+            const statusColors = {
+              new: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF' },
+              reviewed: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7' },
+              resolved: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E' },
+              declined: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444' },
+            };
+            const sc = statusColors[fb.status] || statusColors.new;
+            return (
+              <div key={fb.id} style={{ ...glass, padding: 20, marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{fb.userName}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>{fb.userEmail} · {new Date(fb.createdAt).toLocaleString()}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {fb.rating > 0 && <span style={{ fontSize: 12, color: '#FFBA00' }}>{'★'.repeat(fb.rating)}</span>}
+                    <span style={{ padding: '3px 10px', borderRadius: 8, background: sc.bg, color: sc.color, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{fb.status}</span>
+                  </div>
+                </div>
+                <div style={{ padding: '2px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.35)', fontSize: 11, fontWeight: 600, display: 'inline-block', marginBottom: 10 }}>
+                  {fb.category || 'general'}
+                </div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.6, marginBottom: 12 }}>{fb.message}</div>
+
+                {fb.adminNotes && (
+                  <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.12)', marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: '#A855F7', fontWeight: 600, marginBottom: 4 }}>Admin Notes</div>
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{fb.adminNotes}</div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {['new', 'reviewed', 'resolved', 'declined'].map(s => (
+                    <button key={s} onClick={() => updateFeedbackStatus(fb.id, s)} style={{
+                      padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                      border: fb.status === s ? `1px solid ${(statusColors[s] || statusColors.new).color}40` : '1px solid rgba(255,255,255,0.06)',
+                      background: fb.status === s ? (statusColors[s] || statusColors.new).bg : 'rgba(30,30,34,0.6)',
+                      color: fb.status === s ? (statusColors[s] || statusColors.new).color : 'rgba(255,255,255,0.4)',
+                      textTransform: 'capitalize',
+                    }}>{s}</button>
+                  ))}
+                  <button onClick={() => {
+                    const notes = prompt('Enter admin notes/response:');
+                    if (notes !== null) updateFeedbackStatus(fb.id, fb.status, notes);
+                  }} style={{
+                    padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                    border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(30,30,34,0.6)', color: 'rgba(255,255,255,0.4)',
+                  }}>
+                    Add Notes
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
       {/* Refresh Button */}
       <div style={{ textAlign: 'center', marginTop: 24 }}>
-        <button onClick={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); }} style={{
+        <button onClick={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); }} style={{
           padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
           background: 'transparent', color: 'rgba(255,255,255,0.5)',
           fontSize: 13, cursor: 'pointer',

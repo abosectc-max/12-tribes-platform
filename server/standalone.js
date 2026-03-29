@@ -76,7 +76,7 @@ const DB_TABLES = [
   'users', 'wallets', 'positions', 'trades', 'snapshots',
   'login_log', 'agent_stats', 'broker_connections', 'risk_events',
   'order_queue', 'access_requests', 'auto_trade_log', 'fund_settings',
-  'verification_codes', 'qa_reports',
+  'verification_codes', 'qa_reports', 'feedback',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -1767,6 +1767,73 @@ api.post('/api/admin/backup', auth, (req, res) => {
   } catch (err) {
     json(res, 500, { error: `Backup failed: ${err.message}` });
   }
+});
+
+// ─── FEEDBACK SYSTEM ───
+
+// Submit feedback (any authenticated user)
+api.post('/api/feedback', auth, async (req, res) => {
+  const body = await readBody(req);
+  if (!body || !body.message || !body.message.trim()) {
+    return json(res, 400, { error: 'Feedback message is required' });
+  }
+
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user) return json(res, 401, { error: 'User not found' });
+
+  const category = body.category || 'general';
+  const rating = body.rating || null;
+
+  const feedback = {
+    id: `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId: req.userId,
+    userName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email,
+    userEmail: user.email,
+    category,
+    rating,
+    message: body.message.trim().slice(0, 2000),
+    status: 'new',
+    adminNotes: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  db.insert('feedback', feedback);
+  json(res, 201, { success: true, feedback });
+});
+
+// Get all feedback (admin only)
+api.get('/api/admin/feedback', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const allFeedback = db.tables.feedback || [];
+  const sorted = [...allFeedback].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  json(res, 200, { feedback: sorted });
+});
+
+// Update feedback status/notes (admin only)
+api.put('/api/admin/feedback/:feedbackId', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  const fb = db.findOne('feedback', f => f.id === req.params.feedbackId);
+  if (!fb) return json(res, 404, { error: 'Feedback not found' });
+
+  if (body.status) fb.status = body.status;
+  if (body.adminNotes !== undefined) fb.adminNotes = body.adminNotes;
+  fb.updatedAt = new Date().toISOString();
+
+  db.update('feedback', f => f.id === fb.id, fb);
+  json(res, 200, { success: true, feedback: fb });
+});
+
+// Get user's own feedback history
+api.get('/api/feedback', auth, (req, res) => {
+  const myFeedback = (db.tables.feedback || []).filter(f => f.userId === req.userId);
+  const sorted = [...myFeedback].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  json(res, 200, { feedback: sorted });
 });
 
 // ─── FUND SETTINGS (cross-device sync) ───

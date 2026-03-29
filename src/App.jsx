@@ -16,11 +16,11 @@ import InstallPrompt from './components/InstallPrompt.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 
 const glass = {
-  background: "rgba(255,255,255,0.06)",
-  backdropFilter: "blur(40px) saturate(180%)",
-  WebkitBackdropFilter: "blur(40px) saturate(180%)",
-  border: "1px solid rgba(255,255,255,0.1)",
-  boxShadow: "0 4px 24px rgba(0,0,0,0.3)",
+  background: "rgba(38,38,42,0.85)",
+  backdropFilter: "blur(40px) saturate(150%)",
+  WebkitBackdropFilter: "blur(40px) saturate(150%)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
 }
 
 const NAV_ITEMS = [
