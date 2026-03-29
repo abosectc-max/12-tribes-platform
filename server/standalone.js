@@ -1327,7 +1327,20 @@ api.post('/api/access-requests', async (req, res) => {
   if (existing) {
     if (existing.status === 'approved') return json(res, 200, { status: 'approved', message: 'You have already been approved. You may create an account.' });
     if (existing.status === 'pending') return json(res, 200, { status: 'pending', message: 'Your request is already pending review.' });
-    if (existing.status === 'denied') return json(res, 200, { status: 'denied', message: 'Your previous request was not approved. Contact support for more information.' });
+    if (existing.status === 'denied') {
+      // Allow re-submission: reset the denied request back to pending
+      db.update('access_requests', r => r.id === existing.id, {
+        first_name: firstName,
+        last_name: lastName,
+        message: message || existing.message,
+        status: 'pending',
+        submitted_at: new Date().toISOString(),
+        previously_rejected: true,
+        previous_denial_date: existing.reviewed_at || existing.submitted_at,
+      });
+      console.log(`[ACCESS] Re-submission from previously denied email: ${email}`);
+      return json(res, 200, { status: 'pending', message: 'Your request has been re-submitted for review.', resubmission: true });
+    }
   }
 
   // Also check if they already have an account
@@ -1364,8 +1377,10 @@ api.get('/api/access-requests', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
 
-  const requests = db.findMany('access_requests').sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
-  json(res, 200, requests);
+  const allRequests = db.findMany('access_requests').sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
+  // Only return pending requests to admin — approved/denied are removed from view
+  const pendingRequests = allRequests.filter(r => r.status === 'pending');
+  json(res, 200, pendingRequests);
 });
 
 // Approve or deny a request (admin only)

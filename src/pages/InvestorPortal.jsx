@@ -3011,7 +3011,8 @@ function AdminPanel({ investor, isMobile }) {
       });
       const data = await resp.json();
       if (data.success) {
-        setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status, reviewed_at: new Date().toISOString() } : r));
+        // Remove from list — approved/denied requests are no longer shown
+        setRequests(prev => prev.filter(r => r.id !== requestId));
         const action = status === 'approved' ? 'Approved' : 'Denied';
         if (data.emailSent) {
           setActionSuccess(`${action} — notification email sent to ${data.request?.email || 'user'}`);
@@ -3140,8 +3141,6 @@ function AdminPanel({ investor, isMobile }) {
   };
 
   const pending = requests.filter(r => r.status === 'pending');
-  const approved = requests.filter(r => r.status === 'approved');
-  const denied = requests.filter(r => r.status === 'denied');
 
   const statusBadge = (status) => {
     const colors = { pending: '#F59E0B', approved: '#10B981', denied: '#EF4444', admin: '#A855F7', investor: '#00D4FF' };
@@ -3186,8 +3185,6 @@ function AdminPanel({ investor, isMobile }) {
         {[
           { label: 'Total Users', count: users.length, color: '#00D4FF' },
           { label: 'Pending Requests', count: pending.length, color: '#F59E0B' },
-          { label: 'Approved', count: approved.length, color: '#10B981' },
-          { label: 'Denied', count: denied.length, color: '#EF4444' },
         ].map(s => (
           <div key={s.label} style={{ ...glass, padding: '14px 20px', flex: '1 1 100px', textAlign: 'center' }}>
             <div style={{ fontSize: 24, fontWeight: 800, color: s.color }}>{s.count}</div>
@@ -3205,10 +3202,10 @@ function AdminPanel({ investor, isMobile }) {
         <>
           {loading && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading requests...</div>}
 
-          {!loading && !error && requests.length === 0 && (
+          {!loading && !error && pending.length === 0 && (
             <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
               <div style={{ fontSize: 32, marginBottom: 12 }}>◇</div>
-              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No access requests yet</div>
+              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No pending access requests</div>
             </div>
           )}
 
@@ -3224,8 +3221,20 @@ function AdminPanel({ investor, isMobile }) {
                     fontSize: 13, fontWeight: 700, color: '#00D4FF', flexShrink: 0,
                   }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
                   <div style={{ flex: 1, minWidth: 150 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>
+                      {r.first_name} {r.last_name}
+                      {r.previously_rejected && (
+                        <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 6, background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#EF4444', fontSize: 10, fontWeight: 700 }}>
+                          PREVIOUSLY REJECTED
+                        </span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{r.email}</div>
+                    {r.previously_rejected && r.previous_denial_date && (
+                      <div style={{ fontSize: 11, color: '#EF4444', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ fontSize: 12 }}>&#9888;</span> Previously denied on {new Date(r.previous_denial_date).toLocaleDateString()}
+                      </div>
+                    )}
                     {r.message && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 4, fontStyle: 'italic' }}>"{r.message}"</div>}
                     <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>Submitted {new Date(r.submitted_at).toLocaleString()}</div>
                   </div>
@@ -3244,49 +3253,6 @@ function AdminPanel({ investor, isMobile }) {
             </div>
           )}
 
-          {[...approved, ...denied].length > 0 && (
-            <div>
-              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'rgba(255,255,255,0.5)', margin: '0 0 12px' }}>Reviewed ({approved.length + denied.length})</h3>
-              {[...approved, ...denied].map(r => (
-                <div key={r.id} style={{ ...glass, padding: 14, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 12, opacity: 0.7, flexWrap: 'wrap' }}>
-                  <div style={{
-                    width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.05)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.4)', flexShrink: 0,
-                  }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
-                  <div style={{ flex: 1, minWidth: 120 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{r.email}</div>
-                  </div>
-                  <span style={statusBadge(r.status)}>{r.status}</span>
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    {r.status === 'approved' && (
-                      <>
-                        <button onClick={() => handleResendEmail(r.id, r.email)} disabled={actionLoading === r.id}
-                          style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(0,212,255,0.25)', background: 'rgba(0,212,255,0.08)', color: '#00D4FF', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                          {actionLoading === r.id ? '...' : '✉ Resend Email'}
-                        </button>
-                        <button onClick={() => handleAction(r.id, 'denied')} disabled={actionLoading === r.id}
-                          style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.08)', color: '#EF4444', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                          {actionLoading === r.id ? '...' : 'Reject'}
-                        </button>
-                      </>
-                    )}
-                    {r.status === 'denied' && (
-                      <button onClick={() => handleAction(r.id, 'approved')} disabled={actionLoading === r.id}
-                        style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(16,185,129,0.25)', background: 'rgba(16,185,129,0.08)', color: '#10B981', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                        {actionLoading === r.id ? '...' : 'Approve'}
-                      </button>
-                    )}
-                    <button onClick={() => handleDeleteRequest(r.id, r.email)} disabled={actionLoading === r.id}
-                      style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: 'rgba(255,255,255,0.4)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                      {actionLoading === r.id ? '...' : '✕ Delete'}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </>
       )}
 
