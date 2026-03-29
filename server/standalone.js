@@ -11,7 +11,7 @@
 
 import { createServer } from 'node:http';
 import { createHash, scryptSync, randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, unlinkSync, copyFileSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -67,29 +67,35 @@ const RISK = {
 };
 
 // ═══════════════════════════════════════════
-//   JSON FILE DATABASE
-//   Drop-in replacement for PostgreSQL in dev
+//   HARDENED JSON FILE DATABASE
+//   Atomic writes | Backup rotation | Corruption recovery
+//   Survives redeploys, crashes, and partial writes
 // ═══════════════════════════════════════════
+
+const DB_TABLES = [
+  'users', 'wallets', 'positions', 'trades', 'snapshots',
+  'login_log', 'agent_stats', 'broker_connections', 'risk_events',
+  'order_queue', 'access_requests', 'auto_trade_log', 'fund_settings',
+  'verification_codes', 'qa_reports',
+];
+
+const BACKUP_DIR_NAME = '_backups';
+const MAX_BACKUPS = 10;           // Keep last 10 rotation backups per table
+const BACKUP_INTERVAL_MS = 300000; // Auto-backup every 5 minutes
 
 class JsonDB {
   constructor(dataDir) {
     this.dir = dataDir;
+    this.backupDir = join(dataDir, BACKUP_DIR_NAME);
     if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+    if (!existsSync(this.backupDir)) mkdirSync(this.backupDir, { recursive: true });
     this.tables = {};
-    this._load('users');
-    this._load('wallets');
-    this._load('positions');
-    this._load('trades');
-    this._load('snapshots');
-    this._load('login_log');
-    this._load('agent_stats');
-    this._load('broker_connections');
-    this._load('risk_events');
-    this._load('order_queue');
-    this._load('access_requests');
-    this._load('auto_trade_log');
-    this._load('fund_settings');
-    this._load('verification_codes');
+    this._dirty = new Set(); // Track tables that have been modified since last backup
+
+    // Load all tables with corruption recovery
+    for (const table of DB_TABLES) {
+      this._load(table);
+    }
 
     // Seed AI agents if empty
     if (this.tables.agent_stats.length === 0) {
@@ -102,22 +108,179 @@ class JsonDB {
       });
       this._save('agent_stats');
     }
+
+    // Log startup data integrity
+    const counts = DB_TABLES.map(t => `${t}:${this.tables[t].length}`).join(', ');
+    console.log(`[DB] Loaded from ${dataDir} — ${counts}`);
+
+    // Start auto-backup rotation
+    this._backupInterval = setInterval(() => this._rotateBackup(), BACKUP_INTERVAL_MS);
   }
 
   _filePath(table) { return join(this.dir, `${table}.json`); }
+  _tmpPath(table) { return join(this.dir, `${table}.json.tmp`); }
+  _bakPath(table) { return join(this.dir, `${table}.json.bak`); }
 
+  // ─── LOAD with multi-layer recovery ───
   _load(table) {
     const fp = this._filePath(table);
+    const bak = this._bakPath(table);
+
+    // Try primary file
+    const primary = this._tryParseFile(fp);
+    if (primary !== null) {
+      this.tables[table] = primary;
+      return;
+    }
+
+    // Primary failed — try .bak file
+    console.warn(`[DB] Primary file corrupt/missing for "${table}", trying backup...`);
+    const backup = this._tryParseFile(bak);
+    if (backup !== null) {
+      console.warn(`[DB] Recovered "${table}" from .bak file (${backup.length} records)`);
+      this.tables[table] = backup;
+      this._save(table); // Re-save good data to primary
+      return;
+    }
+
+    // Both failed — try rotation backups (newest first)
+    const rotationBackup = this._tryRecoverFromRotation(table);
+    if (rotationBackup !== null) {
+      console.warn(`[DB] Recovered "${table}" from rotation backup (${rotationBackup.length} records)`);
+      this.tables[table] = rotationBackup;
+      this._save(table);
+      return;
+    }
+
+    // No recovery possible — start empty (this is a genuinely new table)
+    console.warn(`[DB] No data found for "${table}" — starting empty`);
+    this.tables[table] = [];
+  }
+
+  _tryParseFile(fp) {
     try {
-      this.tables[table] = existsSync(fp) ? JSON.parse(readFileSync(fp, 'utf8')) : [];
-    } catch {
-      this.tables[table] = [];
+      if (!existsSync(fp)) return null;
+      const raw = readFileSync(fp, 'utf8').trim();
+      if (!raw || raw.length < 2) return null; // Empty or truncated
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return null; // Must be an array
+      return parsed;
+    } catch (err) {
+      console.error(`[DB] Parse error in ${fp}: ${err.message}`);
+      return null;
     }
   }
 
-  _save(table) {
-    writeFileSync(this._filePath(table), JSON.stringify(this.tables[table], null, 2));
+  _tryRecoverFromRotation(table) {
+    try {
+      const prefix = `${table}_`;
+      const files = readdirSync(this.backupDir)
+        .filter(f => f.startsWith(prefix) && f.endsWith('.json'))
+        .sort()
+        .reverse(); // Newest first (ISO timestamp sorts correctly)
+
+      for (const file of files) {
+        const data = this._tryParseFile(join(this.backupDir, file));
+        if (data !== null && data.length > 0) return data;
+      }
+    } catch {}
+    return null;
   }
+
+  // ─── ATOMIC SAVE: write temp → rename (prevents corruption) ───
+  _save(table) {
+    const fp = this._filePath(table);
+    const tmp = this._tmpPath(table);
+    const bak = this._bakPath(table);
+
+    try {
+      const json = JSON.stringify(this.tables[table], null, 2);
+
+      // Validate what we're about to write (never write empty if we had data)
+      if (this.tables[table].length === 0) {
+        // Only write empty if the file doesn't exist or was already empty
+        const existing = this._tryParseFile(fp);
+        if (existing && existing.length > 0) {
+          console.error(`[DB] BLOCKED: Refusing to overwrite ${table} (${existing.length} records) with empty array`);
+          return;
+        }
+      }
+
+      // Step 1: Write to temp file
+      writeFileSync(tmp, json);
+
+      // Step 2: Verify temp file is valid JSON
+      const verify = JSON.parse(readFileSync(tmp, 'utf8'));
+      if (!Array.isArray(verify)) throw new Error('Temp file validation failed');
+
+      // Step 3: Backup current file before overwriting
+      if (existsSync(fp)) {
+        try { copyFileSync(fp, bak); } catch {}
+      }
+
+      // Step 4: Atomic rename (on same filesystem, this is atomic on Linux)
+      renameSync(tmp, fp);
+
+      this._dirty.add(table);
+    } catch (err) {
+      console.error(`[DB] Save error for "${table}": ${err.message}`);
+      // Clean up temp file if it exists
+      try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
+    }
+  }
+
+  // ─── ROTATION BACKUP: periodic full snapshots ───
+  _rotateBackup() {
+    if (this._dirty.size === 0) return; // Nothing changed
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+    for (const table of this._dirty) {
+      try {
+        const backupFile = join(this.backupDir, `${table}_${timestamp}.json`);
+        const json = JSON.stringify(this.tables[table], null, 2);
+        writeFileSync(backupFile, json);
+
+        // Prune old backups (keep MAX_BACKUPS newest)
+        const prefix = `${table}_`;
+        const files = readdirSync(this.backupDir)
+          .filter(f => f.startsWith(prefix) && f.endsWith('.json'))
+          .sort();
+        while (files.length > MAX_BACKUPS) {
+          const oldest = files.shift();
+          try { unlinkSync(join(this.backupDir, oldest)); } catch {}
+        }
+      } catch (err) {
+        console.error(`[DB] Backup error for "${table}": ${err.message}`);
+      }
+    }
+
+    console.log(`[DB] Backup rotation complete: ${this._dirty.size} tables backed up at ${timestamp}`);
+    this._dirty.clear();
+  }
+
+  // ─── FLUSH ALL: called during graceful shutdown ───
+  flushAll() {
+    console.log('[DB] Flushing all tables to disk...');
+    for (const table of DB_TABLES) {
+      try {
+        this._save(table);
+      } catch (err) {
+        console.error(`[DB] Flush error for "${table}": ${err.message}`);
+      }
+    }
+    // Final rotation backup
+    this._dirty = new Set(DB_TABLES);
+    this._rotateBackup();
+    console.log('[DB] Flush complete.');
+  }
+
+  // ─── STOP: cleanup intervals ───
+  stop() {
+    if (this._backupInterval) clearInterval(this._backupInterval);
+  }
+
+  // ─── CRUD operations (unchanged interface) ───
 
   insert(table, record) {
     if (!record.id) record.id = randomUUID();
@@ -1477,6 +1640,53 @@ api.post('/api/admin/qa-reports', async (req, res) => {
   json(res, 201, report);
 });
 
+// ─── ADMIN: DATA INTEGRITY CHECK ───
+api.get('/api/admin/data-integrity', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const integrity = {};
+  for (const table of DB_TABLES) {
+    const fp = join(DATA_DIR, `${table}.json`);
+    const bak = join(DATA_DIR, `${table}.json.bak`);
+    const backupDir = join(DATA_DIR, BACKUP_DIR_NAME);
+    let backupCount = 0;
+    try {
+      backupCount = readdirSync(backupDir).filter(f => f.startsWith(`${table}_`) && f.endsWith('.json')).length;
+    } catch {}
+
+    integrity[table] = {
+      inMemory: db.tables[table]?.length || 0,
+      primaryExists: existsSync(fp),
+      primarySize: existsSync(fp) ? statSync(fp).size : 0,
+      backupExists: existsSync(bak),
+      rotationBackups: backupCount,
+    };
+  }
+
+  json(res, 200, {
+    dataDir: DATA_DIR,
+    dirExists: existsSync(DATA_DIR),
+    backupInterval: `${BACKUP_INTERVAL_MS / 1000}s`,
+    maxBackups: MAX_BACKUPS,
+    tables: integrity,
+  });
+});
+
+// ─── ADMIN: FORCE BACKUP ───
+api.post('/api/admin/backup', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  try {
+    db._dirty = new Set(DB_TABLES);
+    db._rotateBackup();
+    json(res, 200, { success: true, message: 'Full backup completed', timestamp: new Date().toISOString() });
+  } catch (err) {
+    json(res, 500, { error: `Backup failed: ${err.message}` });
+  }
+});
+
 // ─── FUND SETTINGS (cross-device sync) ───
 api.get('/api/fund-settings', auth, (req, res) => {
   const settings = db.findOne('fund_settings', s => s.user_id === req.userId);
@@ -2213,15 +2423,37 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('═══════════════════════════════════════════');
 });
 
-// Graceful shutdown
+// Graceful shutdown — FLUSH ALL DATA before exit
 function shutdown(sig) {
-  console.log(`\n${sig} — shutting down...`);
+  console.log(`\n${sig} — initiating graceful shutdown...`);
+
+  // Step 1: Stop all trading and market activity
   clearInterval(priceInterval);
   clearInterval(autoTradeInterval);
   if (keepAliveInterval) clearInterval(keepAliveInterval);
+
+  // Step 2: CRITICAL — Flush all database tables to disk with backup
+  try {
+    db.flushAll();
+    db.stop();
+  } catch (err) {
+    console.error('[SHUTDOWN] Database flush error:', err.message);
+  }
+
+  // Step 3: Close WebSocket connections
   wsClients.forEach(c => { try { c.socket.end(); } catch {} });
-  server.close(() => { console.log('Server closed.'); process.exit(0); });
-  setTimeout(() => process.exit(1), 5000);
+
+  // Step 4: Close HTTP server
+  server.close(() => {
+    console.log('[SHUTDOWN] Server closed. All data persisted.');
+    process.exit(0);
+  });
+
+  // Force exit after 8 seconds (give flush time to complete)
+  setTimeout(() => {
+    console.error('[SHUTDOWN] Forced exit after timeout');
+    process.exit(1);
+  }, 8000);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
