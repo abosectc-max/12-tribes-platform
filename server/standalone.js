@@ -1156,6 +1156,85 @@ api.put('/api/admin/users/:userId', auth, async (req, res) => {
   json(res, 200, { success: true, user: { id: target.id, email: target.email, role: target.role } });
 });
 
+// ─── ADMIN: DELETE USER ───
+api.delete('/api/admin/users/:userId', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const targetId = req.params.userId;
+
+  // Prevent self-deletion
+  if (targetId === admin.id) return json(res, 400, { error: 'Cannot delete your own account' });
+
+  const target = db.findOne('users', u => u.id === targetId);
+  if (!target) return json(res, 404, { error: 'User not found' });
+
+  // Close all open positions for this user
+  db.findMany('positions', p => p.user_id === targetId && p.status === 'OPEN').forEach(pos => {
+    pos.status = 'CLOSED';
+    pos.closed_at = new Date().toISOString();
+    pos.close_reason = 'account_deleted';
+  });
+  db._save('positions');
+
+  // Remove wallet, user record
+  db.remove('wallets', w => w.user_id === targetId);
+  db.remove('users', u => u.id === targetId);
+
+  console.log(`[ADMIN] User deleted: ${target.email} (${targetId}) by admin ${admin.email}`);
+  json(res, 200, { success: true, deleted: { id: target.id, email: target.email } });
+});
+
+// ─── ADMIN: CREATE USER ───
+api.post('/api/admin/users', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  const { email, password, firstName, lastName, role } = body;
+
+  if (!email || !password || !firstName || !lastName) {
+    return json(res, 400, { error: 'All fields required: email, password, firstName, lastName' });
+  }
+  if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Invalid email format' });
+  if (password.length < 6) return json(res, 400, { error: 'Password must be at least 6 characters' });
+
+  const emailKey = email.toLowerCase().trim();
+  if (db.findOne('users', u => u.email === emailKey)) {
+    return json(res, 409, { error: 'Email already registered' });
+  }
+
+  const userRole = ['admin', 'investor'].includes(role) ? role : 'investor';
+  const user = db.insert('users', {
+    id: randomUUID(),
+    email: emailKey,
+    password_hash: hashPassword(password),
+    firstName: firstName.trim(),
+    lastName: lastName.trim(),
+    role: userRole,
+    emailVerified: true, // Admin-created accounts are pre-verified
+    tradingMode: 'paper',
+    created_at: new Date().toISOString(),
+    login_count: 0,
+  });
+
+  // Create wallet
+  db.insert('wallets', {
+    id: randomUUID(),
+    user_id: user.id,
+    balance: INITIAL_BALANCE,
+    equity: INITIAL_BALANCE,
+    unrealized_pnl: 0,
+    created_at: new Date().toISOString(),
+  });
+
+  console.log(`[ADMIN] User created: ${emailKey} (${userRole}) by admin ${admin.email}`);
+  json(res, 201, {
+    success: true,
+    user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role },
+  });
+});
+
 // ─── ADMIN: PLATFORM HEALTH DASHBOARD ───
 api.get('/api/admin/health', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);

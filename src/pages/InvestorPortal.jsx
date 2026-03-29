@@ -2797,6 +2797,12 @@ function AdminPanel({ investor, isMobile }) {
   const [healthLoading, setHealthLoading] = useState(false);
   const [qaReports, setQaReports] = useState([]);
   const [qaLoading, setQaLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(null);
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [createForm, setCreateForm] = useState({ email: '', password: '', firstName: '', lastName: '', role: 'investor' });
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const [createSuccess, setCreateSuccess] = useState('');
 
   const token = (() => {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
@@ -2877,6 +2883,46 @@ function AdminPanel({ investor, isMobile }) {
       }
     } catch { /* silent */ }
     setActionLoading(null);
+  };
+
+  const handleDeleteUser = async (userId, userEmail) => {
+    if (!window.confirm(`Permanently delete ${userEmail}? This will close all their positions and remove their account. This action cannot be undone.`)) return;
+    setDeleteLoading(userId);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/users/${userId}`, {
+        method: 'DELETE', headers: authHeaders,
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setUsers(prev => prev.filter(u => u.id !== userId));
+      } else {
+        alert(data.error || 'Failed to delete user');
+      }
+    } catch { alert('Network error deleting user'); }
+    setDeleteLoading(null);
+  };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setCreateLoading(true);
+    setCreateError('');
+    setCreateSuccess('');
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/users`, {
+        method: 'POST', headers: authHeaders,
+        body: JSON.stringify(createForm),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setCreateSuccess(`Account created for ${data.user.email} (${data.user.role})`);
+        setCreateForm({ email: '', password: '', firstName: '', lastName: '', role: 'investor' });
+        fetchUsers(); // Refresh user list
+        setTimeout(() => setCreateSuccess(''), 5000);
+      } else {
+        setCreateError(data.error || 'Failed to create user');
+      }
+    } catch { setCreateError('Network error creating user'); }
+    setCreateLoading(false);
   };
 
   const glass = {
@@ -3015,6 +3061,61 @@ function AdminPanel({ investor, isMobile }) {
       {/* ═══════ USER ACCOUNTS SECTION ═══════ */}
       {activeSection === 'users' && (
         <>
+          {/* Create User Button + Form */}
+          <div style={{ marginBottom: 20 }}>
+            <button onClick={() => setShowCreateUser(!showCreateUser)} style={{
+              padding: '10px 20px', borderRadius: 12, border: '1px solid rgba(16,185,129,0.3)',
+              background: showCreateUser ? 'rgba(16,185,129,0.15)' : 'transparent',
+              color: '#10B981', fontSize: 13, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s',
+            }}>
+              {showCreateUser ? '✕ Cancel' : '+ Create User'}
+            </button>
+          </div>
+
+          {showCreateUser && (
+            <form onSubmit={handleCreateUser} style={{ ...glass, padding: 20, marginBottom: 20 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: '#10B981', margin: '0 0 16px' }}>Create New User</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                {[
+                  { key: 'firstName', placeholder: 'First Name', type: 'text' },
+                  { key: 'lastName', placeholder: 'Last Name', type: 'text' },
+                  { key: 'email', placeholder: 'Email Address', type: 'email' },
+                  { key: 'password', placeholder: 'Password (min 6 chars)', type: 'password' },
+                ].map(f => (
+                  <input key={f.key} type={f.type} placeholder={f.placeholder} required
+                    value={createForm[f.key]}
+                    onChange={e => setCreateForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                    style={{
+                      padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)',
+                      background: 'rgba(255,255,255,0.04)', color: '#fff', fontSize: 13, outline: 'none',
+                    }} />
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <label style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>Role:</label>
+                <select value={createForm.role}
+                  onChange={e => setCreateForm(prev => ({ ...prev, role: e.target.value }))}
+                  style={{
+                    padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)',
+                    background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 13, outline: 'none',
+                  }}>
+                  <option value="investor" style={{ background: '#1a1a2e' }}>Investor</option>
+                  <option value="admin" style={{ background: '#1a1a2e' }}>Admin</option>
+                </select>
+              </div>
+              {createError && <div style={{ color: '#EF4444', fontSize: 12, marginBottom: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(239,68,68,0.1)' }}>{createError}</div>}
+              {createSuccess && <div style={{ color: '#10B981', fontSize: 12, marginBottom: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(16,185,129,0.1)' }}>{createSuccess}</div>}
+              <button type="submit" disabled={createLoading} style={{
+                padding: '10px 24px', borderRadius: 12, border: 'none',
+                background: 'linear-gradient(135deg, rgba(16,185,129,0.3), rgba(0,212,255,0.2))',
+                color: '#10B981', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                opacity: createLoading ? 0.5 : 1,
+              }}>
+                {createLoading ? 'Creating...' : 'Create Account'}
+              </button>
+            </form>
+          )}
+
           {usersLoading && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading users...</div>}
 
           {!usersLoading && users.length === 0 && (
@@ -3053,6 +3154,18 @@ function AdminPanel({ investor, isMobile }) {
                       {u.createdAt && <span>Joined: {new Date(u.createdAt).toLocaleDateString()}</span>}
                     </div>
                   </div>
+                  {/* Delete button — hidden for self */}
+                  {u.email !== investor?.email && (
+                    <button onClick={() => handleDeleteUser(u.id, u.email)} disabled={deleteLoading === u.id}
+                      style={{
+                        padding: '8px 14px', borderRadius: 10, border: '1px solid rgba(239,68,68,0.2)',
+                        background: 'rgba(239,68,68,0.08)', color: '#EF4444', fontSize: 11, fontWeight: 600,
+                        cursor: 'pointer', flexShrink: 0, opacity: deleteLoading === u.id ? 0.5 : 1,
+                        transition: 'all 0.2s',
+                      }}>
+                      {deleteLoading === u.id ? 'Deleting...' : 'Delete'}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
