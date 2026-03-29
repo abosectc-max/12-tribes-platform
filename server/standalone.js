@@ -1051,6 +1051,42 @@ api.put('/api/access-requests/:requestId', auth, async (req, res) => {
   json(res, 200, { success: true, request });
 });
 
+// ─── ADMIN: LIST ALL USERS ───
+api.get('/api/admin/users', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const allUsers = db.findMany('users').map(u => ({
+    id: u.id,
+    email: u.email,
+    firstName: u.firstName || u.first_name || '',
+    lastName: u.lastName || u.last_name || '',
+    role: u.role || 'investor',
+    emailVerified: u.emailVerified || false,
+    tradingMode: u.tradingMode || 'paper',
+    createdAt: u.created_at || u.createdAt || null,
+    lastLogin: u.last_login || u.lastLogin || null,
+    loginCount: u.login_count || u.loginCount || 0,
+  }));
+
+  json(res, 200, allUsers);
+});
+
+// ─── ADMIN: UPDATE USER ROLE ───
+api.put('/api/admin/users/:userId', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  const { role } = body;
+  if (!['admin', 'investor'].includes(role)) return json(res, 400, { error: 'Role must be "admin" or "investor"' });
+
+  const target = db.update('users', u => u.id === req.params.userId, { role });
+  if (!target) return json(res, 404, { error: 'User not found' });
+
+  json(res, 200, { success: true, user: { id: target.id, email: target.email, role: target.role } });
+});
+
 // ─── FUND SETTINGS (cross-device sync) ───
 api.get('/api/fund-settings', auth, (req, res) => {
   const settings = db.findOne('fund_settings', s => s.user_id === req.userId);

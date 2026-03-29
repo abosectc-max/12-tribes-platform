@@ -3,7 +3,7 @@
 //   Offline-first PWA with cache strategies
 // ═══════════════════════════════════════════
 
-const CACHE_NAME = '12tribes-v1';
+const CACHE_NAME = '12tribes-v2';
 const OFFLINE_URL = '/offline.html';
 
 // Assets to pre-cache on install

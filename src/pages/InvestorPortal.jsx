@@ -2787,22 +2787,30 @@ const ADMIN_API_BASE = (() => {
 
 function AdminPanel({ investor, isMobile }) {
   const [requests, setRequests] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [usersLoading, setUsersLoading] = useState(true);
   const [error, setError] = useState("");
-  const [actionLoading, setActionLoading] = useState(null); // request id being acted on
+  const [actionLoading, setActionLoading] = useState(null);
+  const [activeSection, setActiveSection] = useState('requests'); // 'requests' | 'users'
 
   const token = (() => {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
   })();
 
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
   const fetchRequests = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const resp = await fetch(`${ADMIN_API_BASE}/access-requests`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (resp.status === 403) { setError("Admin access required."); setLoading(false); return; }
+      const resp = await fetch(`${ADMIN_API_BASE}/access-requests`, { headers: authHeaders });
+      if (resp.status === 401 || resp.status === 403) {
+        // Token may be stale from old deploy — try re-login silently
+        setError("Session expired. Please sign out and sign back in to refresh admin access.");
+        setLoading(false);
+        return;
+      }
       const data = await resp.json();
       if (Array.isArray(data)) setRequests(data);
       else setError(data.error || "Failed to load requests.");
@@ -2812,14 +2820,26 @@ function AdminPanel({ investor, isMobile }) {
     setLoading(false);
   }, [token]);
 
-  useEffect(() => { fetchRequests(); }, [fetchRequests]);
+  const fetchUsers = useCallback(async () => {
+    setUsersLoading(true);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/users`, { headers: authHeaders });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (Array.isArray(data)) setUsers(data);
+      }
+    } catch { /* silent */ }
+    setUsersLoading(false);
+  }, [token]);
+
+  useEffect(() => { fetchRequests(); fetchUsers(); }, [fetchRequests, fetchUsers]);
 
   const handleAction = async (requestId, status) => {
     setActionLoading(requestId);
     try {
       const resp = await fetch(`${ADMIN_API_BASE}/access-requests/${requestId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: authHeaders,
         body: JSON.stringify({ status }),
       });
       const data = await resp.json();
@@ -2843,106 +2863,171 @@ function AdminPanel({ investor, isMobile }) {
   const denied = requests.filter(r => r.status === 'denied');
 
   const statusBadge = (status) => {
-    const colors = { pending: '#F59E0B', approved: '#10B981', denied: '#EF4444' };
+    const colors = { pending: '#F59E0B', approved: '#10B981', denied: '#EF4444', admin: '#A855F7', investor: '#00D4FF' };
     return {
       display: 'inline-block', padding: '3px 10px', borderRadius: 8,
       fontSize: 11, fontWeight: 600, letterSpacing: 0.5,
-      background: `${colors[status]}20`, color: colors[status],
+      background: `${colors[status] || '#666'}20`, color: colors[status] || '#666',
       textTransform: 'uppercase',
     };
   };
 
+  const tabStyle = (active) => ({
+    padding: '10px 20px', borderRadius: 12, border: 'none', cursor: 'pointer',
+    background: active ? 'rgba(0,212,255,0.15)' : 'rgba(255,255,255,0.04)',
+    color: active ? '#00D4FF' : 'rgba(255,255,255,0.4)',
+    fontSize: 13, fontWeight: 600, transition: 'all 0.2s',
+  });
+
   return (
     <div style={{ padding: isMobile ? 16 : 0 }}>
       <h2 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 800, color: '#fff', margin: '0 0 8px' }}>Admin Panel</h2>
-      <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', margin: '0 0 24px' }}>Manage access requests and user approvals</p>
+      <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', margin: '0 0 20px' }}>Manage users, access requests, and platform settings</p>
+
+      {/* Tab Switcher */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
+        <button onClick={() => setActiveSection('requests')} style={tabStyle(activeSection === 'requests')}>
+          Access Requests {pending.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: '#F59E0B', color: '#000', fontSize: 10, fontWeight: 800 }}>{pending.length}</span>}
+        </button>
+        <button onClick={() => setActiveSection('users')} style={tabStyle(activeSection === 'users')}>
+          User Accounts <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 800 }}>{users.length}</span>
+        </button>
+      </div>
 
       {/* Stats Row */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
         {[
-          { label: 'Pending', count: pending.length, color: '#F59E0B' },
+          { label: 'Total Users', count: users.length, color: '#00D4FF' },
+          { label: 'Pending Requests', count: pending.length, color: '#F59E0B' },
           { label: 'Approved', count: approved.length, color: '#10B981' },
           { label: 'Denied', count: denied.length, color: '#EF4444' },
         ].map(s => (
-          <div key={s.label} style={{ ...glass, padding: '16px 24px', flex: '1 1 120px', textAlign: 'center' }}>
-            <div style={{ fontSize: 28, fontWeight: 800, color: s.color }}>{s.count}</div>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{s.label}</div>
+          <div key={s.label} style={{ ...glass, padding: '14px 20px', flex: '1 1 100px', textAlign: 'center' }}>
+            <div style={{ fontSize: 24, fontWeight: 800, color: s.color }}>{s.count}</div>
+            <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{s.label}</div>
           </div>
         ))}
       </div>
 
-      {loading && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading requests...</div>}
-      {error && <div style={{ color: '#EF4444', textAlign: 'center', padding: 20 }}>{error}</div>}
+      {error && <div style={{ color: '#EF4444', textAlign: 'center', padding: 16, marginBottom: 16, ...glass, border: '1px solid rgba(239,68,68,0.2)' }}>{error}</div>}
 
-      {!loading && !error && requests.length === 0 && (
-        <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>◇</div>
-          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No access requests yet</div>
-        </div>
+      {/* ═══════ ACCESS REQUESTS SECTION ═══════ */}
+      {activeSection === 'requests' && (
+        <>
+          {loading && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading requests...</div>}
+
+          {!loading && !error && requests.length === 0 && (
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>◇</div>
+              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No access requests yet</div>
+            </div>
+          )}
+
+          {pending.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: '#F59E0B', margin: '0 0 12px' }}>Pending Requests ({pending.length})</h3>
+              {pending.map(r => (
+                <div key={r.id} style={{ ...glass, padding: 16, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: 10,
+                    background: 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(168,85,247,0.2))',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, fontWeight: 700, color: '#00D4FF', flexShrink: 0,
+                  }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
+                  <div style={{ flex: 1, minWidth: 150 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{r.email}</div>
+                    {r.message && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 4, fontStyle: 'italic' }}>"{r.message}"</div>}
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>Submitted {new Date(r.submitted_at).toLocaleString()}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                    <button onClick={() => handleAction(r.id, 'approved')} disabled={actionLoading === r.id}
+                      style={{ padding: '8px 16px', borderRadius: 10, border: 'none', background: 'rgba(16,185,129,0.2)', color: '#10B981', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                      {actionLoading === r.id ? '...' : 'Approve'}
+                    </button>
+                    <button onClick={() => handleAction(r.id, 'denied')} disabled={actionLoading === r.id}
+                      style={{ padding: '8px 16px', borderRadius: 10, border: 'none', background: 'rgba(239,68,68,0.15)', color: '#EF4444', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                      {actionLoading === r.id ? '...' : 'Deny'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {[...approved, ...denied].length > 0 && (
+            <div>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'rgba(255,255,255,0.5)', margin: '0 0 12px' }}>Reviewed ({approved.length + denied.length})</h3>
+              {[...approved, ...denied].map(r => (
+                <div key={r.id} style={{ ...glass, padding: 14, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 12, opacity: 0.7, flexWrap: 'wrap' }}>
+                  <div style={{
+                    width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.05)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.4)', flexShrink: 0,
+                  }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{r.email}</div>
+                  </div>
+                  <span style={statusBadge(r.status)}>{r.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
-      {/* Pending Requests */}
-      {pending.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#F59E0B', margin: '0 0 12px' }}>Pending Requests ({pending.length})</h3>
-          {pending.map(r => (
-            <div key={r.id} style={{ ...glass, padding: 16, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: 10,
-                background: 'linear-gradient(135deg, rgba(0,212,255,0.2), rgba(168,85,247,0.2))',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 13, fontWeight: 700, color: '#00D4FF', flexShrink: 0,
-              }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
-              <div style={{ flex: 1, minWidth: 150 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{r.email}</div>
-                {r.message && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 4, fontStyle: 'italic' }}>"{r.message}"</div>}
-                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>Submitted {new Date(r.submitted_at).toLocaleString()}</div>
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                <button onClick={() => handleAction(r.id, 'approved')} disabled={actionLoading === r.id}
-                  style={{
-                    padding: '8px 16px', borderRadius: 10, border: 'none',
-                    background: 'rgba(16,185,129,0.2)', color: '#10B981',
-                    fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  }}>Approve</button>
-                <button onClick={() => handleAction(r.id, 'denied')} disabled={actionLoading === r.id}
-                  style={{
-                    padding: '8px 16px', borderRadius: 10, border: 'none',
-                    background: 'rgba(239,68,68,0.15)', color: '#EF4444',
-                    fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  }}>Deny</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* ═══════ USER ACCOUNTS SECTION ═══════ */}
+      {activeSection === 'users' && (
+        <>
+          {usersLoading && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading users...</div>}
 
-      {/* Approved & Denied */}
-      {[...approved, ...denied].length > 0 && (
-        <div>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: 'rgba(255,255,255,0.5)', margin: '0 0 12px' }}>Reviewed ({approved.length + denied.length})</h3>
-          {[...approved, ...denied].map(r => (
-            <div key={r.id} style={{ ...glass, padding: 14, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 12, opacity: 0.7, flexWrap: 'wrap' }}>
-              <div style={{
-                width: 32, height: 32, borderRadius: 9,
-                background: 'rgba(255,255,255,0.05)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.4)', flexShrink: 0,
-              }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
-              <div style={{ flex: 1, minWidth: 120 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{r.first_name} {r.last_name}</div>
-                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{r.email}</div>
-              </div>
-              <span style={statusBadge(r.status)}>{r.status}</span>
+          {!usersLoading && users.length === 0 && (
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>👤</div>
+              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No registered users</div>
             </div>
-          ))}
-        </div>
+          )}
+
+          {!usersLoading && users.length > 0 && (
+            <div>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: '#00D4FF', margin: '0 0 12px' }}>Registered Accounts ({users.length})</h3>
+              {users.map(u => (
+                <div key={u.id} style={{ ...glass, padding: 16, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: 12,
+                    background: u.role === 'admin'
+                      ? 'linear-gradient(135deg, rgba(168,85,247,0.3), rgba(0,212,255,0.2))'
+                      : 'rgba(255,255,255,0.06)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 14, fontWeight: 700,
+                    color: u.role === 'admin' ? '#A855F7' : 'rgba(255,255,255,0.4)',
+                    flexShrink: 0,
+                  }}>{(u.firstName?.[0] || '').toUpperCase()}{(u.lastName?.[0] || '').toUpperCase()}</div>
+                  <div style={{ flex: 1, minWidth: 160 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>{u.firstName} {u.lastName}</span>
+                      <span style={statusBadge(u.role)}>{u.role}</span>
+                      {u.emailVerified && <span style={{ fontSize: 10, color: '#10B981' }}>✓ Verified</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>{u.email}</div>
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <span>Mode: {u.tradingMode || 'paper'}</span>
+                      <span>Logins: {u.loginCount || 0}</span>
+                      {u.lastLogin && <span>Last: {new Date(u.lastLogin).toLocaleDateString()}</span>}
+                      {u.createdAt && <span>Joined: {new Date(u.createdAt).toLocaleDateString()}</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {/* Refresh Button */}
       <div style={{ textAlign: 'center', marginTop: 24 }}>
-        <button onClick={fetchRequests} style={{
+        <button onClick={() => { fetchRequests(); fetchUsers(); }} style={{
           padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
           background: 'transparent', color: 'rgba(255,255,255,0.5)',
           fontSize: 13, cursor: 'pointer',
