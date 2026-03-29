@@ -1166,6 +1166,23 @@ function accessApprovedEmail(firstName) {
   `;
 }
 
+function accessDeniedEmail(firstName) {
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
+        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
+      </div>
+      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px;">
+        <div style="font-size: 18px; font-weight: 700; color: #F59E0B; margin-bottom: 12px;">Access Request Update</div>
+        <div style="font-size: 14px; color: #ccc; line-height: 1.6;">
+          ${firstName}, thank you for your interest in 12 Tribes Investments. After reviewing your request, we are unable to grant access at this time. If you believe this was in error, please contact our support team for more information.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 // ─── AUTH: FORGOT PASSWORD (sends email with code) ───
 api.post('/api/auth/forgot-password', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
@@ -1368,13 +1385,24 @@ api.put('/api/access-requests/:requestId', auth, async (req, res) => {
 
   if (!request) return json(res, 404, { error: 'Request not found' });
 
-  // Send email notification on approval
-  if (status === 'approved' && request.email) {
-    sendEmail(request.email, `${APP_NAME} — Access Approved!`, accessApprovedEmail(request.first_name || 'Investor'))
-      .catch(() => {}); // best-effort
+  // Send email notification on approval or denial
+  let emailResult = null;
+  if (request.email) {
+    try {
+      if (status === 'approved') {
+        emailResult = await sendEmail(request.email, `${APP_NAME} — Access Approved!`, accessApprovedEmail(request.first_name || 'Investor'));
+        console.log(`[ACCESS] Approved ${request.email} — email ${emailResult?.success ? 'SENT' : 'FAILED: ' + (emailResult?.reason || 'unknown')}`);
+      } else if (status === 'denied') {
+        emailResult = await sendEmail(request.email, `${APP_NAME} — Access Request Update`, accessDeniedEmail(request.first_name || 'Investor'));
+        console.log(`[ACCESS] Denied ${request.email} — email ${emailResult?.success ? 'SENT' : 'FAILED: ' + (emailResult?.reason || 'unknown')}`);
+      }
+    } catch (err) {
+      console.error(`[ACCESS] Email send error for ${request.email}:`, err.message);
+      emailResult = { success: false, reason: err.message };
+    }
   }
 
-  json(res, 200, { success: true, request });
+  json(res, 200, { success: true, request, emailSent: emailResult?.success || false, emailError: emailResult?.success ? null : (emailResult?.reason || null) });
 });
 
 // ─── ADMIN: LIST ALL USERS ───

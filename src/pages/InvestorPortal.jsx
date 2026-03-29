@@ -2997,10 +2997,12 @@ function AdminPanel({ investor, isMobile }) {
   }, [activeSection, fetchHealth]);
 
   const [actionError, setActionError] = useState('');
+  const [actionSuccess, setActionSuccess] = useState('');
 
   const handleAction = async (requestId, status) => {
     setActionLoading(requestId);
     setActionError('');
+    setActionSuccess('');
     try {
       const resp = await fetch(`${ADMIN_API_BASE}/access-requests/${requestId}`, {
         method: 'PUT',
@@ -3010,6 +3012,13 @@ function AdminPanel({ investor, isMobile }) {
       const data = await resp.json();
       if (data.success) {
         setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status, reviewed_at: new Date().toISOString() } : r));
+        const action = status === 'approved' ? 'Approved' : 'Denied';
+        if (data.emailSent) {
+          setActionSuccess(`${action} — notification email sent to ${data.request?.email || 'user'}`);
+        } else {
+          const emailNote = data.emailError ? ` (Email failed: ${data.emailError})` : ' (No email sent)';
+          setActionSuccess(`${action}${emailNote}`);
+        }
       } else {
         setActionError(data.error || `Failed to ${status === 'approved' ? 'approve' : 'deny'} request.`);
       }
@@ -3125,6 +3134,7 @@ function AdminPanel({ investor, isMobile }) {
 
       {error && <div style={{ color: '#EF4444', textAlign: 'center', padding: 16, marginBottom: 16, ...glass, border: '1px solid rgba(239,68,68,0.2)' }}>{error}</div>}
       {actionError && <div style={{ color: '#EF4444', textAlign: 'center', padding: 12, marginBottom: 16, ...glass, border: '1px solid rgba(239,68,68,0.2)', fontSize: 13 }}>{actionError}</div>}
+      {actionSuccess && <div style={{ color: '#10B981', textAlign: 'center', padding: 12, marginBottom: 16, ...glass, border: '1px solid rgba(16,185,129,0.2)', fontSize: 13 }}>{actionSuccess}</div>}
 
       {/* ═══════ ACCESS REQUESTS SECTION ═══════ */}
       {activeSection === 'requests' && (
