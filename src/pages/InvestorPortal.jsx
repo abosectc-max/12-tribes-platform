@@ -1655,7 +1655,7 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
           const data = await res.json();
           setServerStats(data);
         }
-      } catch {}
+      } catch (err) { console.warn('[TradingPanel] Server poll error:', err.message); }
     }, 5000);
     return () => clearInterval(interval);
   }, [tradingActive, investorId, onTick]);
@@ -2792,7 +2792,11 @@ function AdminPanel({ investor, isMobile }) {
   const [usersLoading, setUsersLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState(null);
-  const [activeSection, setActiveSection] = useState('requests'); // 'requests' | 'users'
+  const [activeSection, setActiveSection] = useState('requests'); // 'requests' | 'users' | 'health' | 'qa'
+  const [healthData, setHealthData] = useState(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [qaReports, setQaReports] = useState([]);
+  const [qaLoading, setQaLoading] = useState(false);
 
   const token = (() => {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
@@ -2832,7 +2836,32 @@ function AdminPanel({ investor, isMobile }) {
     setUsersLoading(false);
   }, [token]);
 
-  useEffect(() => { fetchRequests(); fetchUsers(); }, [fetchRequests, fetchUsers]);
+  const fetchHealth = useCallback(async () => {
+    setHealthLoading(true);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/health`, { headers: authHeaders });
+      if (resp.ok) { const data = await resp.json(); setHealthData(data); }
+    } catch { /* silent */ }
+    setHealthLoading(false);
+  }, [token]);
+
+  const fetchQaReports = useCallback(async () => {
+    setQaLoading(true);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/qa-reports`, { headers: authHeaders });
+      if (resp.ok) { const data = await resp.json(); if (Array.isArray(data)) setQaReports(data); }
+    } catch { /* silent */ }
+    setQaLoading(false);
+  }, [token]);
+
+  useEffect(() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); }, [fetchRequests, fetchUsers, fetchHealth, fetchQaReports]);
+
+  // Auto-refresh health every 30s when on health tab
+  useEffect(() => {
+    if (activeSection !== 'health') return;
+    const interval = setInterval(fetchHealth, 30000);
+    return () => clearInterval(interval);
+  }, [activeSection, fetchHealth]);
 
   const handleAction = async (requestId, status) => {
     setActionLoading(requestId);
@@ -2891,6 +2920,12 @@ function AdminPanel({ investor, isMobile }) {
         </button>
         <button onClick={() => setActiveSection('users')} style={tabStyle(activeSection === 'users')}>
           User Accounts <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 800 }}>{users.length}</span>
+        </button>
+        <button onClick={() => { setActiveSection('health'); fetchHealth(); }} style={tabStyle(activeSection === 'health')}>
+          Platform Health
+        </button>
+        <button onClick={() => { setActiveSection('qa'); fetchQaReports(); }} style={tabStyle(activeSection === 'qa')}>
+          QA Reports {qaReports.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(168,85,247,0.3)', color: '#A855F7', fontSize: 10, fontWeight: 800 }}>{qaReports.length}</span>}
         </button>
       </div>
 
@@ -3025,9 +3060,137 @@ function AdminPanel({ investor, isMobile }) {
         </>
       )}
 
+      {/* ═══════ PLATFORM HEALTH SECTION ═══════ */}
+      {activeSection === 'health' && (
+        <>
+          {healthLoading && !healthData && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading health data...</div>}
+          {healthData && (() => {
+            const h = healthData;
+            const statusColor = h.status === 'operational' ? '#10B981' : '#EF4444';
+            const metricCard = (label, value, color, sub) => (
+              <div style={{ ...glass, padding: '14px 16px', flex: '1 1 140px', minWidth: 140 }}>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.8 }}>{label}</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: color || '#fff' }}>{value}</div>
+                {sub && <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', marginTop: 2 }}>{sub}</div>}
+              </div>
+            );
+            return (
+              <div>
+                {/* Status Banner */}
+                <div style={{ ...glass, padding: '16px 20px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, border: `1px solid ${statusColor}30` }}>
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: statusColor, boxShadow: `0 0 12px ${statusColor}60` }} />
+                  <div style={{ fontSize: 16, fontWeight: 700, color: statusColor, textTransform: 'uppercase', letterSpacing: 1 }}>{h.status}</div>
+                  <div style={{ marginLeft: 'auto', fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>Last check: {new Date(h.timestamp).toLocaleTimeString()}</div>
+                </div>
+
+                {/* Server Metrics */}
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: '#00D4FF', margin: '0 0 10px' }}>Server</h3>
+                <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+                  {metricCard('Uptime', h.server.uptimeHuman, '#10B981')}
+                  {metricCard('Memory (Heap)', `${h.server.memoryMB.heapUsed} MB`, '#00D4FF', `of ${h.server.memoryMB.heapTotal} MB`)}
+                  {metricCard('RSS', `${h.server.memoryMB.rss} MB`, '#A855F7')}
+                  {metricCard('Node', h.server.nodeVersion, '#F59E0B')}
+                </div>
+
+                {/* Database Metrics */}
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: '#00D4FF', margin: '0 0 10px' }}>Database</h3>
+                <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+                  {metricCard('Users', h.database.users, '#00D4FF')}
+                  {metricCard('Wallets', h.database.wallets, '#A855F7')}
+                  {metricCard('Open Positions', h.database.positions.open, '#10B981', `of ${h.database.positions.total} total`)}
+                  {metricCard('Trades', h.database.trades, '#F59E0B')}
+                </div>
+
+                {/* Trading Engine */}
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: '#00D4FF', margin: '0 0 10px' }}>Trading Engine</h3>
+                <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+                  {metricCard('Status', h.tradingEngine.active ? 'ACTIVE' : 'OFFLINE', h.tradingEngine.active ? '#10B981' : '#EF4444')}
+                  {metricCard('Trades/Hour', h.tradingEngine.tradesLastHour, '#00D4FF')}
+                  {metricCard('Trades/24h', h.tradingEngine.tradesLast24h, '#A855F7')}
+                  {metricCard('AI Agents', h.tradingEngine.agentCount, '#F59E0B')}
+                </div>
+
+                {/* WebSocket & Market Data */}
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: '#00D4FF', margin: '0 0 10px' }}>Live Data</h3>
+                <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+                  {metricCard('WS Connections', h.websocket.connections, '#00D4FF')}
+                  {metricCard('Market Symbols', h.marketData.symbolCount, '#A855F7')}
+                  {metricCard('BTC', `$${(h.marketData.samplePrices?.BTC || 0).toLocaleString()}`, '#F59E0B')}
+                  {metricCard('Risk Events (24h)', h.risk.eventsLast24h, h.risk.criticalEvents > 0 ? '#EF4444' : '#10B981', h.risk.criticalEvents > 0 ? `${h.risk.criticalEvents} critical` : 'No critical')}
+                </div>
+              </div>
+            );
+          })()}
+        </>
+      )}
+
+      {/* ═══════ QA REPORTS SECTION ═══════ */}
+      {activeSection === 'qa' && (
+        <>
+          {qaLoading && qaReports.length === 0 && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading QA reports...</div>}
+
+          {!qaLoading && qaReports.length === 0 && (
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
+              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No QA/QC reports yet</div>
+              <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: 12, marginTop: 8 }}>Automated audits run every 6 hours and will appear here</div>
+            </div>
+          )}
+
+          {qaReports.length > 0 && qaReports.map(report => {
+            const sev = report.severity_counts || {};
+            const sevColor = sev.critical > 0 ? '#EF4444' : sev.high > 0 ? '#F59E0B' : '#10B981';
+            return (
+              <div key={report.id} style={{ ...glass, padding: 20, marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: sevColor, boxShadow: `0 0 8px ${sevColor}60` }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{report.summary}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>
+                      {new Date(report.created_at).toLocaleString()} · Source: {report.source || 'manual'}
+                    </div>
+                  </div>
+                  <span style={{
+                    padding: '4px 12px', borderRadius: 8, fontSize: 10, fontWeight: 700,
+                    background: report.status === 'new' ? 'rgba(0,212,255,0.15)' : 'rgba(255,255,255,0.05)',
+                    color: report.status === 'new' ? '#00D4FF' : 'rgba(255,255,255,0.4)',
+                    textTransform: 'uppercase', letterSpacing: 0.5,
+                  }}>{report.status}</span>
+                </div>
+
+                {/* Severity Counts */}
+                {Object.keys(sev).length > 0 && (
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                    {sev.critical > 0 && <span style={{ padding: '3px 10px', borderRadius: 6, background: 'rgba(239,68,68,0.15)', color: '#EF4444', fontSize: 11, fontWeight: 600 }}>🔴 {sev.critical} Critical</span>}
+                    {sev.high > 0 && <span style={{ padding: '3px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#F59E0B', fontSize: 11, fontWeight: 600 }}>⚠️ {sev.high} High</span>}
+                    {sev.medium > 0 && <span style={{ padding: '3px 10px', borderRadius: 6, background: 'rgba(0,212,255,0.1)', color: '#00D4FF', fontSize: 11, fontWeight: 600 }}>🔄 {sev.medium} Medium</span>}
+                    {sev.low > 0 && <span style={{ padding: '3px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)', fontSize: 11, fontWeight: 600 }}>{sev.low} Low</span>}
+                  </div>
+                )}
+
+                {/* Issues List */}
+                {report.issues && report.issues.length > 0 && (
+                  <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 12, maxHeight: 200, overflowY: 'auto' }}>
+                    {report.issues.slice(0, 10).map((issue, i) => (
+                      <div key={i} style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', padding: '4px 0', borderBottom: i < report.issues.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
+                        <span style={{ color: issue.severity === 'critical' ? '#EF4444' : issue.severity === 'high' ? '#F59E0B' : '#00D4FF', fontWeight: 600, marginRight: 8 }}>
+                          [{(issue.severity || 'info').toUpperCase()}]
+                        </span>
+                        {issue.description || issue.message || JSON.stringify(issue)}
+                      </div>
+                    ))}
+                    {report.issues.length > 10 && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 8, textAlign: 'center' }}>+{report.issues.length - 10} more issues</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+
       {/* Refresh Button */}
       <div style={{ textAlign: 'center', marginTop: 24 }}>
-        <button onClick={() => { fetchRequests(); fetchUsers(); }} style={{
+        <button onClick={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); }} style={{
           padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
           background: 'transparent', color: 'rgba(255,255,255,0.5)',
           fontSize: 13, cursor: 'pointer',

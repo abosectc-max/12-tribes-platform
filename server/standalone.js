@@ -29,6 +29,32 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'; // Resend default sender (works without domain verification)
 const APP_NAME = '12 Tribes Investments';
 const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://12-tribes-platform.vercel.app';
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173', 'http://localhost:4173', 'http://localhost:3000',
+  'https://12-tribes-platform.vercel.app',
+  FRONTEND_ORIGIN,
+].filter(Boolean);
+
+// ─── Rate Limiter ───
+const rateLimitStore = new Map();
+function rateLimit(key, maxAttempts, windowMs) {
+  const now = Date.now();
+  const record = rateLimitStore.get(key) || [];
+  const recent = record.filter(t => now - t < windowMs);
+  if (recent.length >= maxAttempts) return false;
+  recent.push(now);
+  rateLimitStore.set(key, recent);
+  return true;
+}
+// Clean rate limit store every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, times] of rateLimitStore) {
+    const recent = times.filter(t => now - t < 3600000);
+    if (recent.length === 0) rateLimitStore.delete(key);
+    else rateLimitStore.set(key, recent);
+  }
+}, 300000);
 
 // Risk management defaults
 const RISK = {
@@ -165,7 +191,7 @@ function verifyJWT(token) {
     const expected = createHash('sha256').update(`${header}.${body}.${JWT_SECRET}`).digest('base64url');
     if (signature !== expected) return null;
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
-    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
     return payload;
   } catch { return null; }
 }
@@ -243,11 +269,19 @@ const DEFAULT_PRICES = {
 
 const marketPrices = { ...DEFAULT_PRICES };
 
+// ─── Precision-safe rounding to avoid floating point drift ───
+function roundTo(value, decimals) {
+  const factor = Math.pow(10, decimals);
+  return Math.round(value * factor) / factor;
+}
+
 function tickPrices() {
   for (const symbol of Object.keys(marketPrices)) {
     const price = marketPrices[symbol];
     const vol = symbol.includes('/') ? 0.0003 : ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(symbol) ? 0.002 : 0.001;
-    marketPrices[symbol] = parseFloat((price + price * (Math.random() - 0.498) * vol).toFixed(price < 10 ? 4 : 2));
+    const decimals = price < 10 ? 4 : 2;
+    // Math.random() - 0.5 centers the random walk (no directional bias)
+    marketPrices[symbol] = roundTo(price + price * (Math.random() - 0.5) * vol, decimals);
   }
   updatePositionValues();
 }
@@ -257,16 +291,16 @@ function updatePositionValues() {
     const price = marketPrices[pos.symbol] || pos.entry_price;
     const dir = pos.side === 'LONG' ? 1 : -1;
     pos.current_price = price;
-    pos.unrealized_pnl = parseFloat(((price - pos.entry_price) * pos.quantity * dir).toFixed(2));
-    pos.return_pct = parseFloat(((price / pos.entry_price - 1) * 100 * dir).toFixed(4));
+    pos.unrealized_pnl = roundTo((price - pos.entry_price) * pos.quantity * dir, 2);
+    pos.return_pct = roundTo((price / pos.entry_price - 1) * 100 * dir, 4);
   });
 
   // Update wallet equity
   db.findMany('wallets').forEach(wallet => {
     const positions = db.findMany('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN');
     const unrealized = positions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
-    wallet.unrealized_pnl = unrealized;
-    wallet.equity = wallet.balance + unrealized;
+    wallet.unrealized_pnl = roundTo(unrealized, 2);
+    wallet.equity = roundTo(wallet.balance + unrealized, 2);
   });
   db._save('wallets');
   db._save('positions');
@@ -314,7 +348,7 @@ function handleUpgrade(req, socket) {
           parsed.symbols.forEach(s => client.subscriptions.delete(s.toUpperCase()));
         }
       }
-    } catch {}
+    } catch (err) { console.error('[WS] Error parsing message:', err.message); }
   });
 
   socket.on('close', () => wsClients.delete(client));
@@ -365,7 +399,7 @@ function wsEncodeFrame(data) {
 }
 
 function wsSend(client, data) {
-  try { client.socket.write(wsEncodeFrame(data)); } catch {}
+  try { client.socket.write(wsEncodeFrame(data)); } catch (err) { console.error('[WS] Send error:', err.message); }
 }
 
 function wsBroadcastPrices() {
@@ -473,7 +507,7 @@ function closePosition(userId, positionId) {
 
   const closePrice = marketPrices[pos.symbol] || pos.current_price || pos.entry_price;
   const dir = pos.side === 'LONG' ? 1 : -1;
-  const pnl = parseFloat(((closePrice - pos.entry_price) * pos.quantity * dir).toFixed(2));
+  const pnl = roundTo((closePrice - pos.entry_price) * pos.quantity * dir, 2);
   const cost = pos.entry_price * pos.quantity;
   const returnBack = pos.side === 'LONG' ? cost + pnl : (cost * 0.1) + pnl;
   const holdTime = Math.round((Date.now() - new Date(pos.opened_at).getTime()) / 1000);
@@ -521,12 +555,27 @@ function closePosition(userId, positionId) {
 //   HELPERS
 // ═══════════════════════════════════════════
 
+function getCorsOrigin(req) {
+  const origin = (req && req.headers && req.headers.origin) || '';
+  return ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+}
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'X-XSS-Protection': '1; mode=block',
+};
+
 function json(res, status, data) {
+  const origin = res._corsOrigin || ALLOWED_ORIGINS[0];
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Credentials': 'true',
+    ...SECURITY_HEADERS,
   });
   res.end(JSON.stringify(data));
 }
@@ -567,14 +616,23 @@ api.get('/api/health', (req, res) => {
   });
 });
 
+// ─── Email validation ───
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // ─── AUTH: REGISTER ───
 api.post('/api/auth/register', async (req, res) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimit(`register:${ip}`, 3, 3600000)) {
+    return json(res, 429, { error: 'Too many registration attempts. Try again in 1 hour.' });
+  }
+
   const body = await readBody(req);
   const { email, password, firstName, lastName, phone } = body;
 
   if (!email || !password || !firstName || !lastName) {
     return json(res, 400, { error: 'All fields required: email, password, firstName, lastName' });
   }
+  if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Invalid email format' });
   if (password.length < 6) return json(res, 400, { error: 'Password must be at least 6 characters' });
 
   if (db.findOne('users', u => u.email === email.toLowerCase())) {
@@ -637,10 +695,16 @@ api.post('/api/auth/register', async (req, res) => {
 
 // ─── AUTH: LOGIN ───
 api.post('/api/auth/login', async (req, res) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimit(`login:${ip}`, 5, 900000)) {
+    return json(res, 429, { error: 'Too many login attempts. Try again in 15 minutes.' });
+  }
+
   const body = await readBody(req);
   const { email, password } = body;
 
   if (!email || !password) return json(res, 400, { error: 'Email and password required' });
+  if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Invalid email format' });
 
   const user = db.findOne('users', u => u.email === email.toLowerCase());
   if (!user || !verifyPassword(password, user.password_hash)) {
@@ -847,9 +911,15 @@ function accessApprovedEmail(firstName) {
 
 // ─── AUTH: FORGOT PASSWORD (sends email with code) ───
 api.post('/api/auth/forgot-password', async (req, res) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimit(`forgot:${ip}`, 3, 900000)) {
+    return json(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' });
+  }
+
   const body = await readBody(req);
   const { email } = body;
   if (!email) return json(res, 400, { error: 'Email required' });
+  if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Invalid email format' });
 
   const emailKey = email.toLowerCase().trim();
 
@@ -886,11 +956,10 @@ api.post('/api/auth/reset-password', async (req, res) => {
   const user = db.findOne('users', u => u.email === emailKey);
   if (!user) return json(res, 404, { error: 'User not found' });
 
-  // If code provided, verify it. If not, allow (backward compat with frontend-only codes)
-  if (code) {
-    const check = verifyCode(emailKey, 'password_reset', code);
-    if (!check.valid) return json(res, 400, { error: check.reason });
-  }
+  // Code is REQUIRED — no password reset without valid verification
+  if (!code) return json(res, 400, { error: 'Verification code is required' });
+  const check = verifyCode(emailKey, 'password_reset', code);
+  if (!check.valid) return json(res, 400, { error: check.reason || 'Invalid or expired code' });
 
   user.password_hash = hashPassword(newPassword);
   db._save('users');
@@ -1085,6 +1154,135 @@ api.put('/api/admin/users/:userId', auth, async (req, res) => {
   if (!target) return json(res, 404, { error: 'User not found' });
 
   json(res, 200, { success: true, user: { id: target.id, email: target.email, role: target.role } });
+});
+
+// ─── ADMIN: PLATFORM HEALTH DASHBOARD ───
+api.get('/api/admin/health', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const now = Date.now();
+  const uptime = process.uptime();
+  const mem = process.memoryUsage();
+
+  // Database stats
+  const totalUsers = db.findMany('users').length;
+  const totalPositions = db.findMany('positions').length;
+  const openPositions = db.findMany('positions', p => p.status === 'OPEN').length;
+  const totalTrades = db.findMany('trades').length;
+  const totalWallets = db.findMany('wallets').length;
+
+  // Trading engine stats
+  const autoTradeLog = db.findMany('auto_trade_log');
+  const recentTrades = autoTradeLog.filter(t => now - new Date(t.timestamp || t.created_at).getTime() < 3600000);
+  const last24hTrades = autoTradeLog.filter(t => now - new Date(t.timestamp || t.created_at).getTime() < 86400000);
+
+  // WebSocket stats
+  const wsConnectionCount = wsClients.size;
+
+  // Risk events
+  const riskEvents = db.findMany('risk_events') || [];
+  const recentRiskEvents = riskEvents.filter(e => now - new Date(e.timestamp || e.created_at).getTime() < 86400000);
+
+  // Market data health
+  const priceCount = Object.keys(marketPrices).length;
+  const staleSymbols = []; // All simulated so none are stale, but infrastructure is here
+
+  json(res, 200, {
+    status: 'operational',
+    timestamp: new Date().toISOString(),
+    server: {
+      uptime: roundTo(uptime, 0),
+      uptimeHuman: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`,
+      memoryMB: {
+        rss: roundTo(mem.rss / 1048576, 1),
+        heapUsed: roundTo(mem.heapUsed / 1048576, 1),
+        heapTotal: roundTo(mem.heapTotal / 1048576, 1),
+        external: roundTo(mem.external / 1048576, 1),
+      },
+      nodeVersion: process.version,
+      platform: process.platform,
+    },
+    database: {
+      users: totalUsers,
+      wallets: totalWallets,
+      positions: { total: totalPositions, open: openPositions },
+      trades: totalTrades,
+      autoTradeLog: autoTradeLog.length,
+    },
+    tradingEngine: {
+      active: true,
+      tradesLastHour: recentTrades.length,
+      tradesLast24h: last24hTrades.length,
+      agentCount: 6,
+    },
+    websocket: {
+      connections: wsConnectionCount,
+    },
+    marketData: {
+      symbolCount: priceCount,
+      staleSymbols,
+      samplePrices: {
+        BTC: marketPrices.BTC,
+        ETH: marketPrices.ETH,
+        SPY: marketPrices.SPY,
+      },
+    },
+    risk: {
+      eventsLast24h: recentRiskEvents.length,
+      criticalEvents: recentRiskEvents.filter(e => e.severity === 'critical').length,
+    },
+    rateLimiter: {
+      activeKeys: rateLimitStore.size,
+    },
+  });
+});
+
+// ─── ADMIN: QA/QC REPORTS ───
+api.get('/api/admin/qa-reports', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const reports = db.findMany('qa_reports').sort((a, b) =>
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+  json(res, 200, reports);
+});
+
+api.post('/api/admin/qa-reports', async (req, res) => {
+  // Accept reports from scheduled QA agent (API key or admin auth)
+  const apiKey = req.headers['x-qa-api-key'];
+  const isApiKey = apiKey && apiKey === (process.env.QA_API_KEY || JWT_SECRET);
+
+  if (!isApiKey) {
+    // Fall back to admin auth
+    const authHeader = req.headers['authorization'];
+    if (!authHeader) return json(res, 401, { error: 'Authentication required' });
+    const token = authHeader.replace('Bearer ', '');
+    try {
+      const payload = verifyJWT(token);
+      const user = db.findOne('users', u => u.id === payload.userId);
+      if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+    } catch { return json(res, 401, { error: 'Invalid token' }); }
+  }
+
+  const body = await readBody(req);
+  const { summary, issues, metrics, severity_counts, source } = body;
+  if (!summary) return json(res, 400, { error: 'Report summary required' });
+
+  const report = {
+    id: randomUUID(),
+    created_at: new Date().toISOString(),
+    source: source || 'scheduled_agent',
+    summary,
+    issues: issues || [],
+    metrics: metrics || {},
+    severity_counts: severity_counts || {},
+    status: 'new',
+  };
+
+  db.insert('qa_reports', report);
+  json(res, 201, report);
 });
 
 // ─── FUND SETTINGS (cross-device sync) ───
@@ -1295,13 +1493,19 @@ api.post('/api/broker/switch-mode', auth, async (req, res) => {
 // ═══════════════════════════════════════════
 
 const server = createServer(async (req, res) => {
+  // Resolve and attach CORS origin for all responses
+  const origin = getCorsOrigin(req);
+  res._corsOrigin = origin;
+
   // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Max-Age': '86400',
+      ...SECURITY_HEADERS,
     });
     return res.end();
   }

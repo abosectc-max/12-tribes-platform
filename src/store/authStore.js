@@ -30,7 +30,29 @@ function clearToken() {
   try { localStorage.removeItem(STORAGE_KEY_TOKEN); } catch {}
 }
 
+// ─── JWT expiration check (decode payload without verification) ───
+function isTokenExpired(token) {
+  if (!token) return true;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    if (!payload.exp) return true;
+    // Expire 60s early to avoid edge-case race conditions
+    return payload.exp < (Date.now() / 1000) - 60;
+  } catch { return true; }
+}
+
 async function apiFetch(path, options = {}) {
+  // Auto-clear expired tokens before making requests
+  if (authToken && isTokenExpired(authToken)) {
+    clearToken();
+    // Notify listeners of forced logout
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('12tribes:token-expired'));
+    }
+    return { ok: false, status: 401, data: { error: 'Session expired. Please sign in again.' }, expired: true };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000); // 4s timeout
   try {
