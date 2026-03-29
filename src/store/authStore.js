@@ -319,6 +319,67 @@ export async function registerUser({ firstName, lastName, email, phone, password
     return { success: false, error: 'Password must be at least 6 characters long.' };
   }
 
+  // ─── SERVER-FIRST REGISTRATION: Server is the source of truth for access control ───
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const apiResult = await apiFetch('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey, password, firstName: firstName.trim(), lastName: lastName.trim(), phone: phone.trim() }),
+      });
+      // If server rejects (403 = access not approved, 429 = rate limited, other errors), block registration
+      if (!apiResult.ok) {
+        const serverError = apiResult.data?.error || 'Registration failed. Please try again.';
+        return { success: false, error: serverError };
+      }
+      // Server accepted — now create local user
+      const id = apiResult.data?.user?.id || `INV_${String(userDB.size + 1).padStart(2, '0')}_${Date.now().toString(36)}`;
+      const avatar = `${firstName[0]}${lastName[0]}`.toUpperCase();
+      const now = new Date();
+      const passwordHash = await hashPassword(password);
+      const verificationCode = generateVerificationCode();
+
+      const user = {
+        id,
+        serverId: apiResult.data?.user?.id,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        name: `${firstName.trim()} ${lastName.trim()}`,
+        email: emailKey,
+        phone: phone.trim(),
+        avatar,
+        role: apiResult.data?.user?.role || 'investor',
+        virtualBalance: 100_000,
+        initialDeposit: 100_000,
+        depositTimestamp: now.toISOString(),
+        registeredAt: now.toISOString(),
+        registeredDate: now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        registeredTime: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        lastLoginAt: now.toISOString(),
+        loginCount: 1,
+        passwordHash,
+        hasPasskey: false,
+        passkeyCredentialId: null,
+        isNewUser: true,
+        emailVerified: false,
+      };
+
+      userDB.set(emailKey, user);
+      setVerificationCode(email, verificationCode);
+      persistUsers();
+      recordLogin({ ...user, method: 'registration' });
+
+      if (apiResult.data?.accessToken) {
+        saveToken(apiResult.data.accessToken);
+      }
+
+      return { success: true, user, verificationCode };
+    }
+  } catch (err) {
+    console.warn('[registerUser] Server registration error:', err.message);
+  }
+
+  // ─── FALLBACK: Server unreachable — allow local-only registration ───
   const id = `INV_${String(userDB.size + 1).padStart(2, '0')}_${Date.now().toString(36)}`;
   const avatar = `${firstName[0]}${lastName[0]}`.toUpperCase();
   const now = new Date();
@@ -333,17 +394,14 @@ export async function registerUser({ firstName, lastName, email, phone, password
     email: emailKey,
     phone: phone.trim(),
     avatar,
-    // Virtual wallet — $100,000 deposited at registration
     virtualBalance: 100_000,
     initialDeposit: 100_000,
     depositTimestamp: now.toISOString(),
-    // Timestamps
     registeredAt: now.toISOString(),
     registeredDate: now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
     registeredTime: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     lastLoginAt: now.toISOString(),
     loginCount: 1,
-    // Auth
     passwordHash,
     hasPasskey: false,
     passkeyCredentialId: null,
@@ -354,28 +412,7 @@ export async function registerUser({ firstName, lastName, email, phone, password
   userDB.set(emailKey, user);
   setVerificationCode(email, verificationCode);
   persistUsers();
-
-  // Record the registration as first login
   recordLogin({ ...user, method: 'registration' });
-
-  // ─── BACKEND SYNC: Push registration to server for cross-device access ───
-  try {
-    const serverUp = await isServerUp();
-    if (serverUp) {
-      const apiResult = await apiFetch('/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({ email: emailKey, password, firstName: firstName.trim(), lastName: lastName.trim(), phone: phone.trim() }),
-      });
-      if (apiResult.ok && apiResult.data?.accessToken) {
-        saveToken(apiResult.data.accessToken);
-        // Store server-assigned ID for cross-device consistency
-        user.serverId = apiResult.data.user?.id;
-        userDB.set(emailKey, user);
-        persistUsers();
-      }
-      // If 409 (already exists on server), that's fine — local registration succeeded
-    }
-  } catch { /* Server sync is best-effort — local registration already succeeded */ }
 
   return { success: true, user, verificationCode };
 }

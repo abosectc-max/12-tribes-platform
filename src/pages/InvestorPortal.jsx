@@ -117,7 +117,7 @@ function generateMonthlyStatements() {
 // ════════════════════════════════════════
 
 function AuthScreen({ onAuth }) {
-  const [mode, setMode] = useState("login"); // "login" | "register" | "passkey-setup"
+  const [mode, setMode] = useState("login"); // "login" | "register" | "request-access"
   const { isMobile } = useResponsive();
 
   return (
@@ -132,6 +132,116 @@ function AuthScreen({ onAuth }) {
 
       {mode === "login" && <LoginForm onAuth={onAuth} onSwitch={setMode} isMobile={isMobile} />}
       {mode === "register" && <RegisterForm onAuth={onAuth} onSwitch={setMode} isMobile={isMobile} />}
+      {mode === "request-access" && <RequestAccessForm onSwitch={setMode} isMobile={isMobile} />}
+    </div>
+  );
+}
+
+// ═══════ REQUEST ACCESS FORM ═══════
+function RequestAccessForm({ onSwitch, isMobile }) {
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const API_BASE = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    return `http://${hostname}:4000/api`;
+  })();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+      setError("First name, last name, and email are required.");
+      return;
+    }
+    if (!email.includes("@") || !email.includes(".")) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    setError(""); setLoading(true); setSuccess("");
+    try {
+      const resp = await fetch(`${API_BASE}/access-requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim().toLowerCase(), message: message.trim() }),
+      });
+      const data = await resp.json();
+      if (data.status === 'approved') {
+        setSuccess("You have already been approved! You may create an account.");
+      } else if (data.status === 'pending') {
+        setSuccess(data.message || "Your request has been submitted. You will be notified when approved.");
+      } else if (data.status === 'denied') {
+        setError(data.message || "Your previous request was not approved.");
+      } else if (data.error) {
+        setError(data.error);
+      } else {
+        setSuccess("Your request has been submitted. You will be notified when approved.");
+      }
+    } catch (err) {
+      setError("Network error. Please try again.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ ...glass, padding: isMobile ? 28 : 44, width: isMobile ? "100%" : 480, maxWidth: "100%", position: "relative", zIndex: 1 }}>
+      <div style={{ textAlign: "center", marginBottom: 28 }}>
+        <BrandLogo size={isMobile ? "md" : "lg"} />
+        <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, marginTop: 8 }}>Request Access to the Investment Platform</p>
+      </div>
+
+      {success ? (
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>{success.includes('approved') ? '✓' : '◇'}</div>
+          <div style={{ color: success.includes('approved') ? '#10B981' : '#00D4FF', fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{success}</div>
+          {success.includes('approved') && (
+            <button onClick={() => onSwitch("register")} style={{
+              width: "100%", padding: "14px", borderRadius: 16, border: "none", cursor: "pointer", fontSize: 15, fontWeight: 700, marginTop: 16,
+              background: "linear-gradient(135deg, #10B981, #00D4FF)", color: "#fff",
+            }}>Create Your Account</button>
+          )}
+          <button onClick={() => onSwitch("login")} style={{
+            background: "none", border: "none", color: "#00D4FF", cursor: "pointer", fontSize: 13, marginTop: 16, fontWeight: 500,
+          }}>Back to Sign In</button>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit}>
+          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+            <input value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="First Name" style={{ ...inputStyle, flex: 1 }}
+              onFocus={e => e.target.style.boxShadow = focusGlow} onBlur={e => e.target.style.boxShadow = "none"} />
+            <input value={lastName} onChange={e => setLastName(e.target.value)} placeholder="Last Name" style={{ ...inputStyle, flex: 1 }}
+              onFocus={e => e.target.style.boxShadow = focusGlow} onBlur={e => e.target.style.boxShadow = "none"} />
+          </div>
+          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email Address" type="email" style={{ ...inputStyle, marginBottom: 14 }}
+            onFocus={e => e.target.style.boxShadow = focusGlow} onBlur={e => e.target.style.boxShadow = "none"} />
+          <textarea value={message} onChange={e => setMessage(e.target.value)} placeholder="Why do you want to join? (optional)" rows={3}
+            style={{ ...inputStyle, marginBottom: 14, resize: "vertical", minHeight: 60 }}
+            onFocus={e => e.target.style.boxShadow = focusGlow} onBlur={e => e.target.style.boxShadow = "none"} />
+
+          {error && <div style={{ color: "#EF4444", fontSize: 13, textAlign: "center", marginBottom: 12 }}>{error}</div>}
+
+          <button type="submit" disabled={loading} style={{
+            width: "100%", padding: "14px", borderRadius: 16, border: "none", cursor: loading ? "wait" : "pointer", fontSize: 15, fontWeight: 700,
+            background: loading ? "rgba(255,255,255,0.1)" : "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff", transition: "all 0.2s",
+          }}>{loading ? "Submitting..." : "Request Access"}</button>
+
+          <div style={{ textAlign: "center", marginTop: 20 }}>
+            <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 13 }}>Already approved? </span>
+            <button type="button" onClick={() => onSwitch("register")} style={{ background: "none", border: "none", color: "#00D4FF", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
+              Create Account
+            </button>
+            <span style={{ color: "rgba(255,255,255,0.15)", margin: "0 8px" }}>|</span>
+            <button type="button" onClick={() => onSwitch("login")} style={{ background: "none", border: "none", color: "#00D4FF", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>
+              Sign In
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -316,6 +426,17 @@ function LoginForm({ onAuth, onSwitch, isMobile }) {
                 fontSize: 14, fontWeight: 600, transition: "all 0.2s",
               }}>
               Create Account
+            </button>
+
+            {/* Request Access Button */}
+            <button type="button" onClick={() => onSwitch("request-access")}
+              style={{
+                width: "100%", padding: "12px", borderRadius: 16, cursor: "pointer",
+                border: "1px solid rgba(168,85,247,0.25)",
+                background: "rgba(168,85,247,0.06)", color: "#A855F7",
+                fontSize: 13, fontWeight: 500, transition: "all 0.2s",
+              }}>
+              Request Access
             </button>
           </div>
         </>
@@ -590,6 +711,12 @@ function RegisterForm({ onAuth, onSwitch, isMobile }) {
               fontSize: 13, color: "rgba(255,255,255,0.4)",
             }}>
             Already have an account? <span style={{ color: "#00D4FF", fontWeight: 600 }}>Sign In</span>
+          </button>
+          <button type="button" onClick={() => onSwitch("request-access")} style={{
+              background: "none", border: "none", cursor: "pointer",
+              fontSize: 12, color: "rgba(255,255,255,0.3)", marginTop: 4,
+            }}>
+            Need access? <span style={{ color: "#A855F7", fontWeight: 500 }}>Request Access</span>
           </button>
         </>
       )}
@@ -2869,8 +2996,11 @@ function AdminPanel({ investor, isMobile }) {
     return () => clearInterval(interval);
   }, [activeSection, fetchHealth]);
 
+  const [actionError, setActionError] = useState('');
+
   const handleAction = async (requestId, status) => {
     setActionLoading(requestId);
+    setActionError('');
     try {
       const resp = await fetch(`${ADMIN_API_BASE}/access-requests/${requestId}`, {
         method: 'PUT',
@@ -2880,8 +3010,12 @@ function AdminPanel({ investor, isMobile }) {
       const data = await resp.json();
       if (data.success) {
         setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status, reviewed_at: new Date().toISOString() } : r));
+      } else {
+        setActionError(data.error || `Failed to ${status === 'approved' ? 'approve' : 'deny'} request.`);
       }
-    } catch { /* silent */ }
+    } catch (err) {
+      setActionError(`Network error: ${err.message || 'Could not reach server.'}`);
+    }
     setActionLoading(null);
   };
 
@@ -2990,6 +3124,7 @@ function AdminPanel({ investor, isMobile }) {
       </div>
 
       {error && <div style={{ color: '#EF4444', textAlign: 'center', padding: 16, marginBottom: 16, ...glass, border: '1px solid rgba(239,68,68,0.2)' }}>{error}</div>}
+      {actionError && <div style={{ color: '#EF4444', textAlign: 'center', padding: 12, marginBottom: 16, ...glass, border: '1px solid rgba(239,68,68,0.2)', fontSize: 13 }}>{actionError}</div>}
 
       {/* ═══════ ACCESS REQUESTS SECTION ═══════ */}
       {activeSection === 'requests' && (
