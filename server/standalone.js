@@ -1191,24 +1191,26 @@ api.post('/api/admin/users', auth, async (req, res) => {
   if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
 
   const body = await readBody(req);
-  const { email, password, firstName, lastName, role } = body;
+  const { email, firstName, lastName, role } = body;
 
-  if (!email || !password || !firstName || !lastName) {
-    return json(res, 400, { error: 'All fields required: email, password, firstName, lastName' });
+  if (!email || !firstName || !lastName) {
+    return json(res, 400, { error: 'All fields required: email, firstName, lastName' });
   }
   if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Invalid email format' });
-  if (password.length < 6) return json(res, 400, { error: 'Password must be at least 6 characters' });
 
   const emailKey = email.toLowerCase().trim();
   if (db.findOne('users', u => u.email === emailKey)) {
     return json(res, 409, { error: 'Email already registered' });
   }
 
+  // Auto-generate a secure temporary password
+  const tempPassword = randomBytes(6).toString('base64url'); // ~8 chars, URL-safe
+
   const userRole = ['admin', 'investor'].includes(role) ? role : 'investor';
   const user = db.insert('users', {
     id: randomUUID(),
     email: emailKey,
-    password_hash: hashPassword(password),
+    password_hash: hashPassword(tempPassword),
     firstName: firstName.trim(),
     lastName: lastName.trim(),
     role: userRole,
@@ -1228,10 +1230,27 @@ api.post('/api/admin/users', auth, async (req, res) => {
     created_at: new Date().toISOString(),
   });
 
-  console.log(`[ADMIN] User created: ${emailKey} (${userRole}) by admin ${admin.email}`);
+  // Send welcome email with temporary password if Resend is configured
+  if (RESEND_API_KEY) {
+    try {
+      await sendEmail(emailKey, `Welcome to ${APP_NAME}`,
+        `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:20px;">
+          <h2 style="color:#00D4FF;">Welcome to ${APP_NAME}</h2>
+          <p>An admin has created an account for you.</p>
+          <p><strong>Email:</strong> ${emailKey}</p>
+          <p><strong>Temporary Password:</strong> <code style="background:#f0f0f0;padding:4px 8px;border-radius:4px;font-size:16px;">${tempPassword}</code></p>
+          <p>Please sign in and change your password immediately.</p>
+          <p style="margin-top:24px;color:#888;font-size:12px;">— ${APP_NAME} Team</p>
+        </div>`
+      );
+    } catch (err) { console.error('[ADMIN] Failed to send welcome email:', err.message); }
+  }
+
+  console.log(`[ADMIN] User created: ${emailKey} (${userRole}) by admin ${admin.email} | temp password: ${tempPassword}`);
   json(res, 201, {
     success: true,
     user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role },
+    tempPassword, // Return to admin so they can share it if email delivery fails
   });
 });
 

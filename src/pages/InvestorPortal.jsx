@@ -2799,7 +2799,7 @@ function AdminPanel({ investor, isMobile }) {
   const [qaLoading, setQaLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(null);
   const [showCreateUser, setShowCreateUser] = useState(false);
-  const [createForm, setCreateForm] = useState({ email: '', password: '', firstName: '', lastName: '', role: 'investor' });
+  const [createForm, setCreateForm] = useState({ email: '', firstName: '', lastName: '', role: 'investor' });
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState('');
   const [createSuccess, setCreateSuccess] = useState('');
@@ -2914,10 +2914,9 @@ function AdminPanel({ investor, isMobile }) {
       });
       const data = await resp.json();
       if (data.success) {
-        setCreateSuccess(`Account created for ${data.user.email} (${data.user.role})`);
-        setCreateForm({ email: '', password: '', firstName: '', lastName: '', role: 'investor' });
+        setCreateSuccess(`Account created for ${data.user.email} (${data.user.role}) — Temporary Password: ${data.tempPassword}`);
+        setCreateForm({ email: '', firstName: '', lastName: '', role: 'investor' });
         fetchUsers(); // Refresh user list
-        setTimeout(() => setCreateSuccess(''), 5000);
       } else {
         setCreateError(data.error || 'Failed to create user');
       }
@@ -3080,7 +3079,6 @@ function AdminPanel({ investor, isMobile }) {
                   { key: 'firstName', placeholder: 'First Name', type: 'text' },
                   { key: 'lastName', placeholder: 'Last Name', type: 'text' },
                   { key: 'email', placeholder: 'Email Address', type: 'email' },
-                  { key: 'password', placeholder: 'Password (min 6 chars)', type: 'password' },
                 ].map(f => (
                   <input key={f.key} type={f.type} placeholder={f.placeholder} required
                     value={createForm[f.key]}
@@ -3104,7 +3102,24 @@ function AdminPanel({ investor, isMobile }) {
                 </select>
               </div>
               {createError && <div style={{ color: '#EF4444', fontSize: 12, marginBottom: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(239,68,68,0.1)' }}>{createError}</div>}
-              {createSuccess && <div style={{ color: '#10B981', fontSize: 12, marginBottom: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(16,185,129,0.1)' }}>{createSuccess}</div>}
+              {createSuccess && (
+                <div style={{ color: '#10B981', fontSize: 12, marginBottom: 10, padding: '12px 14px', borderRadius: 10, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                  <div style={{ marginBottom: 6 }}>{createSuccess.split(' — ')[0]}</div>
+                  {createSuccess.includes('Temporary Password:') && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                      <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>Temp Password:</span>
+                      <code style={{ background: 'rgba(255,255,255,0.08)', padding: '4px 10px', borderRadius: 6, fontSize: 14, fontWeight: 700, color: '#fff', letterSpacing: 0.5, userSelect: 'all' }}>
+                        {createSuccess.split('Temporary Password: ')[1]}
+                      </code>
+                      <button type="button" onClick={() => { navigator.clipboard?.writeText(createSuccess.split('Temporary Password: ')[1]); }}
+                        style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(255,255,255,0.5)', fontSize: 10, cursor: 'pointer' }}>
+                        Copy
+                      </button>
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 8 }}>A welcome email with this password has been sent to the user.</div>
+                </div>
+              )}
               <button type="submit" disabled={createLoading} style={{
                 padding: '10px 24px', borderRadius: 12, border: 'none',
                 background: 'linear-gradient(135deg, rgba(16,185,129,0.3), rgba(0,212,255,0.2))',
