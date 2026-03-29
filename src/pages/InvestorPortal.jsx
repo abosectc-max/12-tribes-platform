@@ -3089,6 +3089,26 @@ function AdminPanel({ investor, isMobile }) {
     setDeleteLoading(null);
   };
 
+  const [roleLoading, setRoleLoading] = useState(null);
+  const handleChangeRole = async (userId, userEmail, newRole) => {
+    if (!window.confirm(`Change ${userEmail} role to "${newRole}"?`)) return;
+    setRoleLoading(userId);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/users/${userId}`, {
+        method: 'PUT',
+        headers: authHeaders,
+        body: JSON.stringify({ role: newRole }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
+      } else {
+        alert(data.error || 'Failed to change role');
+      }
+    } catch { alert('Network error changing role'); }
+    setRoleLoading(null);
+  };
+
   const handleCreateUser = async (e) => {
     e.preventDefault();
     setCreateLoading(true);
@@ -3382,17 +3402,31 @@ function AdminPanel({ investor, isMobile }) {
                       {u.createdAt && <span>Joined: {new Date(u.createdAt).toLocaleDateString()}</span>}
                     </div>
                   </div>
-                  {/* Delete button — hidden for self */}
+                  {/* Role change + Delete — hidden for self */}
                   {u.email !== investor?.email && (
-                    <button onClick={() => handleDeleteUser(u.id, u.email)} disabled={deleteLoading === u.id}
-                      style={{
-                        padding: '8px 14px', borderRadius: 10, border: '1px solid rgba(239,68,68,0.2)',
-                        background: 'rgba(239,68,68,0.08)', color: '#EF4444', fontSize: 11, fontWeight: 600,
-                        cursor: 'pointer', flexShrink: 0, opacity: deleteLoading === u.id ? 0.5 : 1,
-                        transition: 'all 0.2s',
-                      }}>
-                      {deleteLoading === u.id ? 'Deleting...' : 'Delete'}
-                    </button>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button
+                        onClick={() => handleChangeRole(u.id, u.email, u.role === 'admin' ? 'investor' : 'admin')}
+                        disabled={roleLoading === u.id}
+                        style={{
+                          padding: '8px 14px', borderRadius: 10,
+                          border: `1px solid ${u.role === 'admin' ? 'rgba(0,212,255,0.25)' : 'rgba(168,85,247,0.25)'}`,
+                          background: u.role === 'admin' ? 'rgba(0,212,255,0.08)' : 'rgba(168,85,247,0.08)',
+                          color: u.role === 'admin' ? '#00D4FF' : '#A855F7',
+                          fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                          opacity: roleLoading === u.id ? 0.5 : 1, transition: 'all 0.2s',
+                        }}>
+                        {roleLoading === u.id ? '...' : u.role === 'admin' ? 'Make Investor' : 'Make Admin'}
+                      </button>
+                      <button onClick={() => handleDeleteUser(u.id, u.email)} disabled={deleteLoading === u.id}
+                        style={{
+                          padding: '8px 14px', borderRadius: 10, border: '1px solid rgba(239,68,68,0.2)',
+                          background: 'rgba(239,68,68,0.08)', color: '#EF4444', fontSize: 11, fontWeight: 600,
+                          cursor: 'pointer', opacity: deleteLoading === u.id ? 0.5 : 1, transition: 'all 0.2s',
+                        }}>
+                        {deleteLoading === u.id ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
                   )}
                 </div>
               ))}
