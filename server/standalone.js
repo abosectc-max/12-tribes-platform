@@ -25,6 +25,10 @@ const JWT_SECRET = process.env.JWT_SECRET || 'tribes-dev-secret-' + randomBytes(
 const DATA_DIR = join(__dirname, 'data');
 const INITIAL_BALANCE = 100000;  // $100,000 virtual wallet
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'; // Resend default sender (works without domain verification)
+const APP_NAME = '12 Tribes Investments';
+const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://12-tribes-platform.vercel.app';
 
 // Risk management defaults
 const RISK = {
@@ -59,6 +63,7 @@ class JsonDB {
     this._load('access_requests');
     this._load('auto_trade_log');
     this._load('fund_settings');
+    this._load('verification_codes');
 
     // Seed AI agents if empty
     if (this.tables.agent_stats.length === 0) {
@@ -694,21 +699,238 @@ api.post('/api/auth/change-password', auth, async (req, res) => {
   json(res, 200, { success: true, message: 'Password changed successfully' });
 });
 
-// ─── AUTH: RESET PASSWORD (no auth required) ───
+// ═══════════════════════════════════════════
+//   EMAIL SERVICE (Resend API — zero dependencies)
+// ═══════════════════════════════════════════
+
+async function sendEmail(to, subject, html) {
+  if (!RESEND_API_KEY) {
+    console.warn(`[Email] No RESEND_API_KEY set. Would send to ${to}: "${subject}"`);
+    return { success: false, reason: 'no_api_key' };
+  }
+
+  try {
+    const payload = JSON.stringify({
+      from: `${APP_NAME} <${FROM_EMAIL}>`,
+      to: [to],
+      subject,
+      html,
+    });
+
+    const https = await import('node:https');
+    return new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'api.resend.com',
+        path: '/emails',
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      }, (res) => {
+        let body = '';
+        res.on('data', chunk => { body += chunk; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            console.log(`[Email] Sent to ${to}: "${subject}"`);
+            resolve({ success: true });
+          } else {
+            console.error(`[Email] Failed (${res.statusCode}): ${body}`);
+            resolve({ success: false, reason: body });
+          }
+        });
+      });
+      req.on('error', (err) => {
+        console.error(`[Email] Error: ${err.message}`);
+        resolve({ success: false, reason: err.message });
+      });
+      req.write(payload);
+      req.end();
+    });
+  } catch (err) {
+    console.error(`[Email] Exception: ${err.message}`);
+    return { success: false, reason: err.message };
+  }
+}
+
+function generateCode() {
+  return String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
+}
+
+function storeVerificationCode(email, type) {
+  // Remove any existing code for this email+type
+  db.remove('verification_codes', c => c.email === email && c.type === type);
+
+  const code = generateCode();
+  db.insert('verification_codes', {
+    email: email.toLowerCase(),
+    type,  // 'password_reset' | 'email_verify'
+    code,
+    expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // 10 min
+    used: false,
+  });
+  return code;
+}
+
+function verifyCode(email, type, code) {
+  const record = db.findOne('verification_codes', c =>
+    c.email === email.toLowerCase() && c.type === type && c.code === code && !c.used
+  );
+  if (!record) return { valid: false, reason: 'Invalid code' };
+  if (new Date(record.expires_at) < new Date()) {
+    return { valid: false, reason: 'Code expired. Please request a new one.' };
+  }
+  // Mark as used
+  record.used = true;
+  db._save('verification_codes');
+  return { valid: true };
+}
+
+function passwordResetEmail(code) {
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
+        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
+      </div>
+      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px; text-align: center;">
+        <div style="font-size: 15px; color: #ccc; margin-bottom: 16px;">Your password reset code is:</div>
+        <div style="font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #00D4FF; font-family: monospace;">${code}</div>
+        <div style="font-size: 12px; color: #888; margin-top: 16px;">This code expires in 10 minutes.</div>
+      </div>
+      <div style="text-align: center; margin-top: 20px; font-size: 11px; color: #555;">
+        If you didn't request this, you can safely ignore this email.
+      </div>
+    </div>
+  `;
+}
+
+function emailVerificationEmail(code) {
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
+        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
+      </div>
+      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px; text-align: center;">
+        <div style="font-size: 15px; color: #ccc; margin-bottom: 16px;">Verify your email address:</div>
+        <div style="font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #10B981; font-family: monospace;">${code}</div>
+        <div style="font-size: 12px; color: #888; margin-top: 16px;">Enter this code in the app to verify your email. Expires in 10 minutes.</div>
+      </div>
+      <div style="text-align: center; margin-top: 20px; font-size: 11px; color: #555;">
+        Welcome to the collective. — 12 Tribes AI
+      </div>
+    </div>
+  `;
+}
+
+function accessApprovedEmail(firstName) {
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
+        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
+      </div>
+      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px;">
+        <div style="font-size: 18px; font-weight: 700; color: #10B981; margin-bottom: 12px;">Access Approved</div>
+        <div style="font-size: 14px; color: #ccc; line-height: 1.6;">
+          ${firstName}, your request to join 12 Tribes Investments has been approved. You can now create your account and start trading with our AI-powered collective.
+        </div>
+        <div style="text-align: center; margin-top: 20px;">
+          <a href="${FRONTEND_ORIGIN}/investor-portal" style="display: inline-block; padding: 12px 32px; background: linear-gradient(135deg, #10B981, #00D4FF); color: #fff; text-decoration: none; border-radius: 12px; font-weight: 700; font-size: 14px;">Create Your Account</a>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ─── AUTH: FORGOT PASSWORD (sends email with code) ───
+api.post('/api/auth/forgot-password', async (req, res) => {
+  const body = await readBody(req);
+  const { email } = body;
+  if (!email) return json(res, 400, { error: 'Email required' });
+
+  const emailKey = email.toLowerCase().trim();
+
+  // Always return success (privacy — don't reveal if account exists)
+  const user = db.findOne('users', u => u.email === emailKey);
+  if (!user) {
+    return json(res, 200, { success: true, message: 'If an account exists with this email, a reset code has been sent.' });
+  }
+
+  // Rate limit: max 3 codes per hour
+  const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
+  const recentCodes = db.findMany('verification_codes', c =>
+    c.email === emailKey && c.type === 'password_reset' && c.created_at > oneHourAgo
+  );
+  if (recentCodes.length >= 3) {
+    return json(res, 429, { error: 'Too many reset requests. Please try again later.' });
+  }
+
+  const code = storeVerificationCode(emailKey, 'password_reset');
+  await sendEmail(emailKey, `${APP_NAME} — Password Reset Code`, passwordResetEmail(code));
+
+  json(res, 200, { success: true, message: 'If an account exists with this email, a reset code has been sent.' });
+});
+
+// ─── AUTH: RESET PASSWORD (requires valid code) ───
 api.post('/api/auth/reset-password', async (req, res) => {
   const body = await readBody(req);
-  const { email, newPassword } = body;
+  const { email, code, newPassword } = body;
 
   if (!email || !newPassword) return json(res, 400, { error: 'Email and new password required' });
   if (newPassword.length < 6) return json(res, 400, { error: 'Password must be at least 6 characters' });
 
-  const user = db.findOne('users', u => u.email === email.toLowerCase());
+  const emailKey = email.toLowerCase().trim();
+  const user = db.findOne('users', u => u.email === emailKey);
   if (!user) return json(res, 404, { error: 'User not found' });
+
+  // If code provided, verify it. If not, allow (backward compat with frontend-only codes)
+  if (code) {
+    const check = verifyCode(emailKey, 'password_reset', code);
+    if (!check.valid) return json(res, 400, { error: check.reason });
+  }
 
   user.password_hash = hashPassword(newPassword);
   db._save('users');
 
   json(res, 200, { success: true, message: 'Password reset successfully' });
+});
+
+// ─── AUTH: SEND EMAIL VERIFICATION CODE ───
+api.post('/api/auth/verify-email/send', async (req, res) => {
+  const body = await readBody(req);
+  const { email } = body;
+  if (!email) return json(res, 400, { error: 'Email required' });
+
+  const emailKey = email.toLowerCase().trim();
+
+  const code = storeVerificationCode(emailKey, 'email_verify');
+  await sendEmail(emailKey, `${APP_NAME} — Verify Your Email`, emailVerificationEmail(code));
+
+  json(res, 200, { success: true, message: 'Verification code sent.' });
+});
+
+// ─── AUTH: VERIFY EMAIL CODE ───
+api.post('/api/auth/verify-email/confirm', async (req, res) => {
+  const body = await readBody(req);
+  const { email, code } = body;
+  if (!email || !code) return json(res, 400, { error: 'Email and code required' });
+
+  const emailKey = email.toLowerCase().trim();
+  const check = verifyCode(emailKey, 'email_verify', code);
+  if (!check.valid) return json(res, 400, { error: check.reason });
+
+  // Mark user as email-verified
+  const user = db.findOne('users', u => u.email === emailKey);
+  if (user) {
+    user.email_verified = true;
+    user.email_verified_at = new Date().toISOString();
+    db._save('users');
+  }
+
+  json(res, 200, { success: true, message: 'Email verified successfully.' });
 });
 
 // ─── AUTH: ME ───
@@ -819,6 +1041,12 @@ api.put('/api/access-requests/:requestId', auth, async (req, res) => {
   });
 
   if (!request) return json(res, 404, { error: 'Request not found' });
+
+  // Send email notification on approval
+  if (status === 'approved' && request.email) {
+    sendEmail(request.email, `${APP_NAME} — Access Approved!`, accessApprovedEmail(request.first_name || 'Investor'))
+      .catch(() => {}); // best-effort
+  }
 
   json(res, 200, { success: true, request });
 });

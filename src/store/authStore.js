@@ -179,8 +179,31 @@ export function getVerificationCode(email) {
   return entry.code;
 }
 
-export function verifyEmail(email, code) {
+export async function verifyEmail(email, code) {
   const emailKey = email.toLowerCase().trim();
+
+  // Try server-side verification first
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const res = await apiFetch('/auth/verify-email/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey, code }),
+      });
+      if (!res.ok) return { success: false, error: res.data?.error || 'Verification failed' };
+
+      // Update local cache
+      const user = userDB.get(emailKey);
+      if (user) {
+        user.emailVerified = true;
+        userDB.set(emailKey, user);
+        persistUsers();
+      }
+      return { success: true, user: res.data?.user || user };
+    }
+  } catch { /* Server unreachable */ }
+
+  // Fallback: verify locally
   const user = userDB.get(emailKey);
   if (!user) return { success: false, error: 'User not found' };
 
@@ -209,13 +232,29 @@ export function isEmailVerified(email) {
   return user ? user.emailVerified === true : false;
 }
 
-export function resendVerificationCode(email) {
+export async function resendVerificationCode(email) {
   const emailKey = email.toLowerCase().trim();
+
+  // Try server-side — it generates the code AND sends the email
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const res = await apiFetch('/auth/verify-email/send', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey }),
+      });
+      if (res.status === 429) return { success: false, error: res.data?.error || 'Too many requests' };
+      if (res.ok) return { success: true, message: 'Verification code sent to your email.' };
+    }
+  } catch { /* Server unreachable */ }
+
+  // Fallback: generate locally (no email sent, but code works for offline verification)
   const user = userDB.get(emailKey);
   if (!user) return { success: false, error: 'User not found' };
 
   const code = generateVerificationCode();
   setVerificationCode(email, code);
+  console.log(`[EmailVerify] Offline code for ${emailKey}: ${code}`);
   return { success: true, code };
 }
 
@@ -609,37 +648,27 @@ export async function changePassword(email, currentPassword, newPassword) {
   return { success: true, message: 'Password changed successfully.' };
 }
 
-// ═══════ PASSWORD RESET (via email verification code) ═══════
+// ═══════ PASSWORD RESET (server-side code generation + email delivery) ═══════
 export async function requestPasswordReset(email) {
   const emailKey = email.toLowerCase().trim();
 
-  // Check if user exists locally or on server
-  let userExists = !!userDB.get(emailKey);
-  if (!userExists) {
-    try {
-      const serverUp = await isServerUp();
-      if (serverUp) {
-        const apiResult = await apiFetch('/auth/login', {
-          method: 'POST',
-          body: JSON.stringify({ email: emailKey, password: '___probe___' }),
-        });
-        // 401 means user exists but wrong password; anything else means doesn't exist
-        userExists = apiResult.status === 401;
-      }
-    } catch { /* Best-effort */ }
-  }
+  // Send request to server — it generates the code, stores it in DB, and emails it
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const res = await apiFetch('/auth/forgot-password', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey }),
+      });
+      if (res.status === 429) return { success: false, error: res.data?.error || 'Too many requests' };
+      return { success: true, message: 'If an account exists with this email, a reset code has been sent to your inbox.' };
+    }
+  } catch { /* Server unreachable */ }
 
-  if (!userExists) {
-    // Don't reveal if account exists — just pretend we sent the code
-    return { success: true, message: 'If an account exists with this email, a reset code has been generated.' };
-  }
-
+  // Fallback: generate code locally if server is down
   const code = generateVerificationCode();
   setVerificationCode(emailKey, code);
-
-  // In production this would send an email. For now, log it.
-  console.log(`[PasswordReset] Code for ${emailKey}: ${code}`);
-
+  console.log(`[PasswordReset] Offline code for ${emailKey}: ${code}`);
   return { success: true, message: 'If an account exists with this email, a reset code has been generated.' };
 }
 
@@ -650,21 +679,37 @@ export async function resetPassword(email, code, newPassword) {
     return { success: false, error: 'Password must be at least 6 characters.' };
   }
 
-  // Verify the reset code
+  // Try server-side reset first (server verifies the code)
+  try {
+    const serverUp = await isServerUp();
+    if (serverUp) {
+      const res = await apiFetch('/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ email: emailKey, code, newPassword }),
+      });
+      if (!res.ok) return { success: false, error: res.data?.error || 'Reset failed' };
+
+      // Also update local cache
+      const user = userDB.get(emailKey);
+      if (user) {
+        user.passwordHash = await hashPassword(newPassword);
+        userDB.set(emailKey, user);
+        persistUsers();
+      }
+      return { success: true, message: 'Password has been reset. You can now sign in.' };
+    }
+  } catch { /* Server unreachable */ }
+
+  // Fallback: verify code locally
   const stored = verificationCodes[emailKey];
-  if (!stored) {
-    return { success: false, error: 'No reset code found. Please request a new one.' };
-  }
+  if (!stored) return { success: false, error: 'No reset code found. Please request a new one.' };
   if (Date.now() > stored.expiresAt) {
     delete verificationCodes[emailKey];
     persistVerificationCodes();
     return { success: false, error: 'Reset code has expired. Please request a new one.' };
   }
-  if (stored.code !== code) {
-    return { success: false, error: 'Invalid reset code.' };
-  }
+  if (stored.code !== code) return { success: false, error: 'Invalid reset code.' };
 
-  // Code verified — update password
   const newHash = await hashPassword(newPassword);
   const user = userDB.get(emailKey);
   if (user) {
@@ -672,21 +717,8 @@ export async function resetPassword(email, code, newPassword) {
     userDB.set(emailKey, user);
     persistUsers();
   }
-
-  // Clear the verification code
   delete verificationCodes[emailKey];
   persistVerificationCodes();
-
-  // Sync to server
-  try {
-    const serverUp = await isServerUp();
-    if (serverUp) {
-      await apiFetch('/auth/reset-password', {
-        method: 'POST',
-        body: JSON.stringify({ email: emailKey, code, newPassword }),
-      });
-    }
-  } catch { /* Best-effort */ }
 
   return { success: true, message: 'Password has been reset. You can now sign in.' };
 }
