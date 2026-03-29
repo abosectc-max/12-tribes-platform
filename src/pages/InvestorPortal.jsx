@@ -3049,6 +3049,29 @@ function AdminPanel({ investor, isMobile }) {
     setActionLoading(null);
   };
 
+  const handleDeleteRequest = async (requestId, email) => {
+    if (!window.confirm(`Delete access request for ${email}? This cannot be undone.`)) return;
+    setActionLoading(requestId);
+    setActionError('');
+    setActionSuccess('');
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/access-requests/${requestId}`, {
+        method: 'DELETE',
+        headers: authHeaders,
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setRequests(prev => prev.filter(r => r.id !== requestId));
+        setActionSuccess(`Deleted request for ${email}`);
+      } else {
+        setActionError(data.error || 'Failed to delete request.');
+      }
+    } catch (err) {
+      setActionError(`Network error: ${err.message || 'Could not reach server.'}`);
+    }
+    setActionLoading(null);
+  };
+
   const handleDeleteUser = async (userId, userEmail) => {
     if (!window.confirm(`Permanently delete ${userEmail}? This will close all their positions and remove their account. This action cannot be undone.`)) return;
     setDeleteLoading(userId);
@@ -3216,12 +3239,30 @@ function AdminPanel({ investor, isMobile }) {
                     <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{r.email}</div>
                   </div>
                   <span style={statusBadge(r.status)}>{r.status}</span>
-                  {r.status === 'approved' && (
-                    <button onClick={() => handleResendEmail(r.id, r.email)} disabled={actionLoading === r.id}
-                      style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(0,212,255,0.25)', background: 'rgba(0,212,255,0.08)', color: '#00D4FF', fontSize: 11, fontWeight: 600, cursor: 'pointer', marginLeft: 4 }}>
-                      {actionLoading === r.id ? '...' : '✉ Resend Email'}
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                    {r.status === 'approved' && (
+                      <>
+                        <button onClick={() => handleResendEmail(r.id, r.email)} disabled={actionLoading === r.id}
+                          style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(0,212,255,0.25)', background: 'rgba(0,212,255,0.08)', color: '#00D4FF', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                          {actionLoading === r.id ? '...' : '✉ Resend Email'}
+                        </button>
+                        <button onClick={() => handleAction(r.id, 'denied')} disabled={actionLoading === r.id}
+                          style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.08)', color: '#EF4444', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                          {actionLoading === r.id ? '...' : 'Reject'}
+                        </button>
+                      </>
+                    )}
+                    {r.status === 'denied' && (
+                      <button onClick={() => handleAction(r.id, 'approved')} disabled={actionLoading === r.id}
+                        style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(16,185,129,0.25)', background: 'rgba(16,185,129,0.08)', color: '#10B981', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                        {actionLoading === r.id ? '...' : 'Approve'}
+                      </button>
+                    )}
+                    <button onClick={() => handleDeleteRequest(r.id, r.email)} disabled={actionLoading === r.id}
+                      style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: 'rgba(255,255,255,0.4)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                      {actionLoading === r.id ? '...' : '✕ Delete'}
                     </button>
-                  )}
+                  </div>
                 </div>
               ))}
             </div>

@@ -1431,6 +1431,19 @@ api.post('/api/access-requests/:requestId/resend-email', auth, async (req, res) 
   json(res, 200, { success: true, emailSent: emailResult?.success || false, emailError: emailResult?.success ? null : (emailResult?.reason || null) });
 });
 
+// Delete an access request (admin only)
+api.delete('/api/access-requests/:requestId', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const request = db.findOne('access_requests', r => r.id === req.params.requestId);
+  if (!request) return json(res, 404, { error: 'Request not found' });
+
+  db.remove('access_requests', r => r.id === req.params.requestId);
+  console.log(`[ACCESS] Deleted request for ${request.email} (was ${request.status}) by admin ${user.email}`);
+  json(res, 200, { success: true, deleted: request });
+});
+
 // ─── ADMIN: LIST ALL USERS ───
 api.get('/api/admin/users', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
