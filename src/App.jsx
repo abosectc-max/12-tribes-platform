@@ -47,8 +47,8 @@ function AppNav() {
 
   const isMobile = width < 768
 
-  // Hide nav on landing page and mobile app (has its own nav)
-  if (location.pathname === '/' || location.pathname === '/mobile') return null
+  // Hide nav on landing page, mobile app, and investor portal (has its own sidebar nav)
+  if (location.pathname === '/' || location.pathname === '/mobile' || location.pathname === '/investor-portal') return null
 
   // Mobile: hamburger-triggered slide-up menu
   if (isMobile) {
