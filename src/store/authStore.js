@@ -311,15 +311,13 @@ function recordLogin(user) {
 export async function registerUser({ firstName, lastName, email, phone, password }) {
   const emailKey = email.toLowerCase().trim();
 
-  if (userDB.has(emailKey)) {
-    return { success: false, error: 'An account with this email already exists. Please sign in.' };
-  }
-
   if (!password || password.length < 6) {
     return { success: false, error: 'Password must be at least 6 characters long.' };
   }
 
-  // ─── SERVER-FIRST REGISTRATION: Server is the source of truth for access control ───
+  // ─── SERVER-FIRST REGISTRATION: Server is the source of truth ───
+  // NOTE: We do NOT block on local userDB — the server may have been reset
+  // while stale browser data still exists. Server is the authority.
   try {
     const serverUp = await isServerUp();
     if (serverUp) {
@@ -327,6 +325,12 @@ export async function registerUser({ firstName, lastName, email, phone, password
         method: 'POST',
         body: JSON.stringify({ email: emailKey, password, firstName: firstName.trim(), lastName: lastName.trim(), phone: phone.trim() }),
       });
+
+      // Server says account exists (409) — this is a real duplicate
+      if (apiResult.status === 409) {
+        return { success: false, error: apiResult.data?.error || 'An account with this email already exists. Please sign in.' };
+      }
+
       // If server rejects (403 = access not approved, 429 = rate limited, other errors), block registration
       if (!apiResult.ok) {
         const serverError = apiResult.data?.error || 'Registration failed. Please try again.';
