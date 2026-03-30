@@ -1760,6 +1760,38 @@ async function sendEmail(to, subject, html) {
   }
 }
 
+// ─── ADMIN NOTIFICATION ENGINE ───
+// Sends email to ALL admin users when actionable events occur (withdrawals, access requests, feedback)
+
+async function notifyAdmins(eventType, subject, htmlBody) {
+  const admins = db.findMany('users', u => u.role === 'admin' && u.status === 'active');
+  if (admins.length === 0) {
+    console.warn(`[AdminNotify] No active admins to notify for: ${eventType}`);
+    return;
+  }
+
+  const results = [];
+  for (const admin of admins) {
+    const result = await sendEmail(admin.email, `[${APP_NAME} Admin] ${subject}`, `
+      <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+        <div style="padding:12px 16px;background:#1a1a2e;border-radius:12px;border:1px solid rgba(0,212,255,0.2);margin-bottom:16px;">
+          <div style="font-size:11px;color:#00D4FF;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Admin Alert — ${eventType}</div>
+          <div style="font-size:16px;font-weight:700;color:#fff;">${subject}</div>
+        </div>
+        ${htmlBody}
+        <div style="margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.06);font-size:11px;color:rgba(255,255,255,0.3);">
+          ${APP_NAME} Admin Notification System · Log in to the Admin Panel to take action.
+        </div>
+      </div>
+    `);
+    results.push({ admin: admin.email, ...result });
+  }
+
+  const sent = results.filter(r => r.success).length;
+  console.log(`[AdminNotify] ${eventType}: notified ${sent}/${admins.length} admins — "${subject}"`);
+  return results;
+}
+
 function generateCode() {
   return String(Math.floor(100000 + Math.random() * 900000)); // 6-digit
 }
@@ -2050,6 +2082,15 @@ api.post('/api/access-requests', async (req, res) => {
     status: 'pending',
     submitted_at: new Date().toISOString(),
   });
+
+  // Notify admins
+  notifyAdmins('Access Request', `New access request from ${firstName} ${lastName}`, `
+    <div style="color:#e0e0e0;font-size:14px;">
+      <p><strong style="color:#fff;">${firstName} ${lastName}</strong> (${email.toLowerCase()}) has requested platform access.</p>
+      ${message ? `<p style="padding:10px 14px;background:rgba(255,255,255,0.04);border-radius:8px;font-style:italic;color:rgba(255,255,255,0.6);">"${message}"</p>` : ''}
+      <p style="color:rgba(255,255,255,0.4);font-size:12px;">Go to Admin Panel → Access Requests to approve or deny.</p>
+    </div>
+  `).catch(err => console.error('[AdminNotify] Access request notification failed:', err.message));
 
   json(res, 201, { status: 'pending', message: 'Your request has been submitted. You will be notified when approved.', id: request.id });
 });
@@ -2548,6 +2589,16 @@ api.post('/api/feedback', auth, async (req, res) => {
   };
 
   db.insert('feedback', feedback);
+
+  // Notify admins
+  notifyAdmins('Feedback', `New ${category} feedback from ${feedback.userName}`, `
+    <div style="color:#e0e0e0;font-size:14px;">
+      <p><strong style="color:#fff;">${feedback.userName}</strong> submitted ${category} feedback${rating ? ` (rating: ${rating}/5)` : ''}.</p>
+      <p style="padding:10px 14px;background:rgba(255,255,255,0.04);border-radius:8px;color:rgba(255,255,255,0.7);">"${feedback.message.slice(0, 300)}${feedback.message.length > 300 ? '...' : ''}"</p>
+      <p style="color:rgba(255,255,255,0.4);font-size:12px;">Go to Admin Panel → Feedback to review and respond.</p>
+    </div>
+  `).catch(err => console.error('[AdminNotify] Feedback notification failed:', err.message));
+
   json(res, 201, { success: true, feedback });
 });
 
@@ -2559,6 +2610,25 @@ api.get('/api/admin/feedback', auth, (req, res) => {
   const allFeedback = db.tables.feedback || [];
   const sorted = [...allFeedback].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   json(res, 200, { feedback: sorted });
+});
+
+// GET /api/admin/notifications/count — Pending action counts for admin badge
+api.get('/api/admin/notifications/count', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const pendingAccess = db.count('access_requests', r => r.status === 'pending');
+  const pendingWithdrawals = db.count('withdrawal_requests', r => r.status === 'pending' || r.status === 'approved' || r.status === 'processing');
+  const newFeedback = db.count('feedback', f => f.status === 'new');
+
+  const total = pendingAccess + pendingWithdrawals + newFeedback;
+
+  json(res, 200, {
+    total,
+    access_requests: pendingAccess,
+    withdrawals: pendingWithdrawals,
+    feedback: newFeedback,
+  });
 });
 
 // Update feedback status/notes (admin only)
@@ -2624,6 +2694,21 @@ api.post('/api/withdrawals', auth, async (req, res) => {
   };
 
   db.insert('withdrawal_requests', request);
+
+  // Notify admins
+  notifyAdmins('Withdrawal Request', `$${amount.toLocaleString()} withdrawal from ${request.userName}`, `
+    <div style="color:#e0e0e0;font-size:14px;">
+      <p><strong style="color:#fff;">${request.userName}</strong> (${request.userEmail}) has requested a withdrawal.</p>
+      <div style="display:flex;gap:20px;margin:12px 0;">
+        <div><span style="color:rgba(255,255,255,0.4);font-size:11px;">AMOUNT</span><br/><span style="font-size:20px;font-weight:700;color:#F59E0B;">$${amount.toLocaleString()}</span></div>
+        <div><span style="color:rgba(255,255,255,0.4);font-size:11px;">METHOD</span><br/><span style="color:#fff;">${method.replace(/_/g, ' ')}</span></div>
+        <div><span style="color:rgba(255,255,255,0.4);font-size:11px;">BALANCE</span><br/><span style="color:#fff;">$${availableBalance.toLocaleString()}</span></div>
+      </div>
+      ${notes ? `<p style="padding:10px 14px;background:rgba(255,255,255,0.04);border-radius:8px;font-style:italic;color:rgba(255,255,255,0.6);">"${notes}"</p>` : ''}
+      <p style="color:rgba(255,255,255,0.4);font-size:12px;">Go to Admin Panel → Withdrawals to process this request.</p>
+    </div>
+  `).catch(err => console.error('[AdminNotify] Withdrawal notification failed:', err.message));
+
   json(res, 201, { success: true, withdrawal: request });
 });
 

@@ -1118,6 +1118,13 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
                 }}>
                 <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{item.icon}</span>
                 {item.label}
+                {item.id === 'admin' && adminNotifCount > 0 && (
+                  <span style={{
+                    marginLeft: 'auto', padding: '2px 7px', borderRadius: 10,
+                    background: 'rgba(239,68,68,0.25)', color: '#EF4444',
+                    fontSize: 10, fontWeight: 800, minWidth: 18, textAlign: 'center',
+                  }}>{adminNotifCount}</span>
+                )}
               </button>
             );
           })}
@@ -3275,6 +3282,27 @@ function PortfolioDashboard({ investor, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tick, setTick] = useState(0);
   const { isMobile, isTablet } = useResponsive();
+  const [adminNotifCount, setAdminNotifCount] = useState(0);
+
+  // Fetch admin notification count (only for admins)
+  useEffect(() => {
+    if (investor?.role !== 'admin') return;
+    const API_BASE = (() => {
+      if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+      if (window.location.hostname === 'localhost') return 'http://localhost:3001/api';
+      return 'https://one2-tribes-api.onrender.com/api';
+    })();
+    const token = localStorage.getItem('auth_token');
+    const fetchNotifCount = () => {
+      fetch(`${API_BASE}/admin/notifications/count`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setAdminNotifCount(data.total || 0); })
+        .catch(() => {});
+    };
+    fetchNotifCount();
+    const interval = setInterval(fetchNotifCount, 30000); // Poll every 30s
+    return () => clearInterval(interval);
+  }, [investor?.role, investor?.id]);
 
   // Live wallet data — refreshes every 3 seconds + records equity snapshots
   // Sync from server every 30s to keep local wallet data fresh
@@ -5355,7 +5383,7 @@ function AdminPanel({ investor, isMobile }) {
           QA Reports {qaReports.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(168,85,247,0.3)', color: '#A855F7', fontSize: 10, fontWeight: 800 }}>{qaReports.length}</span>}
         </button>
         <button onClick={() => { setActiveSection('feedback'); fetchAdminFeedback(); }} style={tabStyle(activeSection === 'feedback')}>
-          Feedback {adminFeedback.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(0,212,255,0.2)', color: '#00D4FF', fontSize: 10, fontWeight: 800 }}>{adminFeedback.length}</span>}
+          Feedback {adminFeedback.filter(f => f.status === 'new').length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(239,68,68,0.25)', color: '#EF4444', fontSize: 10, fontWeight: 800 }}>{adminFeedback.filter(f => f.status === 'new').length} new</span>}
         </button>
         <button onClick={() => { setActiveSection('withdrawals'); fetchAdminWithdrawals(); }} style={tabStyle(activeSection === 'withdrawals')}>
           Withdrawals {adminWithdrawals.filter(w => w.status === 'pending').length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(245,158,11,0.3)', color: '#F59E0B', fontSize: 10, fontWeight: 800 }}>{adminWithdrawals.filter(w => w.status === 'pending').length}</span>}
