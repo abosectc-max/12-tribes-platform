@@ -2633,12 +2633,16 @@ function runAutoTradeTick() {
  */
 function runAllAgents(userId, fundData) {
   const wallet = db.findOne('wallets', w => w.user_id === userId);
-  if (!wallet || wallet.kill_switch_active) return;
+  if (!wallet) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: NO WALLET`); return; }
+  if (wallet.kill_switch_active) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE`); return; }
 
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
   const todayTrades = db.count('trades', t => t.user_id === userId && new Date(t.closed_at) >= todayStart);
   const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
-  if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) return;
+  if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
+    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: DAILY LIMIT (${todayTrades}+${todayOpens} >= ${AUTO_TRADE_CONFIG.maxDailyTrades})`);
+    return;
+  }
 
   let openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
 
@@ -2672,6 +2676,12 @@ function runAllAgents(userId, fundData) {
     if (bestSignal && Math.abs(bestSignal.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength) {
       allSignals.push(bestSignal);
     }
+  }
+
+  // Log signal generation on first 3 ticks for diagnostics
+  if (autoTradeTickCount <= 3) {
+    console.log(`[AutoTrader] User ${userId}: ${allSignals.length} signals generated, ${openPositions.length} open positions`);
+    allSignals.forEach(s => console.log(`  → ${s.agent} ${s.symbol}: raw=${s.score.toFixed(3)} adj=${s.adjustedScore.toFixed(3)} conf=${s.confluence}`));
   }
 
   // ─── PHASE 3: Rank signals by strength, execute top opportunities ───
@@ -2734,6 +2744,8 @@ function runAllAgents(userId, fundData) {
       const reason = `[${tier}] ${side} signal (${(strength * 100).toFixed(0)}% str, ${signal.confluence} confluence) — ${signal.reason}`;
       logAutoTrade(userId, signal.agent, signal.symbol, side, quantity, reason);
       openPositions.push(result.position);
+    } else {
+      console.warn(`[AutoTrader] TRADE REJECTED: ${signal.agent} ${side} ${quantity}x ${signal.symbol} @ $${price} — ${result.error}`);
     }
   }
 }
@@ -3026,6 +3038,74 @@ api.get('/api/trading/health', (req, res) => {
     recentQAReports: qaReports,
     minSignalThreshold: AUTO_TRADE_CONFIG.minSignalStrength,
   });
+});
+
+// Trading debug — dry-run one tick for a sample user, expose full decision chain
+api.get('/api/trading/debug', (req, res) => {
+  const allSettings = db.findMany('fund_settings');
+  const results = [];
+
+  for (const settingsRecord of allSettings) {
+    const userId = settingsRecord.user_id;
+    const data = settingsRecord.data;
+    const isActive = data?.autoTrading?.isAutoTrading;
+    if (!isActive) continue;
+
+    const wallet = db.findOne('wallets', w => w.user_id === userId);
+    if (!wallet) { results.push({ userId, blocked: 'NO_WALLET' }); continue; }
+    if (wallet.kill_switch_active) { results.push({ userId, blocked: 'KILL_SWITCH' }); continue; }
+
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const todayTrades = db.count('trades', t => t.user_id === userId && new Date(t.closed_at) >= todayStart);
+    const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
+    if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
+      results.push({ userId, blocked: 'DAILY_LIMIT', todayTrades, todayOpens, max: AUTO_TRADE_CONFIG.maxDailyTrades });
+      continue;
+    }
+
+    const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
+    const heldSymbols = openPositions.map(p => p.symbol);
+
+    const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+    const signals = [];
+
+    for (const agent of signalAgents) {
+      const agentPerf = getAgentPerf(agent.name);
+      const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined && priceHistory[s]?.length >= 30);
+      let bestSignal = null;
+      for (const symbol of tradable) {
+        const signal = computeSignal(symbol, agent.role);
+        const adjustedScore = signal.score * agentPerf.adaptiveConfidence;
+        if (!bestSignal || Math.abs(adjustedScore) > Math.abs(bestSignal.adjustedScore)) {
+          bestSignal = { symbol, score: signal.score, adjustedScore, confluence: signal.confluence, agent: agent.name };
+        }
+      }
+      if (bestSignal) {
+        const passesThreshold = Math.abs(bestSignal.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength;
+        const alreadyHeld = heldSymbols.includes(bestSignal.symbol);
+        const side = bestSignal.adjustedScore > 0 ? 'LONG' : 'SHORT';
+        const price = marketPrices[bestSignal.symbol];
+        const equity = wallet.equity || wallet.balance || 100000;
+        let sizePct = bestSignal.confluence >= 4 ? AUTO_TRADE_CONFIG.eliteSizePct : AUTO_TRADE_CONFIG.baseSizePct;
+        const qty = price ? Math.max(1, Math.floor(equity * sizePct / price)) : 0;
+        const cost = price ? qty * price : 0;
+        const canAfford = side === 'LONG' ? cost <= wallet.balance : true;
+        const riskCheck = price ? preTradeRiskCheck(userId, wallet, { symbol: bestSignal.symbol, side, quantity: qty, price }) : { approved: false, reason: 'no price' };
+        signals.push({
+          ...bestSignal, passesThreshold, alreadyHeld, side, price, qty, cost,
+          balance: wallet.balance, canAfford, riskApproved: riskCheck.approved, riskReason: riskCheck.reason || 'ok',
+          wouldExecute: passesThreshold && !alreadyHeld && canAfford && riskCheck.approved,
+        });
+      }
+    }
+
+    results.push({
+      userId, balance: wallet.balance, equity: wallet.equity, openCount: openPositions.length,
+      heldSymbols, todayTrades, todayOpens, signals,
+    });
+  }
+
+  json(res, 200, { tickCount: autoTradeTickCount, debugResults: results });
 });
 
 // Get auto-trading status
