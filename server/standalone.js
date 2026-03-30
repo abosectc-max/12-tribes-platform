@@ -563,27 +563,52 @@ for (let si = 0; si < symKeys.length; si++) {
   const pattern = si % 3; // 0=bullish, 1=bearish, 2=recovery (oversold bounce)
 
   if (pattern === 0) {
-    // BULLISH: price climbed ~3-5% over 120 ticks, strong uptrend
+    // BULLISH: overall uptrend ~3-5% with natural pullbacks every 15-25 ticks
     let p = basePrice * 0.96;
     const stepUp = (basePrice - p) / PRICE_HISTORY_LEN;
+    let pullbackCountdown = 15 + Math.floor(Math.random() * 10);
     for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
-      p += stepUp + (Math.random() - 0.4) * stepUp * 2;
+      pullbackCountdown--;
+      if (pullbackCountdown <= 0 && pullbackCountdown > -5) {
+        // 5-tick pullback: price dips ~0.3-0.5%
+        p -= Math.abs(stepUp) * (1.5 + Math.random());
+      } else {
+        p += stepUp + (Math.random() - 0.35) * stepUp * 1.5;
+        if (pullbackCountdown <= -5) pullbackCountdown = 15 + Math.floor(Math.random() * 10);
+      }
       hist.push(roundTo(Math.max(p, basePrice * 0.93), decimals));
     }
   } else if (pattern === 1) {
-    // BEARISH: price dropped ~3-5%, recent downtrend
+    // BEARISH: overall downtrend ~3-5% with relief rallies every 15-25 ticks
     let p = basePrice * 1.05;
     const stepDown = (p - basePrice) / PRICE_HISTORY_LEN;
+    let rallyCountdown = 15 + Math.floor(Math.random() * 10);
     for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
-      p -= stepDown + (Math.random() - 0.4) * stepDown * 2;
+      rallyCountdown--;
+      if (rallyCountdown <= 0 && rallyCountdown > -4) {
+        // 4-tick relief rally
+        p += Math.abs(stepDown) * (1.5 + Math.random());
+      } else {
+        p -= stepDown + (Math.random() - 0.35) * stepDown * 1.5;
+        if (rallyCountdown <= -4) rallyCountdown = 15 + Math.floor(Math.random() * 10);
+      }
       hist.push(roundTo(Math.min(p, basePrice * 1.07), decimals));
     }
   } else {
-    // RECOVERY: sharp dip then bounce — oversold setup for recovery agents
+    // RECOVERY: dip phase with oscillation, then gradual bounce
     let p = basePrice * 1.02;
     for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
-      if (i < 80) p *= (1 - 0.0008 - Math.random() * 0.001); // slow bleed
-      else p *= (1 + 0.002 + Math.random() * 0.001); // sharp bounce
+      if (i < 70) {
+        // Dip phase with natural oscillation (not monotonic)
+        const oscillation = Math.sin(i / 8) * 0.0003;
+        p *= (1 - 0.0006 - Math.random() * 0.0008 + oscillation);
+      } else if (i < 90) {
+        // Base-building / consolidation
+        p *= (1 + (Math.random() - 0.5) * 0.002);
+      } else {
+        // Recovery bounce
+        p *= (1 + 0.0015 + Math.random() * 0.001);
+      }
       hist.push(roundTo(p, decimals));
     }
   }
@@ -613,16 +638,27 @@ function ema(arr, n) {
 
 function rsi(arr, period = 14) {
   if (arr.length < period + 1) return 50;
-  let gains = 0, losses = 0;
-  const recent = arr.slice(-(period + 1));
-  for (let i = 1; i < recent.length; i++) {
-    const diff = recent[i] - recent[i - 1];
-    if (diff > 0) gains += diff;
-    else losses -= diff;
+  const data = arr.slice(-(period * 3 + 1)); // Use 3x period for Wilder's smoothing warmup
+  let avgGain = 0, avgLoss = 0;
+  // Initial average from first `period` changes
+  for (let i = 1; i <= Math.min(period, data.length - 1); i++) {
+    const diff = data[i] - data[i - 1];
+    if (diff > 0) avgGain += diff;
+    else avgLoss -= diff;
   }
-  if (losses === 0) return 100;
-  const rs = (gains / period) / (losses / period);
-  return 100 - (100 / (1 + rs));
+  avgGain /= period;
+  avgLoss /= period;
+  // Wilder's exponential smoothing for remaining data points
+  for (let i = period + 1; i < data.length; i++) {
+    const diff = data[i] - data[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+  if (avgLoss === 0) return avgGain === 0 ? 50 : 95; // Cap at 95 to avoid overbought saturation
+  const rs = avgGain / avgLoss;
+  return Math.min(95, Math.max(5, 100 - (100 / (1 + rs)))); // Clamp to 5-95 range
 }
 
 function momentum(arr, lookback = 20) {
@@ -3074,16 +3110,20 @@ const AI_AGENTS = [
 
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
-  maxOpenPositions: 8,         // Per user — fewer positions = higher quality focus
-  maxDailyTrades: 60,          // Per user — quality over quantity, half the volume
-  baseSizePct: 0.04,           // 4% of equity per trade (slightly larger, fewer trades)
-  winnerSizePct: 0.065,        // 6.5% for high-conviction signals
-  eliteSizePct: 0.085,         // 8.5% for multi-indicator confluence trades
-  consensusThreshold: 0.4,     // Higher consensus required before action
-  minSignalStrength: 0.65,     // RAISED from 0.50 — only take high-conviction signals
-  minConfluence: 3,            // NEW: Minimum 3 confirming indicators required
-  maxCorrelatedPositions: 2,   // Tighter: max 2 in same asset class (reduce correlated risk)
-  maxDrawdownPct: 15,          // Kill switch trigger at -15% from peak equity
+  maxOpenPositions: 5,         // REDUCED from 8 — fewer, higher-quality positions
+  maxDailyTrades: 20,          // REDUCED from 60 — precision over volume for higher win rate
+  baseSizePct: 0.05,           // 5% of equity per trade (concentrated bets on high conviction)
+  winnerSizePct: 0.08,         // 8% for high-conviction signals
+  eliteSizePct: 0.10,          // 10% for multi-indicator confluence trades
+  consensusThreshold: 0.5,     // RAISED — higher consensus required before action
+  minSignalStrength: 0.78,     // RAISED from 0.65 — only take elite-conviction signals
+  minConfluence: 4,            // RAISED from 3 — minimum 4 confirming indicators required
+  maxCorrelatedPositions: 2,   // Max 2 in same asset class (reduce correlated risk)
+  maxDrawdownPct: 12,          // TIGHTENED from 15% — kill switch at -12% from peak equity
+  // Win-rate optimization parameters
+  minWinRateForTrading: 0.40,  // Halt new entries if agent win rate drops below 40%
+  profitTargetPct: 1.5,        // Take profit at 1.5% gain (high win rate, smaller gains)
+  maxLossPct: 0.6,             // Hard max loss at -0.6% (tight risk control)
 };
 
 let autoTradeTickCount = 0;
@@ -3352,27 +3392,26 @@ function updateCircuitBreaker(agentName, pnl) {
   let shouldTrip = false;
   let reason = '';
 
-  // Condition 1: 3+ consecutive losses (TIGHTENED from 5)
-  if (cb.consecutiveLosses >= 3) {
+  // Condition 1: 2+ consecutive losses (TIGHTENED from 3 — zero tolerance in precision mode)
+  if (cb.consecutiveLosses >= 2) {
     shouldTrip = true;
-    reason = `${cb.consecutiveLosses} consecutive losses`;
+    reason = `${cb.consecutiveLosses} consecutive losses — precision mode halt`;
   }
 
-  // Condition 2: Drawdown from peak exceeds threshold (TIGHTENED from $5k to $3k)
-  if (cb.drawdownFromPeak > 3000) {
+  // Condition 2: Drawdown from peak exceeds $1.5k (TIGHTENED from $3k)
+  if (cb.drawdownFromPeak > 1500) {
     shouldTrip = true;
-    reason = `Drawdown $${cb.drawdownFromPeak.toFixed(0)} from peak`;
+    reason = `Drawdown $${cb.drawdownFromPeak.toFixed(0)} from peak — capital preservation`;
   }
 
-  // Condition 3: Recent P&L heavily negative (TIGHTENED — check last 6 trades, trip at <30% win rate)
+  // Condition 3: Recent win rate below 50% over last 5+ trades (TIGHTENED from <30%/6 trades)
   const ap = getAgentPerf(agentName);
   const recentPnl = (ap.recentPnl || []).slice(-10);
-  if (recentPnl.length >= 6) {
-    const recentSum = recentPnl.reduce((s, v) => s + v, 0);
+  if (recentPnl.length >= 5) {
     const recentWinRate = recentPnl.filter(p => p >= 0).length / recentPnl.length;
-    if (recentWinRate < 0.3 && recentPnl.length >= 6) {
+    if (recentWinRate < 0.50) {
       shouldTrip = true;
-      reason = `Win rate collapsed to ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades`;
+      reason = `Win rate ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades — below 50% threshold`;
     }
   }
 
@@ -3703,12 +3742,12 @@ function computeSignal(symbol, agentStyle, agentName) {
   // ─── MULTI-INDICATOR CONFLUENCE BONUS ───
   // Higher confluence = exponentially better win rate. Reward it aggressively.
   const confluence = Math.max(confluenceBullish, confluenceBearish);
-  if (confluence >= 7) { score *= 2.0; reasons.push(`Elite confluence (${confluence} indicators) — maximum conviction`); }
-  else if (confluence >= 6) { score *= 1.75; reasons.push(`Exceptional confluence (${confluence} indicators)`); }
-  else if (confluence >= 5) { score *= 1.5; reasons.push(`Strong confluence (${confluence} indicators)`); }
-  else if (confluence >= 4) { score *= 1.35; reasons.push(`Good confluence (${confluence} indicators)`); }
-  else if (confluence >= 3) { score *= 1.15; reasons.push(`Moderate confluence (${confluence} indicators)`); }
-  else { score *= 0.6; reasons.push(`Weak confluence (${confluence}) — signal dampened`); }
+  if (confluence >= 7) { score *= 2.2; reasons.push(`Elite confluence (${confluence} indicators) — maximum conviction`); }
+  else if (confluence >= 6) { score *= 1.9; reasons.push(`Exceptional confluence (${confluence} indicators)`); }
+  else if (confluence >= 5) { score *= 1.6; reasons.push(`Strong confluence (${confluence} indicators)`); }
+  else if (confluence >= 4) { score *= 1.3; reasons.push(`Good confluence (${confluence} indicators)`); }
+  else if (confluence >= 3) { score *= 0.8; reasons.push(`Moderate confluence (${confluence}) — below precision threshold`); }
+  else { score *= 0.3; reasons.push(`Weak confluence (${confluence}) — signal heavily dampened`); }
 
   // ─── HISTORICAL PERFORMANCE BIAS ───
   const sp = getSymbolPerf(symbol);
@@ -3824,10 +3863,21 @@ function runAllAgents(userId, fundData) {
 
   for (const agent of signalAgents) {
     const agentPerf = getAgentPerf(agent.name);
+
+    // ─── WIN-RATE GATE: Block agents with poor recent performance ───
+    const totalAgentTrades = agentPerf.wins + agentPerf.losses;
+    if (totalAgentTrades >= 6) {
+      const agentWinRate = agentPerf.wins / totalAgentTrades;
+      if (agentWinRate < (AUTO_TRADE_CONFIG.minWinRateForTrading || 0.40)) {
+        if (autoTradeTickCount % 30 === 1) console.log(`[AutoTrader] Agent ${agent.name} benched — win rate ${(agentWinRate*100).toFixed(0)}% < ${((AUTO_TRADE_CONFIG.minWinRateForTrading||0.40)*100).toFixed(0)}% minimum`);
+        continue; // Skip this agent entirely until win rate recovers
+      }
+    }
+
     const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined && priceHistory[s]?.length >= 30);
     if (tradable.length === 0) continue;
 
-    // Each agent scores ALL its symbols, picks best UNHELD symbol first, falls back to held
+    // Each agent scores ALL its symbols, picks best UNHELD symbol first
     const scored = [];
     for (const symbol of tradable) {
       const signal = computeSignal(symbol, agent.role, agent.name);
@@ -3943,92 +3993,108 @@ function adaptivePositionManagement(userId, openPositions) {
     const regime = symbolRegimes[pos.symbol] || 'ranging';
     const mom = hist.length >= 20 ? momentum(hist, 10) : 0;
 
-    // ─── STOP-LOSS: Tighter adaptive stops based on volatility + agent streak ───
+    // ─── HARD STOP-LOSS: Absolute max loss per position — non-negotiable ───
+    const maxLoss = AUTO_TRADE_CONFIG.maxLossPct || 0.6;
+    if (pnlPct < -maxLoss) {
+      closePosition(userId, pos.id);
+      updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+      logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+        `Hard stop — ${pnlPct.toFixed(2)}% loss exceeds max ${maxLoss}%`);
+      continue;
+    }
+
+    // ─── ADAPTIVE STOP-LOSS: Volatility + streak adjusted ───
     const vol = hist.length >= 20 ? volatility(hist, 20) : 1;
     const agentP = getAgentPerf(pos.agent || 'Unknown');
-    // Tighten stops aggressively on losing streaks
-    const streakFactor = agentP.streak < -3 ? 0.5 : agentP.streak < -1 ? 0.7 : agentP.streak < 0 ? 0.85 : 1.0;
-    const stopLoss = -Math.max(0.8, Math.min(2.5, vol * 1.5 * streakFactor)); // TIGHTENED: -0.8% to -2.5% (was -1.2% to -3.5%)
+    const streakFactor = agentP.streak < -3 ? 0.4 : agentP.streak < -1 ? 0.6 : agentP.streak < 0 ? 0.8 : 1.0;
+    const stopLoss = -Math.max(0.35, Math.min(maxLoss, vol * 1.2 * streakFactor)); // TIGHTENED: -0.35% to -0.6%
 
     if (pnlPct < stopLoss) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-        `Adaptive stop — ${pnlPct.toFixed(1)}% loss (limit: ${stopLoss.toFixed(1)}%, streak: ${agentP.streak})`);
+        `Adaptive stop — ${pnlPct.toFixed(2)}% (limit: ${stopLoss.toFixed(2)}%, streak: ${agentP.streak})`);
       continue;
     }
 
-    // ─── TRAILING STOP: Activate earlier, lock in gains faster ───
-    // Activates at +0.8% profit (was +1.5%) — catches more winners before they reverse
-    if (pnlPct > 0.8) {
-      // Tighter trail distances that scale with profit
-      const trailDist = pnlPct < 1.5 ? 0.5 : pnlPct < 3 ? 0.8 : pnlPct < 6 ? 1.2 : 1.8;
+    // ─── PROFIT TARGET: Take profit at target to lock in wins (high win-rate strategy) ───
+    const profitTarget = AUTO_TRADE_CONFIG.profitTargetPct || 1.5;
+    if (pnlPct >= profitTarget) {
+      closePosition(userId, pos.id);
+      updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+      logAutoTrade(userId, 'Titan', pos.symbol, 'CLOSE', pos.quantity,
+        `Profit target hit — ${pnlPct.toFixed(2)}% gain (target: ${profitTarget}%)`);
+      continue;
+    }
+
+    // ─── TRAILING STOP: Activates at +0.6%, tighter trail to protect gains ───
+    if (pnlPct > 0.6) {
+      const trailDist = pnlPct < 1.0 ? 0.25 : pnlPct < 2.0 ? 0.4 : pnlPct < 4.0 ? 0.6 : 1.0;
 
       const trendAligned = (pos.side === 'LONG' && mom > 0.05) || (pos.side === 'SHORT' && mom < -0.05);
       const regimeAligned = (pos.side === 'LONG' && regime === 'trending_up') || (pos.side === 'SHORT' && regime === 'trending_down');
 
-      // Let winners run only when BOTH trend and regime are aligned
-      if (trendAligned && regimeAligned && pnlPct < 8) continue;
+      // Let winners run ONLY when both trend AND regime strongly aligned
+      if (trendAligned && regimeAligned && pnlPct < profitTarget) continue;
 
-      // Take profit if momentum fading, big gain, or ranging market
-      if (!trendAligned || pnlPct > 5 || (pnlPct > 2 && regime === 'ranging')) {
+      // Take profit when momentum fading or in ranging market
+      if (!trendAligned || pnlPct > 3 || (pnlPct > 1.0 && regime === 'ranging')) {
         closePosition(userId, pos.id);
         updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
         logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-          `Trailing stop — ${pnlPct.toFixed(1)}% gain${!trendAligned ? ' (momentum fading)' : ''}`);
+          `Trailing profit — ${pnlPct.toFixed(2)}% gain${!trendAligned ? ' (momentum fading)' : ''}`);
         continue;
       }
     }
 
-    // ─── EARLY EXIT: Cut losers fast when momentum + regime confirm against position ───
-    // Lowered threshold: act at -0.3% (was -0.5%) and after 3min (was 5min)
-    if (pnlPct < -0.3 && holdMinutes > 3) {
-      const againstMom = (pos.side === 'LONG' && mom < -0.2) || (pos.side === 'SHORT' && mom > 0.2);
+    // ─── EARLY EXIT: Cut losers immediately when both momentum + regime are against us ───
+    if (pnlPct < -0.15 && holdMinutes > 1.5) {
+      const againstMom = (pos.side === 'LONG' && mom < -0.15) || (pos.side === 'SHORT' && mom > 0.15);
       const againstRegime = (pos.side === 'LONG' && regime === 'trending_down') || (pos.side === 'SHORT' && regime === 'trending_up');
       if (againstMom && againstRegime) {
         closePosition(userId, pos.id);
         updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
         logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-          `Early cut — ${pnlPct.toFixed(1)}% with adverse momentum + regime`);
+          `Early cut — ${pnlPct.toFixed(2)}% with adverse momentum + regime`);
         continue;
       }
     }
 
-    // ─── MOMENTUM REVERSAL EXIT: Close if momentum sharply reverses against position ───
-    if (pnlPct > 0 && pnlPct < 0.5 && holdMinutes > 2) {
-      const sharpReversal = (pos.side === 'LONG' && mom < -0.5) || (pos.side === 'SHORT' && mom > 0.5);
-      if (sharpReversal) {
+    // ─── BREAKEVEN STOP: Once profitable, never let it become a loss ───
+    if (pnlPct > 0.3 && holdMinutes > 2) {
+      // If was profitable but momentum reversing, exit at breakeven+
+      const momReversing = (pos.side === 'LONG' && mom < -0.3) || (pos.side === 'SHORT' && mom > 0.3);
+      if (momReversing && pnlPct < 0.5) {
         closePosition(userId, pos.id);
         updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
         logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-          `Momentum reversal — protecting ${pnlPct.toFixed(1)}% gain from sharp reversal`);
+          `Breakeven stop — protecting ${pnlPct.toFixed(2)}% from reversal`);
         continue;
       }
     }
 
-    // ─── TIME EXIT: Close stale positions faster ───
-    // Reduced from 20min to 12min — if it's not moving, free the capital
-    if (holdMinutes > 12 && Math.abs(pnlPct) < 0.3) {
+    // ─── TIME EXIT: Close stale positions (extended to 20min for quality trades) ───
+    if (holdMinutes > 20 && Math.abs(pnlPct) < 0.4) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Titan', pos.symbol, 'CLOSE', pos.quantity,
-        `Time exit — ${holdMinutes.toFixed(0)}min with ${pnlPct.toFixed(1)}% (freeing capital)`);
+        `Time exit — ${holdMinutes.toFixed(0)}min with ${pnlPct.toFixed(2)}% (freeing capital)`);
       continue;
     }
 
     // ─── REGIME REVERSAL EXIT: Close if market regime flipped against position ───
-    if (pos.side === 'LONG' && regime === 'trending_down' && pnlPct < 0.5) {
+    if (pos.side === 'LONG' && regime === 'trending_down' && pnlPct < 0.3) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-        `Regime reversal — market turned bearish (${pnlPct.toFixed(1)}%)`);
+        `Regime reversal — market turned bearish (${pnlPct.toFixed(2)}%)`);
       continue;
     }
-    if (pos.side === 'SHORT' && regime === 'trending_up' && pnlPct < 0.5) {
+    if (pos.side === 'SHORT' && regime === 'trending_up' && pnlPct < 0.3) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-        `Regime reversal — market turned bullish (${pnlPct.toFixed(1)}%)`);
+        `Regime reversal — market turned bullish (${pnlPct.toFixed(2)}%)`);
     }
   }
 }
@@ -4351,15 +4417,15 @@ function qaCheckDailyLimits() {
     if (todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) cappedCount++;
   }
 
-  // If ALL active users are daily-capped, that's a structural problem — raise the limit
+  // If ALL active users are daily-capped, log it but DO NOT auto-raise the limit.
+  // Daily limits are intentionally low (20/day) for a precision-over-volume strategy.
+  // Over-trading destroys win rate. This is by design, not a structural problem.
   if (cappedCount > 0 && cappedCount === allSettings.length) {
-    const oldLimit = AUTO_TRADE_CONFIG.maxDailyTrades;
-    AUTO_TRADE_CONFIG.maxDailyTrades = Math.min(oldLimit + 50, 500);
     fixes.push({
       issue: 'ALL_USERS_DAILY_CAPPED',
-      action: `Raised daily limit from ${oldLimit} to ${AUTO_TRADE_CONFIG.maxDailyTrades} (${cappedCount} users were capped)`,
+      action: `All ${cappedCount} users reached daily limit of ${AUTO_TRADE_CONFIG.maxDailyTrades} — this is intentional for high win-rate strategy. No auto-raise.`,
     });
-    console.warn(`[QA] 🔧 All ${cappedCount} users daily-capped — raised limit ${oldLimit} → ${AUTO_TRADE_CONFIG.maxDailyTrades}`);
+    console.log(`[QA] All ${cappedCount} users daily-capped at ${AUTO_TRADE_CONFIG.maxDailyTrades} — operating as designed (precision mode).`);
   }
   return fixes;
 }
