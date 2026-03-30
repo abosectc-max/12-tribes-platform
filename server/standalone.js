@@ -447,30 +447,52 @@ const PRICE_HISTORY_LEN = 120; // ~4 minutes of 2s ticks
 const priceHistory = {};
 const symbolRegimes = {}; // 'trending_up' | 'trending_down' | 'ranging'
 
-// Seed price history with realistic synthetic data so agents can trade immediately after restart
-for (const sym of Object.keys(DEFAULT_PRICES)) {
+// Seed price history with strong trend data so agents can trade on first tick
+// Creates a mix of bullish, bearish, and ranging histories across symbols
+const symKeys = Object.keys(DEFAULT_PRICES);
+for (let si = 0; si < symKeys.length; si++) {
+  const sym = symKeys[si];
   const basePrice = DEFAULT_PRICES[sym];
   const hist = [];
-  let p = basePrice * (0.97 + Math.random() * 0.06); // Start slightly off from current
-  const baseVol = basePrice < 1 ? 0.008 : basePrice < 50 ? 0.003 : basePrice < 500 ? 0.002 : 0.0015;
-  // Generate 120 ticks of realistic price action with trends and mean-reversion
-  let drift = (Math.random() - 0.45) * baseVol * 2;
-  for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
-    // Occasional regime shifts
-    if (i % 30 === 0) drift = (Math.random() - 0.45) * baseVol * 2;
-    const noise = (Math.random() - 0.5) * baseVol;
-    p = p * (1 + drift + noise);
-    hist.push(roundTo(p, basePrice < 10 ? 4 : 2));
+  const decimals = basePrice < 10 ? 4 : 2;
+
+  // Alternate symbols between bullish rally, bearish dip, and recovery patterns
+  const pattern = si % 3; // 0=bullish, 1=bearish, 2=recovery (oversold bounce)
+
+  if (pattern === 0) {
+    // BULLISH: price climbed ~3-5% over 120 ticks, strong uptrend
+    let p = basePrice * 0.96;
+    const stepUp = (basePrice - p) / PRICE_HISTORY_LEN;
+    for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
+      p += stepUp + (Math.random() - 0.4) * stepUp * 2;
+      hist.push(roundTo(Math.max(p, basePrice * 0.93), decimals));
+    }
+  } else if (pattern === 1) {
+    // BEARISH: price dropped ~3-5%, recent downtrend
+    let p = basePrice * 1.05;
+    const stepDown = (p - basePrice) / PRICE_HISTORY_LEN;
+    for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
+      p -= stepDown + (Math.random() - 0.4) * stepDown * 2;
+      hist.push(roundTo(Math.min(p, basePrice * 1.07), decimals));
+    }
+  } else {
+    // RECOVERY: sharp dip then bounce — oversold setup for recovery agents
+    let p = basePrice * 1.02;
+    for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
+      if (i < 80) p *= (1 - 0.0008 - Math.random() * 0.001); // slow bleed
+      else p *= (1 + 0.002 + Math.random() * 0.001); // sharp bounce
+      hist.push(roundTo(p, decimals));
+    }
   }
-  // Ensure last price matches current market price
+  // Snap last price to current market price
   hist[hist.length - 1] = basePrice;
   priceHistory[sym] = hist;
-  symbolRegimes[sym] = 'ranging';
 }
-// Detect initial regimes from seeded data
-for (const sym of Object.keys(DEFAULT_PRICES)) {
+// Detect regimes from seeded data
+for (const sym of symKeys) {
   symbolRegimes[sym] = detectRegime(priceHistory[sym]);
 }
+console.log(`[Boot] Price history seeded: ${symKeys.length} symbols × ${PRICE_HISTORY_LEN} ticks, regimes detected`);
 
 // ─── Technical Indicators (computed from price history) ───
 function sma(arr, n) {
