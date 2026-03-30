@@ -5667,26 +5667,84 @@ function recordDistribution(userId, amount, withdrawalRequestId, method) {
   const account = ensureCapitalAccount(userId);
   const user = db.findOne('users', u => u.id === userId);
   const wallet = db.findOne('wallets', w => w.user_id === userId);
+  const investorName = user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Unknown';
 
   const balanceBefore = account.ending_balance;
   const balanceAfter = roundTo(balanceBefore - amount, 2);
 
+  // ── IRC §731: Basis-Exceeding Distribution Detection ──
+  // Compute the investor's adjusted tax basis:
+  //   Basis = contributions + allocated income - allocated losses - prior distributions
+  // If distribution exceeds basis, the excess is taxable as capital gain.
+  const adjustedBasis = roundTo(
+    (account.contributions || 0) +
+    (account.allocated_income || 0) -
+    Math.abs(account.allocated_losses || 0) -
+    (account.distributions_total || 0),
+    2
+  );
+
+  const basisExceeded = amount > adjustedBasis && adjustedBasis >= 0;
+  const excessOverBasis = basisExceeded ? roundTo(amount - adjustedBasis, 2) : 0;
+  const returnOfCapitalPortion = basisExceeded ? adjustedBasis : amount;
+
   // Create immutable distribution record
   const distribution = db.insert('distributions', {
     user_id: userId,
-    investor_name: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Unknown',
+    investor_name: investorName,
     withdrawal_request_id: withdrawalRequestId || null,
     amount: roundTo(amount, 2),
-    type: 'cash_distribution',         // cash_distribution | guaranteed_payment | return_of_capital
+    type: basisExceeded ? 'basis_exceeding_distribution' : 'cash_distribution',
     method: method || 'bank_transfer',
     capital_account_before: balanceBefore,
     capital_account_after: balanceAfter,
     wallet_equity_at_distribution: wallet?.equity || 0,
     tax_year: new Date().getFullYear(),
-    is_return_of_capital: balanceAfter < account.contributions,
+    is_return_of_capital: true,  // All partnership distributions are technically return of capital
+    // ── IRC §731 fields ──
+    adjusted_basis_at_distribution: adjustedBasis,
+    basis_exceeded: basisExceeded,
+    excess_over_basis: excessOverBasis,            // Taxable capital gain amount
+    return_of_capital_portion: returnOfCapitalPortion,
     distribution_date: new Date().toISOString(),
     created_at: new Date().toISOString(),
   });
+
+  // ── If basis exceeded: record excess as capital gain in tax_ledger (IRC §731(a)) ──
+  if (basisExceeded && excessOverBasis > 0) {
+    // Determine holding period: if investor held partnership interest > 1 year → long-term
+    const accountAge = account.created_at
+      ? Math.floor((Date.now() - new Date(account.created_at).getTime()) / (1000 * 60 * 60 * 24))
+      : 365;
+    const holdingPeriod = accountAge >= TAX_CONFIG.shortTermThresholdDays ? 'LONG_TERM' : 'SHORT_TERM';
+
+    db.insert('tax_ledger', {
+      user_id: userId,
+      tax_lot_id: null,
+      position_id: `dist-${distribution.id}`,   // Link to distribution record
+      symbol: 'PARTNERSHIP_INTEREST',
+      side: 'LONG',
+      asset_class: 'partnership',
+      quantity: 1,
+      acquired_at: account.created_at || new Date().toISOString(),
+      disposed_at: new Date().toISOString(),
+      hold_days: accountAge,
+      holding_period: holdingPeriod,
+      cost_basis: 0,                             // Basis already exhausted
+      proceeds: excessOverBasis,
+      gain_loss: excessOverBasis,
+      wash_sale_disallowed: 0,
+      adjusted_gain_loss: excessOverBasis,
+      agent: null,
+      cost_basis_method: 'IRC_731',
+      is_wash_sale: false,
+      form_8949_box: holdingPeriod === 'SHORT_TERM' ? 'A' : 'D',
+      is_basis_exceeding_distribution: true,
+      distribution_id: distribution.id,
+    });
+
+    console.warn(`[TaxEngine] ⚠ BASIS EXCEEDED: ${investorName} withdrew $${amount} against basis of $${adjustedBasis}. Excess $${excessOverBasis} recorded as ${holdingPeriod} capital gain.`);
+  }
 
   // Update capital account
   account.distributions_total = roundTo((account.distributions_total || 0) + amount, 2);
@@ -5694,7 +5752,7 @@ function recordDistribution(userId, amount, withdrawalRequestId, method) {
   account.updated_at = new Date().toISOString();
   db._save('capital_accounts');
 
-  console.log(`[CapitalAccount] Distribution recorded: $${amount} for user ${userId}. Capital account: $${balanceBefore} → $${balanceAfter}`);
+  console.log(`[CapitalAccount] Distribution recorded: $${amount} for ${investorName}. Capital account: $${balanceBefore} → $${balanceAfter}${basisExceeded ? ` | ⚠ BASIS EXCEEDED by $${excessOverBasis}` : ''}`);
   return distribution;
 }
 
@@ -6125,6 +6183,14 @@ function computeTaxAllocations(taxYear) {
       capital_account_ending: roundTo(wallet?.equity || account.ending_balance, 2),
       capital_contributed: roundTo(account.contributions || 0, 2),
       capital_withdrawn: roundTo(account.distributions_total || 0, 2),
+      // IRC §731 — basis-exceeding distribution detection
+      adjusted_tax_basis: roundTo(
+        (account.contributions || 0) + (account.allocated_income || 0) -
+        Math.abs(account.allocated_losses || 0) - (account.distributions_total || 0), 2),
+      basis_exceeded_distributions: investorDistributions.filter(d => d.basis_exceeded).length,
+      excess_capital_gains: roundTo(
+        investorDistributions.filter(d => d.basis_exceeded)
+          .reduce((s, d) => s + (d.excess_over_basis || 0), 0), 2),
       computed_at: new Date().toISOString(),
     };
 
@@ -6496,11 +6562,25 @@ api.get('/api/admin/distributions/:year', auth, (req, res) => {
   const distributions = db.findMany('distributions', d => d.tax_year === taxYear);
   const totalDistributed = roundTo(distributions.reduce((s, d) => s + d.amount, 0), 2);
 
+  // IRC §731 summary — flag distributions that exceeded basis
+  const basisExceeded = distributions.filter(d => d.basis_exceeded);
+  const totalExcessGains = roundTo(basisExceeded.reduce((s, d) => s + (d.excess_over_basis || 0), 0), 2);
+
   json(res, 200, {
     success: true,
     taxYear,
     totalDistributed,
     distributionCount: distributions.length,
+    // IRC §731 flags
+    basisExceededCount: basisExceeded.length,
+    totalExcessCapitalGains: totalExcessGains,
+    basisExceededDistributions: basisExceeded.map(d => ({
+      investor_name: d.investor_name,
+      amount: d.amount,
+      adjusted_basis: d.adjusted_basis_at_distribution,
+      excess_over_basis: d.excess_over_basis,
+      distribution_date: d.distribution_date,
+    })),
     distributions: distributions.sort((a, b) => new Date(b.distribution_date) - new Date(a.distribution_date)),
   });
 });
