@@ -2865,14 +2865,32 @@ api.post('/api/auto-trading/toggle', auth, async (req, res) => {
     settings.data.autoTrading.agentsActive = AI_AGENTS.map(a => a.name);
   } else {
     settings.data.autoTrading.agentsActive = [];
+
+    // Close ALL open positions when trading is stopped — freeze the portfolio value
+    const openPositions = db.findMany('positions', p => p.user_id === req.userId && p.status === 'OPEN');
+    let closedCount = 0;
+    let totalPnL = 0;
+    for (const pos of openPositions) {
+      const result = closePosition(req.userId, pos.id);
+      if (result.success) {
+        closedCount++;
+        totalPnL += result.pnl || 0;
+      }
+    }
+    if (closedCount > 0) {
+      console.log(`[AutoTrader] User ${req.userId} stopped trading — closed ${closedCount} positions (PnL: $${totalPnL.toFixed(2)})`);
+    }
   }
   settings.updated_at = new Date().toISOString();
   db._save('fund_settings');
+
+  const openPositions = db.findMany('positions', p => p.user_id === req.userId && p.status === 'OPEN');
 
   json(res, 200, {
     success: true,
     isActive: settings.data.autoTrading.isAutoTrading,
     agents: settings.data.autoTrading.agentsActive,
+    positionsClosed: enabled === false ? (openPositions.length === 0) : undefined,
   });
 });
 
