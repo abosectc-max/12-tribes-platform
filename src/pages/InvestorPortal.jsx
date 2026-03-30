@@ -5061,6 +5061,7 @@ function AdminPanel({ investor, isMobile }) {
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [adminWithdrawals, setAdminWithdrawals] = useState([]);
   const [withdrawalsLoading, setWithdrawalsLoading] = useState(false);
+  const [selectedWithdrawalUser, setSelectedWithdrawalUser] = useState(null);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [createForm, setCreateForm] = useState({ email: '', firstName: '', lastName: '', role: 'investor' });
   const [createLoading, setCreateLoading] = useState(false);
@@ -5796,89 +5797,211 @@ function AdminPanel({ investor, isMobile }) {
           )}
 
           {/* Summary Stats */}
-          {adminWithdrawals.length > 0 && (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
-                {[
-                  { label: 'Pending', count: adminWithdrawals.filter(w => w.status === 'pending').length, total: adminWithdrawals.filter(w => w.status === 'pending').reduce((s, w) => s + w.amount, 0), color: '#F59E0B' },
-                  { label: 'Processing', count: adminWithdrawals.filter(w => w.status === 'processing').length, total: adminWithdrawals.filter(w => w.status === 'processing').reduce((s, w) => s + w.amount, 0), color: '#A855F7' },
-                  { label: 'Completed', count: adminWithdrawals.filter(w => w.status === 'completed').length, total: adminWithdrawals.filter(w => w.status === 'completed').reduce((s, w) => s + w.amount, 0), color: '#22C55E' },
-                  { label: 'Denied', count: adminWithdrawals.filter(w => w.status === 'denied').length, total: adminWithdrawals.filter(w => w.status === 'denied').reduce((s, w) => s + w.amount, 0), color: '#EF4444' },
-                ].map(s => (
-                  <div key={s.label} style={{ ...glass, padding: 14, textAlign: 'center' }}>
-                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>{s.label}</div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: s.color, marginTop: 4 }}>{s.count}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>${s.total.toLocaleString()}</div>
-                  </div>
-                ))}
-              </div>
+          {adminWithdrawals.length > 0 && (() => {
+            const statusColors = {
+              pending: { bg: 'rgba(245,158,11,0.1)', color: '#F59E0B' },
+              approved: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF' },
+              processing: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7' },
+              completed: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E' },
+              denied: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444' },
+            };
 
-              {adminWithdrawals.map(wr => {
-                const statusColors = {
-                  pending: { bg: 'rgba(245,158,11,0.1)', color: '#F59E0B' },
-                  approved: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF' },
-                  processing: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7' },
-                  completed: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E' },
-                  denied: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444' },
+            // Group withdrawals by investor
+            const byInvestor = {};
+            adminWithdrawals.forEach(wr => {
+              const key = wr.userId;
+              if (!byInvestor[key]) {
+                byInvestor[key] = {
+                  userId: key,
+                  userName: wr.userName || 'Unknown',
+                  userEmail: wr.userEmail || '',
+                  requests: [],
+                  totalWithdrawn: 0,
+                  totalPending: 0,
+                  completedCount: 0,
+                  pendingCount: 0,
                 };
-                const sc = statusColors[wr.status] || statusColors.pending;
-                return (
-                  <div key={wr.id} style={{ ...glass, padding: 20, marginBottom: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                      <div>
-                        <div style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>${wr.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>{wr.userName} · {wr.userEmail}</div>
-                      </div>
-                      <span style={{ padding: '4px 12px', borderRadius: 8, background: sc.bg, color: sc.color, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{wr.status}</span>
+              }
+              byInvestor[key].requests.push(wr);
+              if (wr.status === 'completed') {
+                byInvestor[key].totalWithdrawn += wr.amount;
+                byInvestor[key].completedCount++;
+              }
+              if (wr.status === 'pending' || wr.status === 'processing' || wr.status === 'approved') {
+                byInvestor[key].totalPending += wr.amount;
+                byInvestor[key].pendingCount++;
+              }
+            });
+            const investorList = Object.values(byInvestor).sort((a, b) => b.totalWithdrawn - a.totalWithdrawn);
+            const grandTotal = investorList.reduce((s, inv) => s + inv.totalWithdrawn, 0);
+
+            return (
+              <>
+                {/* Top-level stats */}
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+                  {[
+                    { label: 'Pending', count: adminWithdrawals.filter(w => w.status === 'pending').length, total: adminWithdrawals.filter(w => w.status === 'pending').reduce((s, w) => s + w.amount, 0), color: '#F59E0B' },
+                    { label: 'Processing', count: adminWithdrawals.filter(w => w.status === 'processing').length, total: adminWithdrawals.filter(w => w.status === 'processing').reduce((s, w) => s + w.amount, 0), color: '#A855F7' },
+                    { label: 'Completed', count: adminWithdrawals.filter(w => w.status === 'completed').length, total: adminWithdrawals.filter(w => w.status === 'completed').reduce((s, w) => s + w.amount, 0), color: '#22C55E' },
+                    { label: 'Total Withdrawn', count: investorList.length + ' investors', total: grandTotal, color: '#00D4FF' },
+                  ].map(s => (
+                    <div key={s.label} style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                      <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>{s.label}</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: s.color, marginTop: 4 }}>{typeof s.count === 'number' ? s.count : s.count}</div>
+                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>${s.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
                     </div>
+                  ))}
+                </div>
 
-                    <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>
-                      <span>Method: {(wr.method || '').replace(/_/g, ' ')}</span>
-                      <span>Requested: {new Date(wr.createdAt).toLocaleString()}</span>
-                      <span>Balance at request: ${(wr.walletEquityAtRequest || 0).toLocaleString()}</span>
-                    </div>
-
-                    {wr.notes && (
-                      <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 10, fontStyle: 'italic', padding: '8px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
-                        "{wr.notes}"
+                {/* ── INVESTOR DETAIL VIEW ── */}
+                {selectedWithdrawalUser && (() => {
+                  const inv = byInvestor[selectedWithdrawalUser];
+                  if (!inv) return null;
+                  const sorted = [...inv.requests].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                  return (
+                    <div style={{ marginBottom: 16 }}>
+                      {/* Back button + header */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                        <button onClick={() => setSelectedWithdrawalUser(null)} style={{
+                          padding: '8px 16px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                          border: '1px solid rgba(0,212,255,0.2)', background: 'rgba(0,212,255,0.06)', color: '#00D4FF',
+                        }}>← Back</button>
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>{inv.userName}</div>
+                          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{inv.userEmail}</div>
+                        </div>
                       </div>
-                    )}
 
-                    {wr.adminNotes && (
-                      <div style={{ padding: '8px 12px', borderRadius: 10, background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.12)', marginBottom: 10 }}>
-                        <div style={{ fontSize: 10, color: '#A855F7', fontWeight: 600, marginBottom: 2 }}>Admin Notes</div>
-                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{wr.adminNotes}</div>
+                      {/* Investor withdrawal summary */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
+                        <div style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>Total Withdrawn</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: '#22C55E', marginTop: 4 }}>${inv.totalWithdrawn.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>{inv.completedCount} completed</div>
+                        </div>
+                        <div style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>Pending</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: '#F59E0B', marginTop: 4 }}>${inv.totalPending.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>{inv.pendingCount} requests</div>
+                        </div>
+                        <div style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>All Requests</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginTop: 4 }}>{inv.requests.length}</div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>total</div>
+                        </div>
                       </div>
-                    )}
 
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {['pending', 'approved', 'processing', 'completed', 'denied'].map(s => (
-                        <button key={s} onClick={() => {
-                          if (s === 'completed' && wr.status !== 'completed') {
-                            if (!confirm(`Mark as completed? This will deduct $${wr.amount.toLocaleString()} from the investor's wallet.`)) return;
-                          }
-                          updateWithdrawalStatus(wr.id, s);
-                        }} style={{
-                          padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                          border: wr.status === s ? `1px solid ${(statusColors[s] || statusColors.pending).color}40` : '1px solid rgba(255,255,255,0.06)',
-                          background: wr.status === s ? (statusColors[s] || statusColors.pending).bg : 'rgba(30,30,34,0.6)',
-                          color: wr.status === s ? (statusColors[s] || statusColors.pending).color : 'rgba(255,255,255,0.4)',
-                          textTransform: 'capitalize',
-                        }}>{s}</button>
-                      ))}
-                      <button onClick={() => {
-                        const notes = prompt('Enter admin notes for this withdrawal:');
-                        if (notes !== null) updateWithdrawalStatus(wr.id, wr.status, notes);
-                      }} style={{
-                        padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                        border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(30,30,34,0.6)', color: 'rgba(255,255,255,0.4)',
-                      }}>Add Notes</button>
+                      {/* Individual withdrawal history */}
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Withdrawal History</div>
+                      {sorted.map(wr => {
+                        const sc = statusColors[wr.status] || statusColors.pending;
+                        return (
+                          <div key={wr.id} style={{ ...glass, padding: 16, marginBottom: 8 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <div style={{ fontSize: 20, fontWeight: 800, color: '#fff' }}>${wr.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                                <span style={{ padding: '3px 10px', borderRadius: 8, background: sc.bg, color: sc.color, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{wr.status}</span>
+                              </div>
+                              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{new Date(wr.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'rgba(255,255,255,0.3)', marginBottom: 8, flexWrap: 'wrap' }}>
+                              <span>Method: {(wr.method || '').replace(/_/g, ' ')}</span>
+                              <span>Requested: {new Date(wr.createdAt).toLocaleTimeString()}</span>
+                              {wr.completedAt && <span>Completed: {new Date(wr.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
+                              <span>Balance at request: ${(wr.walletEquityAtRequest || 0).toLocaleString()}</span>
+                            </div>
+
+                            {wr.notes && (
+                              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 8, fontStyle: 'italic', padding: '6px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.02)' }}>
+                                "{wr.notes}"
+                              </div>
+                            )}
+
+                            {wr.adminNotes && (
+                              <div style={{ padding: '6px 10px', borderRadius: 8, background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.12)', marginBottom: 8 }}>
+                                <div style={{ fontSize: 10, color: '#A855F7', fontWeight: 600, marginBottom: 2 }}>Admin Notes</div>
+                                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{wr.adminNotes}</div>
+                              </div>
+                            )}
+
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {['pending', 'approved', 'processing', 'completed', 'denied'].map(s => (
+                                <button key={s} onClick={() => {
+                                  if (s === 'completed' && wr.status !== 'completed') {
+                                    if (!confirm(`Mark as completed? This will deduct $${wr.amount.toLocaleString()} from ${inv.userName}'s wallet.`)) return;
+                                  }
+                                  updateWithdrawalStatus(wr.id, s);
+                                }} style={{
+                                  padding: '5px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                                  border: wr.status === s ? `1px solid ${(statusColors[s] || statusColors.pending).color}40` : '1px solid rgba(255,255,255,0.06)',
+                                  background: wr.status === s ? (statusColors[s] || statusColors.pending).bg : 'rgba(30,30,34,0.6)',
+                                  color: wr.status === s ? (statusColors[s] || statusColors.pending).color : 'rgba(255,255,255,0.4)',
+                                  textTransform: 'capitalize',
+                                }}>{s}</button>
+                              ))}
+                              <button onClick={() => {
+                                const notes = prompt('Enter admin notes for this withdrawal:');
+                                if (notes !== null) updateWithdrawalStatus(wr.id, wr.status, notes);
+                              }} style={{
+                                padding: '5px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                                border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(30,30,34,0.6)', color: 'rgba(255,255,255,0.4)',
+                              }}>Add Notes</button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
+                  );
+                })()}
+
+                {/* ── INVESTOR LIST VIEW (when no user selected) ── */}
+                {!selectedWithdrawalUser && (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Withdrawals by Investor</div>
+                    {investorList.map(inv => {
+                      const hasPending = inv.pendingCount > 0;
+                      return (
+                        <div key={inv.userId} onClick={() => setSelectedWithdrawalUser(inv.userId)} style={{
+                          ...glass, padding: 18, marginBottom: 8, cursor: 'pointer',
+                          border: hasPending ? '1px solid rgba(245,158,11,0.15)' : '1px solid rgba(255,255,255,0.04)',
+                          transition: 'all 0.2s',
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(0,212,255,0.3)'; e.currentTarget.style.background = 'rgba(0,212,255,0.03)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = hasPending ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.04)'; e.currentTarget.style.background = ''; }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                              <div style={{
+                                width: 40, height: 40, borderRadius: 12,
+                                background: 'linear-gradient(135deg, rgba(0,212,255,0.15), rgba(168,85,247,0.15))',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: 16, fontWeight: 800, color: '#00D4FF',
+                              }}>{(inv.userName || '?')[0].toUpperCase()}</div>
+                              <div>
+                                <div style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>{inv.userName}</div>
+                                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 1 }}>{inv.userEmail}</div>
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontSize: 18, fontWeight: 800, color: '#22C55E' }}>${inv.totalWithdrawn.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 3 }}>
+                                <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>{inv.completedCount} completed</span>
+                                {hasPending && (
+                                  <span style={{ fontSize: 10, color: '#F59E0B', fontWeight: 700 }}>{inv.pendingCount} pending · ${inv.totalPending.toLocaleString()}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 8 }}>{inv.requests.length} total requests · Click to view history →</div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            );
+          })()}
         </>
       )}
 
