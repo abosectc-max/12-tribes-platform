@@ -3052,14 +3052,15 @@ const AI_AGENTS = [
 
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
-  maxOpenPositions: 12,        // Per user — slightly reduced for quality > quantity
-  maxDailyTrades: 120,         // Per user — focused on high-quality setups
-  baseSizePct: 0.035,          // 3.5% of equity per trade (balanced growth)
-  winnerSizePct: 0.055,        // 5.5% for high-conviction signals
-  eliteSizePct: 0.07,          // 7% for multi-indicator confluence trades
-  consensusThreshold: 0.3,     // Lower threshold — act on strong signals fast
-  minSignalStrength: 0.50,     // Moderate threshold — allows more frequent trading while filtering noise
-  maxCorrelatedPositions: 3,   // Max positions in same asset class
+  maxOpenPositions: 8,         // Per user — fewer positions = higher quality focus
+  maxDailyTrades: 60,          // Per user — quality over quantity, half the volume
+  baseSizePct: 0.04,           // 4% of equity per trade (slightly larger, fewer trades)
+  winnerSizePct: 0.065,        // 6.5% for high-conviction signals
+  eliteSizePct: 0.085,         // 8.5% for multi-indicator confluence trades
+  consensusThreshold: 0.4,     // Higher consensus required before action
+  minSignalStrength: 0.65,     // RAISED from 0.50 — only take high-conviction signals
+  minConfluence: 3,            // NEW: Minimum 3 confirming indicators required
+  maxCorrelatedPositions: 2,   // Tighter: max 2 in same asset class (reduce correlated risk)
   maxDrawdownPct: 15,          // Kill switch trigger at -15% from peak equity
 };
 
@@ -3329,25 +3330,25 @@ function updateCircuitBreaker(agentName, pnl) {
   let shouldTrip = false;
   let reason = '';
 
-  // Condition 1: 5+ consecutive losses
-  if (cb.consecutiveLosses >= 5) {
+  // Condition 1: 3+ consecutive losses (TIGHTENED from 5)
+  if (cb.consecutiveLosses >= 3) {
     shouldTrip = true;
     reason = `${cb.consecutiveLosses} consecutive losses`;
   }
 
-  // Condition 2: Drawdown from peak exceeds threshold
-  if (cb.drawdownFromPeak > 5000) { // $5k drawdown from agent's peak
+  // Condition 2: Drawdown from peak exceeds threshold (TIGHTENED from $5k to $3k)
+  if (cb.drawdownFromPeak > 3000) {
     shouldTrip = true;
     reason = `Drawdown $${cb.drawdownFromPeak.toFixed(0)} from peak`;
   }
 
-  // Condition 3: Recent P&L heavily negative
+  // Condition 3: Recent P&L heavily negative (TIGHTENED — check last 6 trades, trip at <30% win rate)
   const ap = getAgentPerf(agentName);
   const recentPnl = (ap.recentPnl || []).slice(-10);
-  if (recentPnl.length >= 8) {
+  if (recentPnl.length >= 6) {
     const recentSum = recentPnl.reduce((s, v) => s + v, 0);
     const recentWinRate = recentPnl.filter(p => p >= 0).length / recentPnl.length;
-    if (recentWinRate < 0.2 && recentPnl.length >= 8) {
+    if (recentWinRate < 0.3 && recentPnl.length >= 6) {
       shouldTrip = true;
       reason = `Win rate collapsed to ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades`;
     }
@@ -3359,8 +3360,8 @@ function updateCircuitBreaker(agentName, pnl) {
     cb.tripReason = reason;
     cb.trippedAt = now;
 
-    // Escalating cooldown: 2min, 5min, 10min, 15min max
-    const cooldownMs = Math.min(900000, cb.tripCount * 120000 + 120000);
+    // Escalating cooldown: 3min, 6min, 12min, 20min max (LONGER — force agents to reflect)
+    const cooldownMs = Math.min(1200000, cb.tripCount * 180000 + 180000);
     cb.resumeAt = now + cooldownMs;
 
     cb.healActions.push({
@@ -3678,11 +3679,14 @@ function computeSignal(symbol, agentStyle, agentName) {
   }
 
   // ─── MULTI-INDICATOR CONFLUENCE BONUS ───
+  // Higher confluence = exponentially better win rate. Reward it aggressively.
   const confluence = Math.max(confluenceBullish, confluenceBearish);
-  if (confluence >= 6) { score *= 1.6; reasons.push(`Exceptional confluence (${confluence} indicators)`); }
-  else if (confluence >= 5) { score *= 1.4; reasons.push(`Strong confluence (${confluence} indicators)`); }
-  else if (confluence >= 4) { score *= 1.3; reasons.push(`Good confluence (${confluence} indicators)`); }
+  if (confluence >= 7) { score *= 2.0; reasons.push(`Elite confluence (${confluence} indicators) — maximum conviction`); }
+  else if (confluence >= 6) { score *= 1.75; reasons.push(`Exceptional confluence (${confluence} indicators)`); }
+  else if (confluence >= 5) { score *= 1.5; reasons.push(`Strong confluence (${confluence} indicators)`); }
+  else if (confluence >= 4) { score *= 1.35; reasons.push(`Good confluence (${confluence} indicators)`); }
   else if (confluence >= 3) { score *= 1.15; reasons.push(`Moderate confluence (${confluence} indicators)`); }
+  else { score *= 0.6; reasons.push(`Weak confluence (${confluence}) — signal dampened`); }
 
   // ─── HISTORICAL PERFORMANCE BIAS ───
   const sp = getSymbolPerf(symbol);
@@ -3814,8 +3818,12 @@ function runAllAgents(userId, fundData) {
     // Sort by absolute adjusted score descending
     scored.sort((a, b) => Math.abs(b.adjustedScore) - Math.abs(a.adjustedScore));
 
-    // Pick best unheld signal first; if none pass threshold, skip
-    const bestUnheld = scored.find(s => !s.isHeld && Math.abs(s.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength);
+    // Pick best unheld signal — must pass BOTH strength threshold AND minimum confluence
+    const bestUnheld = scored.find(s =>
+      !s.isHeld &&
+      Math.abs(s.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength &&
+      (s.confluence >= (AUTO_TRADE_CONFIG.minConfluence || 3))
+    );
     if (bestUnheld) {
       allSignals.push(bestUnheld);
     }
@@ -3870,10 +3878,10 @@ function runAllAgents(userId, fundData) {
       break;
     }
 
-    // Confluence-based sizing: elite > winner > base
+    // Confluence-based sizing: elite > winner > base (TIGHTENED thresholds)
     let sizePct;
-    if (signal.confluence >= 4 && strength > 0.8) sizePct = AUTO_TRADE_CONFIG.eliteSizePct;
-    else if (signal.confluence >= 3 || strength > 0.8) sizePct = AUTO_TRADE_CONFIG.winnerSizePct;
+    if (signal.confluence >= 5 && strength > 0.8) sizePct = AUTO_TRADE_CONFIG.eliteSizePct;
+    else if (signal.confluence >= 4 && strength > 0.7) sizePct = AUTO_TRADE_CONFIG.winnerSizePct;
     else sizePct = AUTO_TRADE_CONFIG.baseSizePct;
 
     sizePct *= drawdownMultiplier;
@@ -3913,12 +3921,12 @@ function adaptivePositionManagement(userId, openPositions) {
     const regime = symbolRegimes[pos.symbol] || 'ranging';
     const mom = hist.length >= 20 ? momentum(hist, 10) : 0;
 
-    // ─── STOP-LOSS: Adaptive based on volatility + agent streak ───
+    // ─── STOP-LOSS: Tighter adaptive stops based on volatility + agent streak ───
     const vol = hist.length >= 20 ? volatility(hist, 20) : 1;
     const agentP = getAgentPerf(pos.agent || 'Unknown');
-    // Tighten stops on losing streaks: -3 streak = 0.7x stop distance
-    const streakFactor = agentP.streak < -2 ? 0.7 : agentP.streak < 0 ? 0.85 : 1.0;
-    const stopLoss = -Math.max(1.2, Math.min(3.5, vol * 2 * streakFactor)); // Dynamic: -1.2% to -3.5%
+    // Tighten stops aggressively on losing streaks
+    const streakFactor = agentP.streak < -3 ? 0.5 : agentP.streak < -1 ? 0.7 : agentP.streak < 0 ? 0.85 : 1.0;
+    const stopLoss = -Math.max(0.8, Math.min(2.5, vol * 1.5 * streakFactor)); // TIGHTENED: -0.8% to -2.5% (was -1.2% to -3.5%)
 
     if (pnlPct < stopLoss) {
       closePosition(userId, pos.id);
@@ -3928,24 +3936,20 @@ function adaptivePositionManagement(userId, openPositions) {
       continue;
     }
 
-    // ─── TRAILING STOP: Lock in profits progressively ───
-    // Once in profit, set a trailing stop that ratchets up
-    if (pnlPct > 1.5) {
-      // Trailing stop = peak PnL minus trail distance
-      // Trail narrows as profit grows: at +2% trail 1%, at +5% trail 1.5%, at +8% trail 2%
-      const trailDist = pnlPct < 3 ? 1.0 : pnlPct < 6 ? 1.5 : 2.0;
-      const trailingStop = pnlPct - trailDist;
+    // ─── TRAILING STOP: Activate earlier, lock in gains faster ───
+    // Activates at +0.8% profit (was +1.5%) — catches more winners before they reverse
+    if (pnlPct > 0.8) {
+      // Tighter trail distances that scale with profit
+      const trailDist = pnlPct < 1.5 ? 0.5 : pnlPct < 3 ? 0.8 : pnlPct < 6 ? 1.2 : 1.8;
 
-      // Check if price has retraced from a higher level
-      // We don't store peak PnL, so we use momentum as a proxy for reversal
       const trendAligned = (pos.side === 'LONG' && mom > 0.05) || (pos.side === 'SHORT' && mom < -0.05);
       const regimeAligned = (pos.side === 'LONG' && regime === 'trending_up') || (pos.side === 'SHORT' && regime === 'trending_down');
 
-      // Let big winners run in aligned trends
-      if (trendAligned && regimeAligned && pnlPct < 10) continue;
+      // Let winners run only when BOTH trend and regime are aligned
+      if (trendAligned && regimeAligned && pnlPct < 8) continue;
 
-      // Take profit if momentum fading or big enough gain
-      if (!trendAligned || pnlPct > 6 || (pnlPct > 3 && regime === 'ranging')) {
+      // Take profit if momentum fading, big gain, or ranging market
+      if (!trendAligned || pnlPct > 5 || (pnlPct > 2 && regime === 'ranging')) {
         closePosition(userId, pos.id);
         updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
         logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
@@ -3954,9 +3958,10 @@ function adaptivePositionManagement(userId, openPositions) {
       }
     }
 
-    // ─── EARLY EXIT: Cut losers faster when momentum confirms ───
-    if (pnlPct < -0.5 && holdMinutes > 5) {
-      const againstMom = (pos.side === 'LONG' && mom < -0.3) || (pos.side === 'SHORT' && mom > 0.3);
+    // ─── EARLY EXIT: Cut losers fast when momentum + regime confirm against position ───
+    // Lowered threshold: act at -0.3% (was -0.5%) and after 3min (was 5min)
+    if (pnlPct < -0.3 && holdMinutes > 3) {
+      const againstMom = (pos.side === 'LONG' && mom < -0.2) || (pos.side === 'SHORT' && mom > 0.2);
       const againstRegime = (pos.side === 'LONG' && regime === 'trending_down') || (pos.side === 'SHORT' && regime === 'trending_up');
       if (againstMom && againstRegime) {
         closePosition(userId, pos.id);
@@ -3967,8 +3972,21 @@ function adaptivePositionManagement(userId, openPositions) {
       }
     }
 
-    // ─── TIME EXIT: Close stale positions that aren't moving ───
-    if (holdMinutes > 20 && Math.abs(pnlPct) < 0.3) {
+    // ─── MOMENTUM REVERSAL EXIT: Close if momentum sharply reverses against position ───
+    if (pnlPct > 0 && pnlPct < 0.5 && holdMinutes > 2) {
+      const sharpReversal = (pos.side === 'LONG' && mom < -0.5) || (pos.side === 'SHORT' && mom > 0.5);
+      if (sharpReversal) {
+        closePosition(userId, pos.id);
+        updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
+        logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
+          `Momentum reversal — protecting ${pnlPct.toFixed(1)}% gain from sharp reversal`);
+        continue;
+      }
+    }
+
+    // ─── TIME EXIT: Close stale positions faster ───
+    // Reduced from 20min to 12min — if it's not moving, free the capital
+    if (holdMinutes > 12 && Math.abs(pnlPct) < 0.3) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Titan', pos.symbol, 'CLOSE', pos.quantity,
@@ -3977,14 +3995,14 @@ function adaptivePositionManagement(userId, openPositions) {
     }
 
     // ─── REGIME REVERSAL EXIT: Close if market regime flipped against position ───
-    if (pos.side === 'LONG' && regime === 'trending_down' && pnlPct < 1) {
+    if (pos.side === 'LONG' && regime === 'trending_down' && pnlPct < 0.5) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
         `Regime reversal — market turned bearish (${pnlPct.toFixed(1)}%)`);
       continue;
     }
-    if (pos.side === 'SHORT' && regime === 'trending_up' && pnlPct < 1) {
+    if (pos.side === 'SHORT' && regime === 'trending_up' && pnlPct < 0.5) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
       logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
