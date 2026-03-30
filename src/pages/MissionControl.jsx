@@ -116,12 +116,12 @@ function generateTrades() {
 
 // === STYLES ===
 const glassStyle = {
-  background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
-  backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
-  WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
-  border: "1px solid rgba(255,255,255,0.18)",
+  background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
+  backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
+  WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
+  border: "1px solid rgba(255,255,255,0.28)",
   borderRadius: "24px",
-  boxShadow: "0 8px 32px rgba(0,0,0,0.15), 0 0 80px rgba(120,119,198,0.04), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.05)",
+  boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 120px rgba(180,200,255,0.06), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(255,255,255,0.1)",
 };
 
 const glassCardStyle = {
@@ -132,8 +132,8 @@ const glassCardStyle = {
 
 const glassCardHoverStyle = {
   ...glassCardStyle,
-  background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(200,220,255,0.12) 100%)",
-  boxShadow: "0 12px 40px rgba(0,0,0,0.2), 0 0 100px rgba(120,119,198,0.06), inset 0 1px 0 rgba(255,255,255,0.3)",
+  background: "linear-gradient(135deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.12) 50%, rgba(220,230,255,0.18) 100%)",
+  boxShadow: "0 12px 48px rgba(0,0,0,0.1), 0 0 140px rgba(180,200,255,0.08), inset 0 1px 0 rgba(255,255,255,0.5)",
   transform: "translateY(-2px)",
 };
 
