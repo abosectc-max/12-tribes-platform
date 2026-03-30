@@ -1446,6 +1446,7 @@ function closePosition(userId, positionId) {
     realized_pnl: pnl, return_pct: ((closePrice / pos.entry_price - 1) * 100 * dir).toFixed(4),
     agent: pos.agent, execution_mode: 'paper',
     opened_at: pos.opened_at, closed_at: new Date().toISOString(), hold_time_seconds: holdTime,
+    status: 'CLOSED',
   });
 
   // Update agent stats
@@ -6626,7 +6627,8 @@ function backfillMissingTaxLots() {
   }
 
   // Also backfill from recent trade history to populate the tax ledger
-  const recentTrades = db.findMany('trades', t => t.status === 'CLOSED');
+  // NOTE: trades do NOT have a status field — they have closed_at when completed
+  const recentTrades = db.findMany('trades', t => t.closed_at != null);
   let ledgerBackfilled = 0;
 
   for (const trade of recentTrades) {
