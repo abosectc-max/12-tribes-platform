@@ -391,7 +391,7 @@ function RequestAccessSection({ isMobile, glass }) {
       }}>
         <h2 style={{ fontSize: isMobile ? 20 : 32, fontWeight: 800, color: "#fff", margin: "0 0 8px" }}>Ready to Join the Tribe?</h2>
         <p style={{ fontSize: isMobile ? 13 : 16, color: "rgba(255,255,255,0.5)", margin: "0 0 28px" }}>
-          12 investors. 6 AI agents. One unified edge. Request access below.
+          Exclusive membership. 6 AI agents. One unified edge. Request access below.
         </p>
 
         <form onSubmit={handleSubmit} style={{

@@ -6,7 +6,7 @@ import {
   getMarketPrices, getGroupStats, tickPrices, getAgentLeaderboard,
   INITIAL_BALANCE
 } from "../store/walletStore.js";
-import { getAllUsers } from "../store/authStore.js";
+import { getAllUsers, getSession } from "../store/authStore.js";
 import BrandLogo from '../components/BrandLogo.jsx';
 
 // ═══════════════════════════════════════════
@@ -347,8 +347,11 @@ export default function TwelveTribes_MobileApp() {
     return () => clearInterval(t);
   }, []);
 
-  const wallet = getWallet("INV_01") || { equity: INITIAL_BALANCE, balance: INITIAL_BALANCE, initialBalance: INITIAL_BALANCE, realizedPnL: 0, unrealizedPnL: 0, tradeCount: 0, winCount: 0, lossCount: 0 };
-  const positions = getPositions("INV_01");
+  // Use authenticated session — never hardcode investor IDs
+  const session = getSession();
+  const investorId = session?.id || null;
+  const wallet = investorId ? (getWallet(investorId) || { equity: INITIAL_BALANCE, balance: INITIAL_BALANCE, initialBalance: INITIAL_BALANCE, realizedPnL: 0, unrealizedPnL: 0, tradeCount: 0, winCount: 0, lossCount: 0 }) : { equity: 0, balance: 0, initialBalance: 0, realizedPnL: 0, unrealizedPnL: 0, tradeCount: 0, winCount: 0, lossCount: 0 };
+  const positions = investorId ? getPositions(investorId) : [];
   const prices = getMarketPrices();
   const sparkline = useMemo(() => generateSparkline(INITIAL_BALANCE, 30), []);
 
