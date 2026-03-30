@@ -3311,14 +3311,56 @@ function PortfolioDashboard({ investor, onLogout }) {
   const firstName = investor.firstName || investor.name?.split(' ')[0] || 'Investor';
   const sidebarWidth = isMobile ? 0 : 260;
 
-  const allocation = [
-    { name: "Stocks", value: 25, color: "#00D4FF" },
-    { name: "Crypto", value: 15, color: "#A855F7" },
-    { name: "Forex", value: 20, color: "#10B981" },
-    { name: "Options", value: 15, color: "#F59E0B" },
-    { name: "Futures", value: 10, color: "#EF4444" },
-    { name: "Cash", value: 15, color: "#6B7280" },
-  ];
+  // Dynamic allocation from actual positions
+  const allocation = useMemo(() => {
+    const classColors = {
+      stock: "#00D4FF", crypto: "#A855F7", forex: "#10B981",
+      options: "#F59E0B", futures: "#EF4444", etf: "#3B82F6", cash: "#6B7280",
+    };
+    const classNames = {
+      stock: "Stocks", crypto: "Crypto", forex: "Forex",
+      options: "Options", futures: "Futures", etf: "ETFs", cash: "Cash",
+    };
+    const classifySymbol = (sym) => {
+      if (['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(sym)) return 'crypto';
+      if (sym && sym.includes('/')) return 'forex';
+      if (sym && sym.endsWith('=F')) return 'futures';
+      if (['BIL','SHV','SGOV'].includes(sym)) return 'cash';
+      if (['SPY','QQQ','GLD','TLT','IWM','EEM','VOO','DIA','VTI','XLF','XLE','XLK','ARKK','HYG'].includes(sym)) return 'etf';
+      if (['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(sym)) return 'options';
+      return 'stock';
+    };
+    const totals = {};
+    const positionsAll = positions || [];
+    const totalEquity = wallet?.equity || wallet?.balance || 100000;
+
+    // Sum position values by asset class
+    positionsAll.forEach(p => {
+      const cls = classifySymbol(p.symbol);
+      const posValue = Math.abs((p.quantity || 0) * (p.current_price || p.entry_price || 0));
+      totals[cls] = (totals[cls] || 0) + posValue;
+    });
+
+    const totalInvested = Object.values(totals).reduce((s, v) => s + v, 0);
+    // Remaining equity not in positions = cash allocation
+    const cashBalance = Math.max(0, totalEquity - totalInvested);
+    totals['cash'] = (totals['cash'] || 0) + cashBalance;
+
+    const grandTotal = totalInvested + cashBalance;
+    if (grandTotal <= 0) {
+      // No positions — show 100% cash
+      return [{ name: "Cash", value: 100, color: "#6B7280" }];
+    }
+
+    return Object.entries(totals)
+      .filter(([, v]) => v > 0)
+      .map(([cls, v]) => ({
+        name: classNames[cls] || cls,
+        value: parseFloat((v / grandTotal * 100).toFixed(1)),
+        color: classColors[cls] || "#6B7280",
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [positions, wallet]);
 
   return (
     <div style={{
