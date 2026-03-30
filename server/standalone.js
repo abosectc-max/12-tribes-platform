@@ -77,6 +77,8 @@ const DB_TABLES = [
   'login_log', 'agent_stats', 'broker_connections', 'risk_events',
   'order_queue', 'access_requests', 'auto_trade_log', 'fund_settings',
   'verification_codes', 'qa_reports', 'feedback', 'withdrawal_requests',
+  // Tax Engine tables
+  'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -1341,6 +1343,14 @@ function executeTrade(userId, order) {
     status: 'OPEN',
   });
 
+  // ── Tax Engine: Create tax lot for cost basis tracking ──
+  try {
+    createTaxLot(position.id, userId, order.symbol, side, order.quantity, price, order.agent || null);
+  } catch (taxErr) {
+    console.error(`[TaxEngine] Failed to create tax lot for position ${position.id}:`, taxErr.message);
+    // Non-blocking — trade proceeds even if tax lot fails (logged for audit)
+  }
+
   return { success: true, mode: 'paper', position, fillPrice: price };
 }
 
@@ -1399,6 +1409,18 @@ function closePosition(userId, positionId) {
     const returnPct = ((closePrice / pos.entry_price - 1) * 100 * dir);
     attributeSignalPnL(pos.id, pnl, returnPct);
   } catch (e) { /* signal tracking is non-critical */ }
+
+  // ── Tax Engine: Dispose tax lots and record to immutable ledger ──
+  try {
+    const closedAt = new Date().toISOString();
+    const dispositions = disposeTaxLots(userId, pos.symbol, pos.side, pos.quantity, closePrice, closedAt);
+    if (dispositions.length > 0) {
+      console.log(`[TaxEngine] Disposed ${dispositions.length} lot(s) for ${pos.symbol} | PnL: $${pnl}`);
+    }
+  } catch (taxErr) {
+    console.error(`[TaxEngine] Failed to dispose tax lots for position ${pos.id}:`, taxErr.message);
+    // Non-blocking — position close proceeds even if tax recording fails (logged for audit)
+  }
 
   return { success: true, pnl, closePrice, returnPct: ((closePrice / pos.entry_price - 1) * 100 * dir) };
 }
@@ -5040,6 +5062,653 @@ api.post('/api/auto-trading/toggle', auth, async (req, res) => {
     positionsClosed: enabled === false ? (openPositions.length === 0) : undefined,
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//   TAX ENGINE MODULE
+//   Immutable tax ledger, cost basis tracking, wash sale detection,
+//   per-investor allocation, and IRS-ready reporting (Form 8949 / Schedule D)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── TAX CONFIGURATION ───
+const TAX_CONFIG = {
+  costBasisMethod: 'FIFO',           // FIFO | LIFO | SPECIFIC_ID (default FIFO for IRS compliance)
+  shortTermThresholdDays: 365,       // Holding period for short-term vs long-term
+  washSaleWindowDays: 30,            // 30-day wash sale lookback/lookahead
+  fiscalYearStart: '01-01',          // MM-DD fiscal year start (Jan 1 default)
+  enableWashSaleDetection: true,     // Crypto wash sale rule effective 2025+
+  cryptoSymbols: ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'AVAX', 'MATIC', 'LINK', 'DOGE', 'XRP'],
+};
+
+// ─── TAX LOT TRACKING (Cost Basis Engine) ───
+
+/**
+ * Creates an immutable tax lot when a position is opened.
+ * Each tax lot tracks: acquisition date, cost basis, quantity, and adjustments.
+ * Tax lots are NEVER modified — only new adjustment records are appended.
+ */
+function createTaxLot(positionId, userId, symbol, side, quantity, pricePerUnit, agent) {
+  const costBasis = roundTo(quantity * pricePerUnit, 2);
+  const lot = db.insert('tax_lots', {
+    position_id: positionId,
+    user_id: userId,
+    symbol,
+    side,
+    quantity,
+    remaining_quantity: quantity,
+    price_per_unit: pricePerUnit,
+    cost_basis: costBasis,
+    adjusted_cost_basis: costBasis,       // Modified by wash sale disallowed losses
+    wash_sale_adjustment: 0,              // Total wash sale basis adjustments
+    acquired_at: new Date().toISOString(),
+    disposed_at: null,
+    status: 'OPEN',                       // OPEN | CLOSED | PARTIAL
+    agent,
+    asset_class: TAX_CONFIG.cryptoSymbols.includes(symbol) ? 'crypto' : 'equity',
+    holding_period: null,                 // Calculated on close: 'SHORT_TERM' | 'LONG_TERM'
+  });
+  console.log(`[TaxEngine] Lot created: ${lot.id} | ${side} ${quantity} ${symbol} @ $${pricePerUnit}`);
+  return lot;
+}
+
+/**
+ * Closes (disposes of) tax lots using the configured cost basis method (FIFO/LIFO).
+ * Returns array of lot dispositions for Form 8949 reporting.
+ */
+function disposeTaxLots(userId, symbol, side, quantity, closePrice, closedAt) {
+  // Find matching open lots for this user/symbol/side
+  let openLots = db.findMany('tax_lots', l =>
+    l.user_id === userId &&
+    l.symbol === symbol &&
+    l.side === side &&
+    l.status !== 'CLOSED' &&
+    l.remaining_quantity > 0
+  );
+
+  // Sort by acquisition date based on cost basis method
+  if (TAX_CONFIG.costBasisMethod === 'FIFO') {
+    openLots.sort((a, b) => new Date(a.acquired_at) - new Date(b.acquired_at));
+  } else if (TAX_CONFIG.costBasisMethod === 'LIFO') {
+    openLots.sort((a, b) => new Date(b.acquired_at) - new Date(a.acquired_at));
+  }
+
+  let remainingToDispose = quantity;
+  const dispositions = [];
+
+  for (const lot of openLots) {
+    if (remainingToDispose <= 0) break;
+
+    const disposeQty = Math.min(lot.remaining_quantity, remainingToDispose);
+    const dir = side === 'LONG' ? 1 : -1;
+
+    // Calculate cost basis for this portion
+    const portionCostBasis = roundTo((lot.adjusted_cost_basis / lot.quantity) * disposeQty, 2);
+    const proceeds = roundTo(closePrice * disposeQty, 2);
+    const gainLoss = roundTo((proceeds - portionCostBasis) * dir, 2);
+
+    // Determine holding period
+    const acquiredDate = new Date(lot.acquired_at);
+    const disposedDate = new Date(closedAt);
+    const holdDays = Math.floor((disposedDate - acquiredDate) / (1000 * 60 * 60 * 24));
+    const holdingPeriod = holdDays >= TAX_CONFIG.shortTermThresholdDays ? 'LONG_TERM' : 'SHORT_TERM';
+
+    // Create immutable ledger entry
+    const ledgerEntry = db.insert('tax_ledger', {
+      user_id: userId,
+      tax_lot_id: lot.id,
+      position_id: lot.position_id,
+      symbol,
+      side,
+      asset_class: lot.asset_class,
+      quantity: disposeQty,
+      acquired_at: lot.acquired_at,
+      disposed_at: closedAt,
+      hold_days: holdDays,
+      holding_period: holdingPeriod,
+      cost_basis: portionCostBasis,
+      proceeds,
+      gain_loss: gainLoss,
+      wash_sale_disallowed: 0,            // Updated by wash sale detection
+      adjusted_gain_loss: gainLoss,       // = gain_loss + wash_sale_disallowed
+      agent: lot.agent,
+      cost_basis_method: TAX_CONFIG.costBasisMethod,
+      is_wash_sale: false,
+      form_8949_box: holdingPeriod === 'SHORT_TERM' ? 'A' : 'D', // Box A=short-term, D=long-term
+    });
+
+    // Update lot quantities
+    lot.remaining_quantity = roundTo(lot.remaining_quantity - disposeQty, 8);
+    if (lot.remaining_quantity <= 0) {
+      lot.status = 'CLOSED';
+      lot.disposed_at = closedAt;
+      lot.holding_period = holdingPeriod;
+    } else {
+      lot.status = 'PARTIAL';
+    }
+    db._save('tax_lots');
+
+    dispositions.push(ledgerEntry);
+    remainingToDispose = roundTo(remainingToDispose - disposeQty, 8);
+  }
+
+  if (remainingToDispose > 0) {
+    console.warn(`[TaxEngine] WARNING: ${remainingToDispose} units of ${symbol} could not be matched to tax lots for user ${userId}`);
+  }
+
+  // Run wash sale detection on the new dispositions
+  if (TAX_CONFIG.enableWashSaleDetection) {
+    for (const disp of dispositions) {
+      if (disp.gain_loss < 0) {
+        detectWashSale(disp);
+      }
+    }
+  }
+
+  return dispositions;
+}
+
+// ─── WASH SALE DETECTION ENGINE ───
+
+/**
+ * Detects wash sales per IRS rules:
+ * If a security is sold at a loss and a substantially identical security
+ * is purchased within 30 days before or after the sale, the loss is disallowed
+ * and added to the cost basis of the replacement security.
+ */
+function detectWashSale(ledgerEntry) {
+  const { user_id, symbol, disposed_at, gain_loss, id: ledgerId } = ledgerEntry;
+  if (gain_loss >= 0) return null; // Only applies to losses
+
+  const disposedDate = new Date(disposed_at);
+  const windowStart = new Date(disposedDate.getTime() - (TAX_CONFIG.washSaleWindowDays * 24 * 60 * 60 * 1000));
+  const windowEnd = new Date(disposedDate.getTime() + (TAX_CONFIG.washSaleWindowDays * 24 * 60 * 60 * 1000));
+
+  // Find replacement purchases within the wash sale window
+  const replacementLots = db.findMany('tax_lots', l =>
+    l.user_id === user_id &&
+    l.symbol === symbol &&
+    l.id !== ledgerEntry.tax_lot_id &&
+    l.status !== 'CLOSED' &&
+    new Date(l.acquired_at) >= windowStart &&
+    new Date(l.acquired_at) <= windowEnd
+  );
+
+  if (replacementLots.length === 0) return null;
+
+  // Wash sale detected — disallow the loss and adjust replacement lot basis
+  const disallowedLoss = Math.abs(gain_loss);
+  const replacementLot = replacementLots[0]; // Apply to earliest replacement
+
+  // Record the wash sale event
+  const washSaleRecord = db.insert('wash_sales', {
+    user_id,
+    symbol,
+    loss_ledger_id: ledgerId,
+    loss_position_id: ledgerEntry.position_id,
+    replacement_lot_id: replacementLot.id,
+    replacement_position_id: replacementLot.position_id,
+    disallowed_loss: disallowedLoss,
+    original_loss: gain_loss,
+    loss_disposed_at: disposed_at,
+    replacement_acquired_at: replacementLot.acquired_at,
+    window_start: windowStart.toISOString(),
+    window_end: windowEnd.toISOString(),
+    detected_at: new Date().toISOString(),
+  });
+
+  // Adjust the replacement lot's cost basis (add disallowed loss)
+  replacementLot.wash_sale_adjustment = roundTo((replacementLot.wash_sale_adjustment || 0) + disallowedLoss, 2);
+  replacementLot.adjusted_cost_basis = roundTo(replacementLot.cost_basis + replacementLot.wash_sale_adjustment, 2);
+  db._save('tax_lots');
+
+  // Mark the original ledger entry as a wash sale
+  ledgerEntry.is_wash_sale = true;
+  ledgerEntry.wash_sale_disallowed = disallowedLoss;
+  ledgerEntry.adjusted_gain_loss = roundTo(gain_loss + disallowedLoss, 2); // Loss reduced or zeroed
+  db._save('tax_ledger');
+
+  console.log(`[TaxEngine] WASH SALE detected: ${symbol} | Loss $${gain_loss} → Disallowed $${disallowedLoss} | Basis adjustment on lot ${replacementLot.id}`);
+  return washSaleRecord;
+}
+
+// ─── PER-INVESTOR TAX ALLOCATION ───
+
+/**
+ * Allocates realized gains/losses to each investor based on their ownership percentage.
+ * This produces the data needed for K-1 preparation.
+ * Called on-demand (quarterly or year-end) — NOT on every trade.
+ */
+function computeTaxAllocations(taxYear) {
+  const yearStart = new Date(`${taxYear}-${TAX_CONFIG.fiscalYearStart}T00:00:00Z`);
+  const yearEnd = new Date(`${taxYear + 1}-${TAX_CONFIG.fiscalYearStart}T00:00:00Z`);
+
+  // Get all ledger entries for the tax year
+  const yearLedger = db.findMany('tax_ledger', e =>
+    new Date(e.disposed_at) >= yearStart && new Date(e.disposed_at) < yearEnd
+  );
+
+  // Aggregate by category
+  const fundTotals = {
+    taxYear,
+    shortTermGains: 0,
+    shortTermLosses: 0,
+    longTermGains: 0,
+    longTermLosses: 0,
+    washSaleDisallowed: 0,
+    totalProceeds: 0,
+    totalCostBasis: 0,
+    netGainLoss: 0,
+    totalTrades: yearLedger.length,
+    cryptoGains: 0,
+    cryptoLosses: 0,
+    equityGains: 0,
+    equityLosses: 0,
+  };
+
+  for (const entry of yearLedger) {
+    const gl = entry.adjusted_gain_loss;
+    fundTotals.totalProceeds += entry.proceeds;
+    fundTotals.totalCostBasis += entry.cost_basis;
+    fundTotals.washSaleDisallowed += entry.wash_sale_disallowed || 0;
+
+    if (entry.holding_period === 'SHORT_TERM') {
+      if (gl >= 0) fundTotals.shortTermGains += gl;
+      else fundTotals.shortTermLosses += gl;
+    } else {
+      if (gl >= 0) fundTotals.longTermGains += gl;
+      else fundTotals.longTermLosses += gl;
+    }
+
+    if (entry.asset_class === 'crypto') {
+      if (gl >= 0) fundTotals.cryptoGains += gl;
+      else fundTotals.cryptoLosses += gl;
+    } else {
+      if (gl >= 0) fundTotals.equityGains += gl;
+      else fundTotals.equityLosses += gl;
+    }
+  }
+
+  fundTotals.netGainLoss = roundTo(
+    fundTotals.shortTermGains + fundTotals.shortTermLosses +
+    fundTotals.longTermGains + fundTotals.longTermLosses, 2
+  );
+
+  // Round all fund totals
+  Object.keys(fundTotals).forEach(k => {
+    if (typeof fundTotals[k] === 'number' && k !== 'taxYear' && k !== 'totalTrades') {
+      fundTotals[k] = roundTo(fundTotals[k], 2);
+    }
+  });
+
+  // Allocate to each active investor based on ownership percentage
+  const investors = db.findMany('users', u => u.status === 'active');
+  const allocations = [];
+
+  for (const investor of investors) {
+    const ownershipPct = investor.ownership_pct > 0
+      ? investor.ownership_pct
+      : (investors.length > 0 ? roundTo(100 / investors.length, 2) : 0);
+    const pctDecimal = ownershipPct / 100;
+
+    const allocation = {
+      user_id: investor.id,
+      investor_name: `${investor.first_name} ${investor.last_name}`,
+      investor_email: investor.email,
+      tax_year: taxYear,
+      ownership_pct: ownershipPct,
+      allocated_short_term_gains: roundTo(fundTotals.shortTermGains * pctDecimal, 2),
+      allocated_short_term_losses: roundTo(fundTotals.shortTermLosses * pctDecimal, 2),
+      allocated_long_term_gains: roundTo(fundTotals.longTermGains * pctDecimal, 2),
+      allocated_long_term_losses: roundTo(fundTotals.longTermLosses * pctDecimal, 2),
+      allocated_net_gain_loss: roundTo(fundTotals.netGainLoss * pctDecimal, 2),
+      allocated_wash_sale_disallowed: roundTo(fundTotals.washSaleDisallowed * pctDecimal, 2),
+      allocated_proceeds: roundTo(fundTotals.totalProceeds * pctDecimal, 2),
+      allocated_cost_basis: roundTo(fundTotals.totalCostBasis * pctDecimal, 2),
+      allocated_crypto_gains: roundTo(fundTotals.cryptoGains * pctDecimal, 2),
+      allocated_crypto_losses: roundTo(fundTotals.cryptoLosses * pctDecimal, 2),
+      allocated_equity_gains: roundTo(fundTotals.equityGains * pctDecimal, 2),
+      allocated_equity_losses: roundTo(fundTotals.equityLosses * pctDecimal, 2),
+      computed_at: new Date().toISOString(),
+    };
+
+    // Upsert — replace if already computed for this investor/year
+    const existing = db.findOne('tax_allocations', a =>
+      a.user_id === investor.id && a.tax_year === taxYear
+    );
+    if (existing) {
+      Object.assign(existing, allocation, { updated_at: new Date().toISOString() });
+      db._save('tax_allocations');
+      allocations.push(existing);
+    } else {
+      allocations.push(db.insert('tax_allocations', allocation));
+    }
+  }
+
+  console.log(`[TaxEngine] Tax allocations computed for ${taxYear}: ${allocations.length} investors, net ${fundTotals.netGainLoss >= 0 ? 'gain' : 'loss'} $${Math.abs(fundTotals.netGainLoss)}`);
+  return { fundTotals, allocations };
+}
+
+// ─── TAX REPORT GENERATION (Form 8949 / Schedule D Format) ───
+
+/**
+ * Generates IRS Form 8949 data for a specific user and tax year.
+ * Returns line items ready for CPA or tax software import.
+ */
+function generateForm8949(userId, taxYear) {
+  const yearStart = new Date(`${taxYear}-${TAX_CONFIG.fiscalYearStart}T00:00:00Z`);
+  const yearEnd = new Date(`${taxYear + 1}-${TAX_CONFIG.fiscalYearStart}T00:00:00Z`);
+
+  const entries = db.findMany('tax_ledger', e =>
+    e.user_id === userId &&
+    new Date(e.disposed_at) >= yearStart &&
+    new Date(e.disposed_at) < yearEnd
+  );
+
+  // Separate into short-term (Part I) and long-term (Part II)
+  const partI = []; // Short-term
+  const partII = []; // Long-term
+
+  for (const e of entries) {
+    const line = {
+      description: `${e.quantity} ${e.symbol} (${e.side}) via ${e.agent || 'Manual'}`,
+      date_acquired: e.acquired_at.split('T')[0],
+      date_sold: e.disposed_at.split('T')[0],
+      proceeds: e.proceeds,
+      cost_basis: e.cost_basis,
+      adjustment_code: e.is_wash_sale ? 'W' : '',
+      adjustment_amount: e.wash_sale_disallowed || 0,
+      gain_loss: e.adjusted_gain_loss,
+      symbol: e.symbol,
+      asset_class: e.asset_class,
+      agent: e.agent,
+    };
+
+    if (e.holding_period === 'SHORT_TERM') partI.push(line);
+    else partII.push(line);
+  }
+
+  // Compute Schedule D summary
+  const scheduleD = {
+    shortTermProceeds: roundTo(partI.reduce((s, l) => s + l.proceeds, 0), 2),
+    shortTermCostBasis: roundTo(partI.reduce((s, l) => s + l.cost_basis, 0), 2),
+    shortTermAdjustments: roundTo(partI.reduce((s, l) => s + l.adjustment_amount, 0), 2),
+    shortTermGainLoss: roundTo(partI.reduce((s, l) => s + l.gain_loss, 0), 2),
+    longTermProceeds: roundTo(partII.reduce((s, l) => s + l.proceeds, 0), 2),
+    longTermCostBasis: roundTo(partII.reduce((s, l) => s + l.cost_basis, 0), 2),
+    longTermAdjustments: roundTo(partII.reduce((s, l) => s + l.adjustment_amount, 0), 2),
+    longTermGainLoss: roundTo(partII.reduce((s, l) => s + l.gain_loss, 0), 2),
+  };
+  scheduleD.netGainLoss = roundTo(scheduleD.shortTermGainLoss + scheduleD.longTermGainLoss, 2);
+
+  return {
+    userId,
+    taxYear,
+    form8949: { partI, partII },
+    scheduleD,
+    totalTransactions: entries.length,
+    washSaleCount: entries.filter(e => e.is_wash_sale).length,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Generates a CSV export of Form 8949 data (compatible with TurboTax, TaxBit, CoinTracker).
+ */
+function generateTaxCSV(userId, taxYear) {
+  const report = generateForm8949(userId, taxYear);
+  const allLines = [...report.form8949.partI, ...report.form8949.partII];
+
+  const headers = [
+    'Description', 'Date Acquired', 'Date Sold', 'Proceeds',
+    'Cost Basis', 'Adjustment Code', 'Adjustment Amount',
+    'Gain/Loss', 'Holding Period', 'Symbol', 'Asset Class', 'Agent'
+  ];
+
+  const rows = allLines.map(l => [
+    `"${l.description}"`,
+    l.date_acquired,
+    l.date_sold,
+    l.proceeds.toFixed(2),
+    l.cost_basis.toFixed(2),
+    l.adjustment_code,
+    l.adjustment_amount.toFixed(2),
+    l.gain_loss.toFixed(2),
+    report.form8949.partI.includes(l) ? 'Short-Term' : 'Long-Term',
+    l.symbol,
+    l.asset_class,
+    l.agent || '',
+  ].join(','));
+
+  return [headers.join(','), ...rows].join('\n');
+}
+
+/**
+ * Generates a quarterly estimated tax summary for an investor.
+ * Helps investors know their estimated tax liability for quarterly payments (1040-ES).
+ */
+function generateQuarterlyEstimate(userId, taxYear, quarter) {
+  const quarterRanges = {
+    Q1: [`${taxYear}-01-01`, `${taxYear}-03-31`],
+    Q2: [`${taxYear}-04-01`, `${taxYear}-06-30`],
+    Q3: [`${taxYear}-07-01`, `${taxYear}-09-30`],
+    Q4: [`${taxYear}-10-01`, `${taxYear}-12-31`],
+  };
+
+  const [startStr, endStr] = quarterRanges[quarter] || quarterRanges.Q1;
+  const start = new Date(`${startStr}T00:00:00Z`);
+  const end = new Date(`${endStr}T23:59:59Z`);
+
+  const entries = db.findMany('tax_ledger', e =>
+    e.user_id === userId &&
+    new Date(e.disposed_at) >= start &&
+    new Date(e.disposed_at) <= end
+  );
+
+  const shortTermGL = roundTo(entries
+    .filter(e => e.holding_period === 'SHORT_TERM')
+    .reduce((s, e) => s + e.adjusted_gain_loss, 0), 2);
+
+  const longTermGL = roundTo(entries
+    .filter(e => e.holding_period === 'LONG_TERM')
+    .reduce((s, e) => s + e.adjusted_gain_loss, 0), 2);
+
+  const washSaleAdj = roundTo(entries.reduce((s, e) => s + (e.wash_sale_disallowed || 0), 0), 2);
+
+  // Estimated tax rates (2025+ brackets — approximations, CPA should confirm)
+  const estShortTermRate = 0.32;  // Approximate marginal rate for high earners
+  const estLongTermRate = 0.15;   // Standard long-term capital gains rate
+
+  return {
+    userId,
+    taxYear,
+    quarter,
+    periodStart: startStr,
+    periodEnd: endStr,
+    shortTermGainLoss: shortTermGL,
+    longTermGainLoss: longTermGL,
+    netGainLoss: roundTo(shortTermGL + longTermGL, 2),
+    washSaleAdjustments: washSaleAdj,
+    tradeCount: entries.length,
+    estimatedShortTermTax: roundTo(Math.max(0, shortTermGL) * estShortTermRate, 2),
+    estimatedLongTermTax: roundTo(Math.max(0, longTermGL) * estLongTermRate, 2),
+    estimatedTotalTax: roundTo(
+      Math.max(0, shortTermGL) * estShortTermRate +
+      Math.max(0, longTermGL) * estLongTermRate, 2
+    ),
+    disclaimer: 'Estimates only. Consult your CPA for actual tax liability. Rates shown are approximations and may not reflect your individual tax bracket.',
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// ─── TAX ENGINE API ENDPOINTS ───
+
+// GET /api/tax/summary/:year — Full tax year summary for the authenticated investor
+api.get('/api/tax/summary/:year', auth, (req, res) => {
+  const taxYear = parseInt(req.params.year);
+  if (isNaN(taxYear) || taxYear < 2020 || taxYear > 2099) {
+    return json(res, 400, { error: 'Invalid tax year' });
+  }
+
+  const report = generateForm8949(req.userId, taxYear);
+  json(res, 200, { success: true, report });
+});
+
+// GET /api/tax/quarterly/:year/:quarter — Quarterly estimated tax for investor
+api.get('/api/tax/quarterly/:year/:quarter', auth, (req, res) => {
+  const taxYear = parseInt(req.params.year);
+  const quarter = req.params.quarter.toUpperCase();
+  if (isNaN(taxYear) || !['Q1', 'Q2', 'Q3', 'Q4'].includes(quarter)) {
+    return json(res, 400, { error: 'Invalid year or quarter (use Q1-Q4)' });
+  }
+
+  const estimate = generateQuarterlyEstimate(req.userId, taxYear, quarter);
+  json(res, 200, { success: true, estimate });
+});
+
+// GET /api/tax/export/:year — Download CSV export for tax software
+api.get('/api/tax/export/:year', auth, (req, res) => {
+  const taxYear = parseInt(req.params.year);
+  if (isNaN(taxYear)) return json(res, 400, { error: 'Invalid tax year' });
+
+  const csv = generateTaxCSV(req.userId, taxYear);
+  res.writeHead(200, {
+    'Content-Type': 'text/csv',
+    'Content-Disposition': `attachment; filename="12tribes_tax_${taxYear}_form8949.csv"`,
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(csv);
+});
+
+// GET /api/tax/lots — View all tax lots for the authenticated investor
+api.get('/api/tax/lots', auth, (req, res) => {
+  const status = new URL(req.url, `http://${req.headers.host}`).searchParams.get('status'); // OPEN, CLOSED, PARTIAL, or null for all
+  let lots = db.findMany('tax_lots', l => l.user_id === req.userId);
+  if (status) lots = lots.filter(l => l.status === status.toUpperCase());
+  lots.sort((a, b) => new Date(b.acquired_at) - new Date(a.acquired_at));
+  json(res, 200, { success: true, lots, count: lots.length });
+});
+
+// GET /api/tax/wash-sales — View wash sale events
+api.get('/api/tax/wash-sales', auth, (req, res) => {
+  const washSales = db.findMany('wash_sales', w => w.user_id === req.userId);
+  washSales.sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at));
+  json(res, 200, { success: true, washSales, count: washSales.length });
+});
+
+// GET /api/tax/ledger — View full immutable tax ledger
+api.get('/api/tax/ledger', auth, (req, res) => {
+  const year = new URL(req.url, `http://${req.headers.host}`).searchParams.get('year');
+  let entries = db.findMany('tax_ledger', e => e.user_id === req.userId);
+  if (year) {
+    const y = parseInt(year);
+    entries = entries.filter(e => new Date(e.disposed_at).getFullYear() === y);
+  }
+  entries.sort((a, b) => new Date(b.disposed_at) - new Date(a.disposed_at));
+  json(res, 200, { success: true, entries, count: entries.length });
+});
+
+// ─── ADMIN TAX ENDPOINTS ───
+
+// POST /api/admin/tax/allocations/:year — Compute K-1 allocations for all investors
+api.post('/api/admin/tax/allocations/:year', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const taxYear = parseInt(req.params.year);
+  if (isNaN(taxYear)) return json(res, 400, { error: 'Invalid tax year' });
+
+  const result = computeTaxAllocations(taxYear);
+  json(res, 200, { success: true, ...result });
+});
+
+// GET /api/admin/tax/allocations/:year — View computed K-1 allocations
+api.get('/api/admin/tax/allocations/:year', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const taxYear = parseInt(req.params.year);
+  const allocations = db.findMany('tax_allocations', a => a.tax_year === taxYear);
+  json(res, 200, { success: true, allocations, count: allocations.length });
+});
+
+// GET /api/admin/tax/fund-summary/:year — Fund-level tax summary (for Form 1065)
+api.get('/api/admin/tax/fund-summary/:year', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const taxYear = parseInt(req.params.year);
+  const yearStart = new Date(`${taxYear}-01-01T00:00:00Z`);
+  const yearEnd = new Date(`${taxYear + 1}-01-01T00:00:00Z`);
+
+  const entries = db.findMany('tax_ledger', e =>
+    new Date(e.disposed_at) >= yearStart && new Date(e.disposed_at) < yearEnd
+  );
+
+  const washSales = db.findMany('wash_sales', w =>
+    new Date(w.detected_at) >= yearStart && new Date(w.detected_at) < yearEnd
+  );
+
+  const summary = {
+    taxYear,
+    totalTransactions: entries.length,
+    totalProceeds: roundTo(entries.reduce((s, e) => s + e.proceeds, 0), 2),
+    totalCostBasis: roundTo(entries.reduce((s, e) => s + e.cost_basis, 0), 2),
+    shortTermGainLoss: roundTo(entries.filter(e => e.holding_period === 'SHORT_TERM').reduce((s, e) => s + e.adjusted_gain_loss, 0), 2),
+    longTermGainLoss: roundTo(entries.filter(e => e.holding_period === 'LONG_TERM').reduce((s, e) => s + e.adjusted_gain_loss, 0), 2),
+    netGainLoss: roundTo(entries.reduce((s, e) => s + e.adjusted_gain_loss, 0), 2),
+    washSaleEvents: washSales.length,
+    totalWashSaleDisallowed: roundTo(washSales.reduce((s, w) => s + w.disallowed_loss, 0), 2),
+    byAssetClass: {
+      crypto: {
+        trades: entries.filter(e => e.asset_class === 'crypto').length,
+        gainLoss: roundTo(entries.filter(e => e.asset_class === 'crypto').reduce((s, e) => s + e.adjusted_gain_loss, 0), 2),
+      },
+      equity: {
+        trades: entries.filter(e => e.asset_class === 'equity').length,
+        gainLoss: roundTo(entries.filter(e => e.asset_class === 'equity').reduce((s, e) => s + e.adjusted_gain_loss, 0), 2),
+      },
+    },
+    byAgent: {},
+    generatedAt: new Date().toISOString(),
+  };
+
+  // Break down by agent
+  const agents = [...new Set(entries.map(e => e.agent).filter(Boolean))];
+  for (const agent of agents) {
+    const agentEntries = entries.filter(e => e.agent === agent);
+    summary.byAgent[agent] = {
+      trades: agentEntries.length,
+      gainLoss: roundTo(agentEntries.reduce((s, e) => s + e.adjusted_gain_loss, 0), 2),
+      washSales: agentEntries.filter(e => e.is_wash_sale).length,
+    };
+  }
+
+  json(res, 200, { success: true, summary });
+});
+
+// PUT /api/admin/tax/config — Update tax configuration
+api.put('/api/admin/tax/config', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const body = await readBody(req);
+  const allowed = ['costBasisMethod', 'enableWashSaleDetection'];
+  for (const key of allowed) {
+    if (body[key] !== undefined) {
+      if (key === 'costBasisMethod' && !['FIFO', 'LIFO', 'SPECIFIC_ID'].includes(body[key])) {
+        return json(res, 400, { error: 'Invalid cost basis method. Use FIFO, LIFO, or SPECIFIC_ID' });
+      }
+      TAX_CONFIG[key] = body[key];
+    }
+  }
+  json(res, 200, { success: true, config: TAX_CONFIG });
+});
+
+// GET /api/tax/config — View current tax configuration
+api.get('/api/tax/config', auth, (req, res) => {
+  json(res, 200, { success: true, config: TAX_CONFIG });
+});
+
+console.log('[TaxEngine] Tax Engine Module loaded — FIFO cost basis, wash sale detection ON');
 
 // ─── AUTO-ENABLE TRADING ON STARTUP ───
 // Ensure all investors with wallets have auto-trading enabled.
