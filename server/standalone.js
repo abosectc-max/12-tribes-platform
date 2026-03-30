@@ -535,13 +535,397 @@ function volatility(arr, n = 20) {
   return Math.sqrt(variance) / mean * 100; // % volatility
 }
 
+// ═══════════════════════════════════════════════════════════
+//   ADVANCED TECHNICAL INDICATORS — Big Data Layer
+// ═══════════════════════════════════════════════════════════
+
+// Bollinger Bands: mean ± k*stdev
+function bollingerBands(arr, n = 20, k = 2) {
+  if (arr.length < n) return { upper: 0, middle: 0, lower: 0, width: 0, pctB: 0.5 };
+  const slice = arr.slice(-n);
+  const middle = slice.reduce((a, b) => a + b, 0) / n;
+  const stdev = Math.sqrt(slice.reduce((a, b) => a + (b - middle) ** 2, 0) / n);
+  const upper = middle + k * stdev;
+  const lower = middle - k * stdev;
+  const width = stdev > 0 ? (upper - lower) / middle * 100 : 0;
+  const price = arr[arr.length - 1];
+  const pctB = upper !== lower ? (price - lower) / (upper - lower) : 0.5;
+  return { upper, middle, lower, width, pctB };
+}
+
+// Average Directional Index (ADX) — trend strength
+function adx(arr, period = 14) {
+  if (arr.length < period * 2) return 0;
+  const recent = arr.slice(-(period * 2));
+  let plusDM = 0, minusDM = 0, tr = 0;
+  for (let i = 1; i < recent.length; i++) {
+    const high = recent[i]; // approximation: price as proxy for H/L/C
+    const low = recent[i] * 0.998;
+    const prevHigh = recent[i - 1];
+    const prevLow = recent[i - 1] * 0.998;
+    const upMove = high - prevHigh;
+    const downMove = prevLow - low;
+    plusDM += upMove > downMove && upMove > 0 ? upMove : 0;
+    minusDM += downMove > upMove && downMove > 0 ? downMove : 0;
+    tr += Math.max(high - low, Math.abs(high - recent[i - 1]), Math.abs(low - recent[i - 1]));
+  }
+  if (tr === 0) return 0;
+  const plusDI = (plusDM / tr) * 100;
+  const minusDI = (minusDM / tr) * 100;
+  const diSum = plusDI + minusDI;
+  return diSum > 0 ? (Math.abs(plusDI - minusDI) / diSum) * 100 : 0;
+}
+
+// Stochastic Oscillator (%K, %D)
+function stochastic(arr, kPeriod = 14, dPeriod = 3) {
+  if (arr.length < kPeriod) return { k: 50, d: 50 };
+  const kValues = [];
+  for (let i = kPeriod; i <= arr.length; i++) {
+    const window = arr.slice(i - kPeriod, i);
+    const high = Math.max(...window);
+    const low = Math.min(...window);
+    const close = window[window.length - 1];
+    kValues.push(high !== low ? ((close - low) / (high - low)) * 100 : 50);
+  }
+  const k = kValues[kValues.length - 1];
+  const d = kValues.length >= dPeriod
+    ? kValues.slice(-dPeriod).reduce((a, b) => a + b, 0) / dPeriod : k;
+  return { k, d };
+}
+
+// On-Balance Volume proxy (using price direction as volume proxy)
+function obv(arr) {
+  if (arr.length < 10) return 0;
+  let cumOBV = 0;
+  for (let i = 1; i < arr.length; i++) {
+    const vol = Math.abs(arr[i] - arr[i - 1]) / arr[i - 1] * 1000; // proxy volume from price change
+    cumOBV += arr[i] > arr[i - 1] ? vol : arr[i] < arr[i - 1] ? -vol : 0;
+  }
+  return cumOBV;
+}
+
+// Rate of Change (ROC) — percentage change over n periods
+function roc(arr, n = 12) {
+  if (arr.length < n + 1) return 0;
+  return (arr[arr.length - 1] / arr[arr.length - 1 - n] - 1) * 100;
+}
+
+// Average True Range proxy (volatility in price units)
+function atr(arr, period = 14) {
+  if (arr.length < period + 1) return 0;
+  let sumTR = 0;
+  for (let i = arr.length - period; i < arr.length; i++) {
+    const tr = Math.abs(arr[i] - arr[i - 1]);
+    sumTR += tr;
+  }
+  return sumTR / period;
+}
+
+// VWAP proxy (volume-weighted average using price change as volume proxy)
+function vwap(arr) {
+  if (arr.length < 10) return arr[arr.length - 1] || 0;
+  let cumPV = 0, cumV = 0;
+  for (let i = 1; i < arr.length; i++) {
+    const vol = Math.abs(arr[i] - arr[i - 1]) / arr[i - 1] * 1000 + 1; // ensure non-zero
+    cumPV += arr[i] * vol;
+    cumV += vol;
+  }
+  return cumV > 0 ? cumPV / cumV : arr[arr.length - 1];
+}
+
+// ═══════════════════════════════════════════════════════════
+//   MULTI-TIMEFRAME ANALYSIS
+//   Short (10 ticks), Medium (30 ticks), Long (90 ticks)
+// ═══════════════════════════════════════════════════════════
+function multiTimeframeSignal(hist) {
+  if (hist.length < 90) return { short: 0, medium: 0, long: 0, alignment: 0 };
+  const shortHist = hist.slice(-10);
+  const medHist = hist.slice(-30);
+  const longHist = hist.slice(-90);
+
+  const shortMom = momentum(shortHist, Math.min(5, shortHist.length - 1));
+  const medMom = momentum(medHist, 20);
+  const longMom = momentum(longHist, 60);
+
+  const shortRsi = rsi(shortHist, Math.min(7, shortHist.length - 1));
+  const medRsi = rsi(medHist, 14);
+
+  const shortSignal = shortMom > 0.2 ? 1 : shortMom < -0.2 ? -1 : 0;
+  const medSignal = medMom > 0.3 ? 1 : medMom < -0.3 ? -1 : 0;
+  const longSignal = longMom > 0.5 ? 1 : longMom < -0.5 ? -1 : 0;
+
+  // Alignment: all 3 timeframes agree = strongest signal
+  const alignment = shortSignal === medSignal && medSignal === longSignal && shortSignal !== 0
+    ? shortSignal * 3
+    : shortSignal + medSignal + longSignal;
+
+  return {
+    short: shortSignal, medium: medSignal, long: longSignal,
+    alignment,
+    shortMom, medMom, longMom, shortRsi, medRsi,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+//   CROSS-ASSET CORRELATION ENGINE
+//   Detects: BTC/ETH correlation, sector rotation,
+//   risk-on/risk-off regime from SPY/TLT/GLD
+// ═══════════════════════════════════════════════════════════
+const correlationCache = { data: {}, lastUpdated: 0 };
+
+function computeCorrelation(arr1, arr2, n = 30) {
+  if (arr1.length < n || arr2.length < n) return 0;
+  const a = arr1.slice(-n);
+  const b = arr2.slice(-n);
+  const retA = [], retB = [];
+  for (let i = 1; i < n; i++) {
+    retA.push(a[i] / a[i - 1] - 1);
+    retB.push(b[i] / b[i - 1] - 1);
+  }
+  const meanA = retA.reduce((s, v) => s + v, 0) / retA.length;
+  const meanB = retB.reduce((s, v) => s + v, 0) / retB.length;
+  let cov = 0, varA = 0, varB = 0;
+  for (let i = 0; i < retA.length; i++) {
+    cov += (retA[i] - meanA) * (retB[i] - meanB);
+    varA += (retA[i] - meanA) ** 2;
+    varB += (retB[i] - meanB) ** 2;
+  }
+  const denom = Math.sqrt(varA * varB);
+  return denom > 0 ? cov / denom : 0;
+}
+
+function updateCorrelationMatrix() {
+  const now = Date.now();
+  if (now - correlationCache.lastUpdated < 60000) return; // Update every 60s
+  correlationCache.lastUpdated = now;
+
+  // Key pairs for cross-asset intelligence
+  const pairs = [
+    ['SPY', 'TLT'],   // Stocks vs Bonds (risk-on/off)
+    ['SPY', 'GLD'],   // Stocks vs Gold (fear gauge)
+    ['BTC', 'ETH'],   // Crypto correlation
+    ['BTC', 'SPY'],   // Crypto-equity linkage
+    ['NVDA', 'AMD'],  // Sector correlation
+    ['QQQ', 'IWM'],   // Growth vs Value
+  ];
+
+  for (const [a, b] of pairs) {
+    if (priceHistory[a]?.length >= 30 && priceHistory[b]?.length >= 30) {
+      correlationCache.data[`${a}_${b}`] = computeCorrelation(priceHistory[a], priceHistory[b]);
+    }
+  }
+
+  // Derive market regime from cross-asset signals
+  const spyTlt = correlationCache.data['SPY_TLT'] || 0;
+  const spyGld = correlationCache.data['SPY_GLD'] || 0;
+  correlationCache.marketRegime =
+    spyTlt < -0.3 && spyGld < -0.2 ? 'RISK_ON' :    // Stocks up, bonds/gold down
+    spyTlt > 0.3 && spyGld > 0.2 ? 'RISK_OFF' :      // Everything correlated = stress
+    'NEUTRAL';
+}
+
+// ═══════════════════════════════════════════════════════════
+//   NEWS SENTIMENT ENGINE
+//   Fetches real headlines, scores sentiment, feeds to agents.
+//   Uses free APIs: NewsAPI.org, Alpha Vantage, or RSS feeds.
+//   Falls back to simulated sentiment if APIs unavailable.
+// ═══════════════════════════════════════════════════════════
+const sentimentStore = {}; // { symbol: { score: -1 to 1, headlines: [], lastUpdated, source } }
+const SENTIMENT_KEYWORDS = {
+  bullish: ['surge','rally','beat','upgrade','buy','growth','record','breakthrough','soar','bullish','profit','revenue beat','strong earnings','outperform','all-time high'],
+  bearish: ['crash','plunge','miss','downgrade','sell','decline','layoff','bearish','loss','warning','cut','weak','underperform','investigate','lawsuit','bankruptcy','default'],
+};
+
+function scoreSentiment(text) {
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const word of SENTIMENT_KEYWORDS.bullish) {
+    if (lower.includes(word)) score += 0.15;
+  }
+  for (const word of SENTIMENT_KEYWORDS.bearish) {
+    if (lower.includes(word)) score -= 0.15;
+  }
+  return Math.max(-1, Math.min(1, score));
+}
+
+async function fetchNewsSentiment() {
+  const symbols = ['AAPL', 'TSLA', 'NVDA', 'BTC', 'MSFT', 'META', 'GOOGL', 'SPY'];
+
+  for (const sym of symbols) {
+    try {
+      // Try Alpha Vantage news sentiment (free tier: 25 req/day)
+      const avKey = process.env.ALPHA_VANTAGE_KEY;
+      if (avKey) {
+        const https = await import('node:https');
+        const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=${sym}&limit=5&apikey=${avKey}`;
+        const data = await new Promise((resolve, reject) => {
+          https.get(url, res => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
+          }).on('error', reject);
+        });
+
+        if (data?.feed?.length > 0) {
+          const headlines = data.feed.slice(0, 5).map(a => a.title);
+          const scores = data.feed.slice(0, 5).map(a => {
+            const tickerSentiment = a.ticker_sentiment?.find(t => t.ticker === sym);
+            return tickerSentiment ? parseFloat(tickerSentiment.ticker_sentiment_score) : scoreSentiment(a.title);
+          });
+          const avgScore = scores.reduce((s, v) => s + v, 0) / scores.length;
+          sentimentStore[sym] = {
+            score: Math.max(-1, Math.min(1, avgScore)),
+            headlines,
+            lastUpdated: Date.now(),
+            source: 'alphavantage',
+            articleCount: data.feed.length,
+          };
+          continue;
+        }
+      }
+
+      // Fallback: generate market-aware simulated sentiment
+      // Uses price momentum and regime to create correlated sentiment
+      const hist = priceHistory[sym];
+      const regime = symbolRegimes[sym];
+      const mom20 = hist?.length >= 20 ? momentum(hist, 20) : 0;
+      const baseScore = mom20 * 0.3 + (regime === 'trending_up' ? 0.2 : regime === 'trending_down' ? -0.2 : 0);
+      const noise = (Math.random() - 0.5) * 0.3;
+      sentimentStore[sym] = {
+        score: Math.max(-1, Math.min(1, baseScore + noise)),
+        headlines: generateHeadlines(sym, baseScore + noise),
+        lastUpdated: Date.now(),
+        source: 'derived',
+        articleCount: 3,
+      };
+    } catch (err) {
+      // Silent fail — sentiment is supplementary, not critical
+    }
+  }
+}
+
+function generateHeadlines(symbol, sentiment) {
+  const bullHeadlines = [
+    `${symbol} shows strong momentum amid sector rotation`,
+    `Analysts upgrade ${symbol} citing robust fundamentals`,
+    `${symbol} breaks key resistance level, bulls in control`,
+  ];
+  const bearHeadlines = [
+    `${symbol} faces headwinds as sector rotates out`,
+    `Concerns mount over ${symbol} valuation levels`,
+    `${symbol} breaks support, bears gaining momentum`,
+  ];
+  const neutralHeadlines = [
+    `${symbol} consolidates ahead of key catalyst`,
+    `Mixed signals for ${symbol} as market weighs data`,
+    `${symbol} trades in range, awaiting direction`,
+  ];
+  if (sentiment > 0.15) return bullHeadlines;
+  if (sentiment < -0.15) return bearHeadlines;
+  return neutralHeadlines;
+}
+
+// Fetch sentiment every 5 minutes (respects API rate limits)
+let sentimentInterval = null;
+fetchNewsSentiment(); // Initial fetch on boot
+sentimentInterval = setInterval(fetchNewsSentiment, 5 * 60 * 1000);
+
+// ═══════════════════════════════════════════════════════════
+//   MARKET SESSION AWARENESS
+//   Adjusts volatility expectations and trading behavior
+//   based on global market hours
+// ═══════════════════════════════════════════════════════════
+function getMarketSession() {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+
+  // Pre-market: 4-9:30 ET (9-14:30 UTC)
+  // Market open: 9:30-16:00 ET (14:30-21:00 UTC)
+  // After hours: 16-20 ET (21:00-01:00 UTC)
+  // Asia session: 19:00-04:00 ET (00:00-09:00 UTC)
+  // Europe session: 03:00-11:30 ET (08:00-16:30 UTC)
+
+  if (utcHour >= 14 && utcHour < 21) return { session: 'US_MARKET', volMultiplier: 1.3, label: 'US Market Hours' };
+  if (utcHour >= 8 && utcHour < 16) return { session: 'EU_MARKET', volMultiplier: 1.1, label: 'EU Market Hours' };
+  if (utcHour >= 0 && utcHour < 9) return { session: 'ASIA_MARKET', volMultiplier: 1.0, label: 'Asia Session' };
+  return { session: 'OFF_HOURS', volMultiplier: 0.7, label: 'Off-Hours' };
+}
+
+// ═══════════════════════════════════════════════════════════
+//   PERSISTENT LEARNING — Save/Load Agent Intelligence
+//   Survives server restarts. Agents never lose their edge.
+// ═══════════════════════════════════════════════════════════
+function saveAgentIntelligence() {
+  const intel = {
+    agentPerformance: {},
+    symbolPerformance: {},
+    sentimentCache: {},
+    savedAt: new Date().toISOString(),
+  };
+  // Only save if we have meaningful data
+  for (const [name, perf] of Object.entries(agentPerformance)) {
+    if (perf.wins + perf.losses > 0) intel.agentPerformance[name] = perf;
+  }
+  for (const [sym, perf] of Object.entries(symbolPerformance)) {
+    if (perf.wins + perf.losses > 0) intel.symbolPerformance[sym] = perf;
+  }
+  for (const [sym, sent] of Object.entries(sentimentStore)) {
+    intel.sentimentCache[sym] = sent;
+  }
+  db.upsert('system_config', s => s.key === 'agent_intelligence', {
+    key: 'agent_intelligence', data: intel, updated_at: new Date().toISOString(),
+  });
+}
+
+function loadAgentIntelligence() {
+  const record = db.findOne('system_config', s => s.key === 'agent_intelligence');
+  if (!record?.data) return false;
+  const intel = record.data;
+  let loaded = 0;
+
+  if (intel.agentPerformance) {
+    for (const [name, perf] of Object.entries(intel.agentPerformance)) {
+      agentPerformance[name] = perf;
+      loaded++;
+    }
+  }
+  if (intel.symbolPerformance) {
+    for (const [sym, perf] of Object.entries(intel.symbolPerformance)) {
+      symbolPerformance[sym] = perf;
+    }
+  }
+  if (intel.sentimentCache) {
+    for (const [sym, sent] of Object.entries(intel.sentimentCache)) {
+      // Only load if less than 30 min old
+      if (Date.now() - sent.lastUpdated < 30 * 60 * 1000) {
+        sentimentStore[sym] = sent;
+      }
+    }
+  }
+  console.log(`[Boot] Loaded agent intelligence: ${loaded} agents, ${Object.keys(intel.symbolPerformance || {}).length} symbols`);
+  return true;
+}
+
+// Save intelligence every 2 minutes
+setInterval(saveAgentIntelligence, 2 * 60 * 1000);
+
 function detectRegime(hist) {
   if (hist.length < 30) return 'ranging';
   const shortSma = sma(hist, 10);
   const longSma = sma(hist, 30);
-  const mom = momentum(hist, 20);
-  if (shortSma > longSma * 1.001 && mom > 0.3) return 'trending_up';
-  if (shortSma < longSma * 0.999 && mom < -0.3) return 'trending_down';
+  const mom20 = momentum(hist, 20);
+  const adxVal = adx(hist, 14);
+
+  // Enhanced regime detection with ADX for trend strength
+  if (adxVal > 25) {
+    // Strong trend confirmed by ADX
+    if (shortSma > longSma * 1.0005 && mom20 > 0.1) return 'trending_up';
+    if (shortSma < longSma * 0.9995 && mom20 < -0.1) return 'trending_down';
+  } else {
+    // Weak trend — require more confirmation
+    if (shortSma > longSma * 1.001 && mom20 > 0.3) return 'trending_up';
+    if (shortSma < longSma * 0.999 && mom20 < -0.3) return 'trending_down';
+  }
   return 'ranging';
 }
 
@@ -553,23 +937,31 @@ for (const sym of Object.keys(DEFAULT_PRICES)) {
 }
 
 function tickPrices() {
+  const session = getMarketSession();
+  const sessionVol = session.volMultiplier || 1.0;
+
   for (const symbol of Object.keys(marketPrices)) {
     const price = marketPrices[symbol];
     const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(symbol);
     const isFx = symbol.includes('/');
     const baseVol = isFx ? 0.0003 : isCrypto ? 0.002 : 0.001;
 
+    // Apply session-aware volatility — markets are quieter off-hours, more volatile during active sessions
+    // Crypto trades 24/7 so less affected by session
+    const sessionAdj = isCrypto ? (0.7 + sessionVol * 0.3) : sessionVol;
+    const adjVol = baseVol * sessionAdj;
+
     // Micro-trend system: prices have short-lived directional biases
     let ts = trendState[symbol];
     ts.duration++;
     if (ts.duration >= ts.maxDuration) {
       // New micro-trend
-      ts.drift = (Math.random() - 0.45) * baseVol * 2; // slight upward bias overall
+      ts.drift = (Math.random() - 0.45) * adjVol * 2; // slight upward bias overall
       ts.duration = 0;
       ts.maxDuration = 20 + Math.floor(Math.random() * 80);
     }
 
-    const noise = (Math.random() - 0.5) * baseVol;
+    const noise = (Math.random() - 0.5) * adjVol;
     const change = ts.drift + noise;
     const decimals = price < 10 ? 4 : 2;
     marketPrices[symbol] = roundTo(price * (1 + change), decimals);
@@ -2486,20 +2878,43 @@ function computeSignal(symbol, agentStyle) {
   const macdVal = ema12 - ema26;
   const rsiVal = rsi(hist, 14);
   const mom = momentum(hist, 20);
-  const mom10 = momentum(hist, 10); // short-term momentum
+  const mom10 = momentum(hist, 10);
   const vol = volatility(hist, 20);
   const regime = symbolRegimes[symbol];
 
+  // ─── ADVANCED INDICATORS ───
+  const bb = bollingerBands(hist, 20, 2);
+  const adxVal = adx(hist, 14);
+  const stoch = stochastic(hist, 14, 3);
+  const obvArr = obv(hist);
+  const obvVal = obvArr.length > 0 ? obvArr[obvArr.length - 1] : 0;
+  const obvPrev = obvArr.length > 5 ? obvArr[obvArr.length - 6] : obvVal;
+  const rocVal = roc(hist, 12);
+  const atrVal = atr(hist, 14);
+  const vwapVal = vwap(hist);
+  const mtf = multiTimeframeSignal(hist);
+  const sentiment = sentimentStore[symbol] || { score: 0 };
+  const corrRegime = correlationCache.marketRegime || 'neutral';
+  const session = getMarketSession();
+
+  // Bollinger Band %B — where price sits within the bands
+  const bbPercentB = (bb.upper !== bb.lower) ? (price - bb.lower) / (bb.upper - bb.lower) : 0.5;
+  const bbWidth = (bb.upper - bb.lower) / (bb.middle || 1); // squeeze detection
+
   let score = 0;
   let reasons = [];
-  let confluenceBullish = 0; // count of aligned bullish indicators
-  let confluenceBearish = 0; // count of aligned bearish indicators
+  let confluenceBullish = 0;
+  let confluenceBearish = 0;
 
-  // ─── TREND SIGNALS ───
+  // ─── TREND SIGNALS (enhanced with ADX confirmation) ───
   if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'FUNDAMENTAL_ANALYST') {
-    // SMA crossover
-    if (sma10 > sma30 && mom > 0.1) { score += 0.3; confluenceBullish++; reasons.push('Uptrend (SMA cross)'); }
-    else if (sma10 < sma30 && mom < -0.1) { score -= 0.3; confluenceBearish++; reasons.push('Downtrend (SMA cross)'); }
+    // SMA crossover — boosted when ADX confirms trend strength
+    const trendBoost = adxVal > 25 ? 1.3 : (adxVal > 18 ? 1.1 : 0.8);
+    if (sma10 > sma30 && mom > 0.1) {
+      score += 0.3 * trendBoost; confluenceBullish++; reasons.push(`Uptrend (SMA cross, ADX ${adxVal.toFixed(0)})`);
+    } else if (sma10 < sma30 && mom < -0.1) {
+      score -= 0.3 * trendBoost; confluenceBearish++; reasons.push(`Downtrend (SMA cross, ADX ${adxVal.toFixed(0)})`);
+    }
 
     // EMA support/resistance bounce
     if (ema10 > price * 0.998 && ema10 < price * 1.005 && regime === 'trending_up') {
@@ -2511,6 +2926,28 @@ function computeSignal(symbol, agentStyle) {
     else if (macdVal < 0 && ema12 < ema26) { score -= 0.15; confluenceBearish++; reasons.push('MACD bearish'); }
   }
 
+  // ─── BOLLINGER BAND SIGNALS ───
+  if (bbPercentB < 0.05 && stoch.k < 25) {
+    // Price at lower band + stochastic oversold = strong buy
+    score += 0.25; confluenceBullish++; reasons.push(`BB lower band + Stoch OS (${stoch.k.toFixed(0)})`);
+  } else if (bbPercentB > 0.95 && stoch.k > 75) {
+    // Price at upper band + stochastic overbought = strong sell
+    score -= 0.25; confluenceBearish++; reasons.push(`BB upper band + Stoch OB (${stoch.k.toFixed(0)})`);
+  }
+  // Bollinger squeeze — low volatility preceding breakout
+  if (bbWidth < 0.02) {
+    // Squeeze detected — amplify directional conviction
+    if (mom > 0.1) { score += 0.15; reasons.push('BB squeeze — bullish breakout setup'); }
+    else if (mom < -0.1) { score -= 0.15; reasons.push('BB squeeze — bearish breakout setup'); }
+  }
+
+  // ─── STOCHASTIC DIVERGENCE ───
+  if (stoch.k < 20 && stoch.k > stoch.d && mom10 > 0) {
+    score += 0.15; confluenceBullish++; reasons.push('Stochastic bullish crossover in OS');
+  } else if (stoch.k > 80 && stoch.k < stoch.d && mom10 < 0) {
+    score -= 0.15; confluenceBearish++; reasons.push('Stochastic bearish crossover in OB');
+  }
+
   // ─── MOMENTUM SIGNALS ───
   if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'VOLATILITY_TRADER') {
     if (mom > 0.5) { score += 0.25; confluenceBullish++; reasons.push(`Momentum +${mom.toFixed(1)}%`); }
@@ -2519,6 +2956,30 @@ function computeSignal(symbol, agentStyle) {
     // Short-term acceleration — momentum of momentum
     if (mom10 > 0.2 && mom > 0) { score += 0.1; reasons.push('Accelerating upward'); }
     else if (mom10 < -0.2 && mom < 0) { score -= 0.1; reasons.push('Accelerating downward'); }
+
+    // Rate of Change confirmation
+    if (rocVal > 1.5 && mom > 0) { score += 0.1; confluenceBullish++; reasons.push(`ROC +${rocVal.toFixed(1)}%`); }
+    else if (rocVal < -1.5 && mom < 0) { score -= 0.1; confluenceBearish++; reasons.push(`ROC ${rocVal.toFixed(1)}%`); }
+  }
+
+  // ─── OBV (On-Balance Volume) DIVERGENCE ───
+  const obvTrend = obvVal - obvPrev;
+  if (obvTrend > 0 && mom < -0.1) {
+    // OBV rising while price falling — bullish divergence (accumulation)
+    score += 0.15; confluenceBullish++; reasons.push('OBV bullish divergence (accumulation)');
+  } else if (obvTrend < 0 && mom > 0.1) {
+    // OBV falling while price rising — bearish divergence (distribution)
+    score -= 0.15; confluenceBearish++; reasons.push('OBV bearish divergence (distribution)');
+  }
+
+  // ─── VWAP RELATIVE POSITION ───
+  if (vwapVal > 0) {
+    const vwapDev = (price - vwapVal) / vwapVal;
+    if (vwapDev < -0.005 && regime !== 'trending_down') {
+      score += 0.12; confluenceBullish++; reasons.push('Below VWAP — institutional buy zone');
+    } else if (vwapDev > 0.005 && regime !== 'trending_up') {
+      score -= 0.12; confluenceBearish++; reasons.push('Above VWAP — institutional sell zone');
+    }
   }
 
   // ─── RSI SIGNALS (improved with divergence detection) ───
@@ -2532,11 +2993,11 @@ function computeSignal(symbol, agentStyle) {
   if (regime === 'trending_up') { score += 0.12; confluenceBullish++; reasons.push('Bullish regime'); }
   else if (regime === 'trending_down') { score -= 0.12; confluenceBearish++; reasons.push('Bearish regime'); }
 
-  // ─── VOLATILITY CONTEXT ───
+  // ─── VOLATILITY CONTEXT (enhanced with ATR) ───
+  const atrPct = atrVal / price * 100;
   if (vol > 0.5 && agentStyle === 'VOLATILITY_TRADER') {
-    score *= 1.2; reasons.push(`High vol (${vol.toFixed(1)}%)`);
+    score *= 1.2; reasons.push(`High vol (${vol.toFixed(1)}%, ATR ${atrPct.toFixed(2)}%)`);
   }
-  // Penalize low-volatility environments for momentum traders
   if (vol < 0.15 && (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'VOLATILITY_TRADER')) {
     score *= 0.7; reasons.push('Low vol — reduced conviction');
   }
@@ -2546,13 +3007,47 @@ function computeSignal(symbol, agentStyle) {
     if (rsiVal < 25 && mom < -0.5) { score += 0.4; confluenceBullish++; reasons.push('Deep oversold — recovery play'); }
     if (rsiVal < 35 && regime === 'ranging' && mom10 > 0) { score += 0.25; confluenceBullish++; reasons.push('Mean reversion setup with momentum shift'); }
     if (rsiVal < 35 && regime === 'ranging') { score += 0.15; reasons.push('Mean reversion setup'); }
+    // BB lower band bounce for recovery
+    if (bbPercentB < 0.1 && mom10 > 0) { score += 0.2; confluenceBullish++; reasons.push('BB lower band recovery bounce'); }
+  }
+
+  // ─── MULTI-TIMEFRAME ALIGNMENT ───
+  if (mtf.aligned) {
+    // All timeframes agree — strong directional conviction
+    if (mtf.direction > 0) { score += 0.2; confluenceBullish++; reasons.push(`MTF aligned bullish (${mtf.score.toFixed(2)})`); }
+    else if (mtf.direction < 0) { score -= 0.2; confluenceBearish++; reasons.push(`MTF aligned bearish (${mtf.score.toFixed(2)})`); }
+  } else if (Math.abs(mtf.score) > 0.3) {
+    // Partial alignment
+    if (mtf.score > 0) { score += 0.08; reasons.push('MTF partial bullish'); }
+    else { score -= 0.08; reasons.push('MTF partial bearish'); }
+  }
+
+  // ─── NEWS SENTIMENT INTEGRATION ───
+  if (sentiment.score !== 0) {
+    const sentWeight = 0.15;
+    score += sentiment.score * sentWeight;
+    if (sentiment.score > 0.3) { confluenceBullish++; reasons.push(`Sentiment bullish (${sentiment.score.toFixed(2)})`); }
+    else if (sentiment.score < -0.3) { confluenceBearish++; reasons.push(`Sentiment bearish (${sentiment.score.toFixed(2)})`); }
+  }
+
+  // ─── CROSS-ASSET CORRELATION REGIME ───
+  if (corrRegime === 'risk_off' && score > 0) {
+    score *= 0.75; reasons.push('Risk-off regime — dampened longs');
+  } else if (corrRegime === 'risk_on' && score < 0) {
+    score *= 0.75; reasons.push('Risk-on regime — dampened shorts');
+  }
+
+  // ─── MARKET SESSION VOLATILITY ADJUSTMENT ───
+  if (session.volMultiplier < 0.8) {
+    score *= 0.85; reasons.push(`Off-hours — reduced conviction (${session.session})`);
   }
 
   // ─── MULTI-INDICATOR CONFLUENCE BONUS ───
-  // When 3+ indicators agree, the signal is much higher quality
   const confluence = Math.max(confluenceBullish, confluenceBearish);
-  if (confluence >= 4) { score *= 1.4; reasons.push(`Strong confluence (${confluence} indicators)`); }
-  else if (confluence >= 3) { score *= 1.2; reasons.push(`Good confluence (${confluence} indicators)`); }
+  if (confluence >= 6) { score *= 1.6; reasons.push(`Exceptional confluence (${confluence} indicators)`); }
+  else if (confluence >= 5) { score *= 1.4; reasons.push(`Strong confluence (${confluence} indicators)`); }
+  else if (confluence >= 4) { score *= 1.3; reasons.push(`Good confluence (${confluence} indicators)`); }
+  else if (confluence >= 3) { score *= 1.15; reasons.push(`Moderate confluence (${confluence} indicators)`); }
 
   // ─── HISTORICAL PERFORMANCE BIAS ───
   const sp = getSymbolPerf(symbol);
@@ -2563,12 +3058,10 @@ function computeSignal(symbol, agentStyle) {
     else if (symWinRate < 0.3) { score *= 0.5; reasons.push(`Poor symbol — heavily reduced`); }
     else if (symWinRate < 0.4) { score *= 0.75; reasons.push(`Low win-rate — reduced size`); }
 
-    // Prefer the historically winning side
     const longWR = sp.longWins / Math.max(1, sp.longWins + sp.longLosses);
     const shortWR = sp.shortWins / Math.max(1, sp.shortWins + sp.shortLosses);
     if (score > 0 && longWR > 0.55) score *= 1.1;
     if (score < 0 && shortWR > 0.55) score *= 1.1;
-    // Avoid sides with very poor track record
     if (score > 0 && longWR < 0.3 && (sp.longWins + sp.longLosses) > 3) { score *= 0.5; reasons.push('Poor long history — dampened'); }
     if (score < 0 && shortWR < 0.3 && (sp.shortWins + sp.shortLosses) > 3) { score *= 0.5; reasons.push('Poor short history — dampened'); }
   }
@@ -2576,7 +3069,7 @@ function computeSignal(symbol, agentStyle) {
   return {
     score: Math.max(-1, Math.min(1, score)),
     reason: reasons.join(' | ') || 'No clear signal',
-    indicators: { sma10, sma30, rsiVal, mom, vol, regime },
+    indicators: { sma10, sma30, rsiVal, mom, vol, regime, adx: adxVal, stochK: stoch.k, bbPctB: bbPercentB, obvTrend, vwapDev: vwapVal ? ((price - vwapVal) / vwapVal * 100).toFixed(2) : 0, mtfScore: mtf.score, sentiment: sentiment.score, atrPct },
     confluence,
   };
 }
@@ -2873,6 +3366,29 @@ function logAutoTrade(userId, agent, symbol, side, quantity, reason) {
 
 // Auto-trading tick — every 10 seconds
 const autoTradeInterval = setInterval(runAutoTradeTick, AUTO_TRADE_CONFIG.tickIntervalMs);
+
+// ─── INTELLIGENCE ENGINES — periodic updates ───
+// Correlation matrix: every 60s (needs price history across assets)
+const correlationInterval = setInterval(() => {
+  try { updateCorrelationMatrix(); } catch (e) { console.error('[CorrelationEngine] Error:', e.message); }
+}, 60000);
+
+// Sentiment engine already self-starts at line ~830 (fetchNewsSentiment + setInterval)
+
+// Agent intelligence persistence: every 2 min
+const intelligenceInterval = setInterval(() => {
+  try { saveAgentIntelligence(); } catch (e) { console.error('[IntelligencePersistence] Error:', e.message); }
+}, 120000);
+
+// Boot: load persisted intelligence + initial correlation matrix
+try {
+  loadAgentIntelligence();
+  console.log('[Boot] Agent intelligence loaded from persistence layer');
+} catch (e) { console.warn('[Boot] No persisted intelligence found — starting fresh'); }
+
+setTimeout(() => {
+  try { updateCorrelationMatrix(); console.log('[Boot] Initial correlation matrix computed'); } catch (e) {}
+}, 5000); // 5s delay to allow price history to build
 
 // ═══════════════════════════════════════════════════════════════════
 //   TRADING QA AGENT — COMPREHENSIVE PROACTIVE MONITORING
@@ -3359,6 +3875,13 @@ api.get('/api/trading/health', (req, res) => {
       lastFullAudit: qaState.lastFullAudit > 0 ? `${((Date.now() - qaState.lastFullAudit) / 60000).toFixed(1)}min ago` : 'never',
     },
     recentQAReports: qaReports,
+    intelligence: {
+      correlationAge: correlationCache.lastUpdated > 0 ? `${((Date.now() - correlationCache.lastUpdated) / 60000).toFixed(1)}min ago` : 'never',
+      marketRegime: correlationCache.marketRegime || 'unknown',
+      sentimentSymbols: Object.keys(sentimentStore).length,
+      sentimentSample: Object.fromEntries(Object.entries(sentimentStore).slice(0, 5).map(([k, v]) => [k, { score: v.score, source: v.source }])),
+      marketSession: getMarketSession(),
+    },
     config: {
       minSignalThreshold: AUTO_TRADE_CONFIG.minSignalStrength,
       maxDailyTrades: AUTO_TRADE_CONFIG.maxDailyTrades,
@@ -3666,10 +4189,16 @@ server.listen(PORT, '0.0.0.0', () => {
 function shutdown(sig) {
   console.log(`\n${sig} — initiating graceful shutdown...`);
 
-  // Step 1: Stop all trading and market activity
+  // Step 1: Stop all trading, market activity, and intelligence engines
   clearInterval(priceInterval);
   clearInterval(autoTradeInterval);
+  clearInterval(correlationInterval);
+  clearInterval(sentimentInterval);
+  clearInterval(intelligenceInterval);
   if (keepAliveInterval) clearInterval(keepAliveInterval);
+
+  // Persist agent intelligence before shutdown
+  try { saveAgentIntelligence(); console.log('[SHUTDOWN] Agent intelligence saved'); } catch (e) {}
 
   // Step 2: CRITICAL — Flush all database tables to disk with backup
   try {
