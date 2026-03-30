@@ -3340,7 +3340,7 @@ function PortfolioDashboard({ investor, onLogout }) {
     // Sum position values by asset class
     positionsAll.forEach(p => {
       const cls = classifySymbol(p.symbol);
-      const posValue = Math.abs((p.quantity || 0) * (p.current_price || p.entry_price || 0));
+      const posValue = Math.abs((p.quantity || 0) * (p.currentPrice || p.current_price || p.entryPrice || p.entry_price || 0));
       totals[cls] = (totals[cls] || 0) + posValue;
     });
 
