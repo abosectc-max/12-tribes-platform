@@ -367,8 +367,8 @@ function InvestorTable({ serverUsers, groupData, isMobile = false, isTablet = fa
         {serverUsers.map(user => {
           const avatar = (user.firstName?.[0] || '') + (user.lastName?.[0] || '') || user.email?.[0]?.toUpperCase() || '?';
           const name = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
-          const equity = user.walletEquity || 0;
-          const initial = user.walletInitial || 100000;
+          const equity = user.equity || user.walletEquity || 0;
+          const initial = user.initialBalance || user.walletInitial || 100000;
           const gain = equity - initial;
           const gainPct = initial > 0 ? (gain / initial * 100) : 0;
           return (
@@ -387,7 +387,9 @@ function InvestorTable({ serverUsers, groupData, isMobile = false, isTablet = fa
                 <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
                 <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.35)" }}>{user.email}</div>
                 <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.25)", marginTop: 2 }}>
-                  Role: {user.role || 'investor'} · Joined {user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}
+                  {user.role || 'investor'} · {user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}
+                  {user.isTrading && <span style={{ marginLeft: 6, color: "#10B981" }}>● trading</span>}
+                  {user.openPositions > 0 && <span style={{ marginLeft: 4, color: "rgba(255,255,255,0.35)" }}>· {user.openPositions} pos</span>}
                 </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>

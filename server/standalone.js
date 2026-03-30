@@ -1464,18 +1464,34 @@ api.get('/api/admin/users', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
 
-  const allUsers = db.findMany('users').map(u => ({
-    id: u.id,
-    email: u.email,
-    firstName: u.firstName || u.first_name || '',
-    lastName: u.lastName || u.last_name || '',
-    role: u.role || 'investor',
-    emailVerified: u.emailVerified || false,
-    tradingMode: u.tradingMode || 'paper',
-    createdAt: u.created_at || u.createdAt || null,
-    lastLogin: u.last_login || u.lastLogin || null,
-    loginCount: u.login_count || u.loginCount || 0,
-  }));
+  const allUsers = db.findMany('users').map(u => {
+    const wallet = db.findOne('wallets', w => w.user_id === u.id);
+    const openPositions = db.findMany('positions', p => p.user_id === u.id && p.status === 'OPEN');
+    const fundSettings = db.findOne('fund_settings', s => s.user_id === u.id);
+    const unrealizedPnL = openPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0);
+    return {
+      id: u.id,
+      email: u.email,
+      firstName: u.firstName || u.first_name || '',
+      lastName: u.lastName || u.last_name || '',
+      role: u.role || 'investor',
+      emailVerified: u.emailVerified || false,
+      tradingMode: u.tradingMode || 'paper',
+      createdAt: u.created_at || u.createdAt || null,
+      lastLogin: u.last_login || u.lastLogin || null,
+      loginCount: u.login_count || u.loginCount || 0,
+      // Wallet & trading data
+      balance: wallet?.balance || 0,
+      equity: wallet?.equity || wallet?.balance || 0,
+      initialBalance: wallet?.initial_balance || 100000,
+      realizedPnL: wallet?.realized_pnl || 0,
+      unrealizedPnL,
+      tradeCount: wallet?.trade_count || 0,
+      openPositions: openPositions.length,
+      isTrading: fundSettings?.data?.autoTrading?.isAutoTrading || false,
+      tradingModeActive: fundSettings?.data?.autoTrading?.tradingMode || 'balanced',
+    };
+  });
 
   json(res, 200, allUsers);
 });

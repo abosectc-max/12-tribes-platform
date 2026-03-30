@@ -2595,32 +2595,50 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
     fetchLogs();
   }, [tradingActive]);
 
-  const handleStart = () => {
+  const handleStart = async () => {
     setIsStarting(true);
     initFundManager(investorId);
-    // Enable server-side auto-trading
-    fetch(`${API_BASE}/auto-trading/toggle`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-      body: JSON.stringify({ enabled: true, mode: tradingMode }),
-    }).catch(() => {});
-    setTimeout(() => {
+    try {
+      // Enable server-side auto-trading and WAIT for confirmation
+      const res = await fetch(`${API_BASE}/auto-trading/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({ enabled: true, mode: tradingMode }),
+      });
+      if (!res.ok) throw new Error('Server toggle failed');
+      const data = await res.json();
+      // Server confirmed — now activate locally
       startAutoTrading(investorId, tradingMode);
       setTradingActive(true);
       setSessionStats({ trades: 0, pnl: 0, startTime: Date.now() });
-      setIsStarting(false);
-    }, 1500);
+      if (data.agents) setServerStats(prev => ({ ...prev, activeAgents: data.agents }));
+    } catch (err) {
+      console.error('Failed to start trading:', err);
+      // Fallback: still try local activation so UI doesn't freeze
+      startAutoTrading(investorId, tradingMode);
+      setTradingActive(true);
+      setSessionStats({ trades: 0, pnl: 0, startTime: Date.now() });
+    }
+    setIsStarting(false);
   };
 
-  const handleStop = () => {
+  const handleStop = async () => {
     // Require explicit confirmation before stopping 24/7 trading
     if (!confirm('Are you sure you want to stop auto-trading? The AI agents will cease all trading activity until you restart.')) return;
-    // Disable server-side auto-trading
-    fetch(`${API_BASE}/auto-trading/toggle`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-      body: JSON.stringify({ enabled: false }),
-    }).catch(() => {});
+    try {
+      // Disable server-side auto-trading and wait for positions to close
+      const res = await fetch(`${API_BASE}/auto-trading/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+        body: JSON.stringify({ enabled: false }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        console.log('[Trading] Stopped — positions closed:', data.positionsClosed);
+      }
+    } catch (err) {
+      console.error('Failed to stop trading on server:', err);
+    }
     stopAutoTrading(investorId);
     setTradingActive(false);
   };
