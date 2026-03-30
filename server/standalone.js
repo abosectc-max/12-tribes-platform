@@ -5638,7 +5638,9 @@ function ensureCapitalAccount(userId) {
 
   const wallet = db.findOne('wallets', w => w.user_id === userId);
   const user = db.findOne('users', u => u.id === userId);
-  const initialBalance = wallet?.initial_balance || wallet?.balance || 100000;
+  const initialBalance = wallet?.initial_balance || 100000;
+  // Use current wallet equity as ending balance (reflects actual P&L)
+  const currentEquity = wallet?.equity || wallet?.balance || initialBalance;
 
   account = db.insert('capital_accounts', {
     user_id: userId,
@@ -5646,9 +5648,9 @@ function ensureCapitalAccount(userId) {
     beginning_balance: initialBalance,
     contributions: initialBalance,
     distributions_total: 0,
-    allocated_income: 0,
+    allocated_income: roundTo((wallet?.realized_pnl || 0), 2),
     allocated_losses: 0,
-    ending_balance: initialBalance,
+    ending_balance: currentEquity,
     ownership_pct: user?.ownership_pct || 0,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -6054,6 +6056,7 @@ function computeTaxAllocations(taxYear) {
 
   for (const investor of investors) {
     const account = ensureCapitalAccount(investor.id);
+    const wallet = db.findOne('wallets', w => w.user_id === investor.id);
 
     // Use capital-account-derived ownership (dynamic), fall back to user record, then equal split
     const ownershipPct = account.ownership_pct > 0
@@ -6061,7 +6064,35 @@ function computeTaxAllocations(taxYear) {
       : investor.ownership_pct > 0
         ? investor.ownership_pct
         : (investors.length > 0 ? roundTo(100 / investors.length, 2) : 0);
-    const pctDecimal = ownershipPct / 100;
+
+    // ── PER-INVESTOR tax ledger: compute from THIS investor's actual trades ──
+    const investorLedger = yearLedger.filter(e => e.user_id === investor.id);
+    const inv = {
+      shortTermGains: 0, shortTermLosses: 0,
+      longTermGains: 0, longTermLosses: 0,
+      washSaleDisallowed: 0, totalProceeds: 0, totalCostBasis: 0,
+      cryptoGains: 0, cryptoLosses: 0, equityGains: 0, equityLosses: 0,
+    };
+
+    for (const entry of investorLedger) {
+      const gl = entry.adjusted_gain_loss || 0;
+      inv.totalProceeds += entry.proceeds || 0;
+      inv.totalCostBasis += entry.cost_basis || 0;
+      inv.washSaleDisallowed += entry.wash_sale_disallowed || 0;
+
+      if (entry.holding_period === 'SHORT_TERM') {
+        if (gl >= 0) inv.shortTermGains += gl; else inv.shortTermLosses += gl;
+      } else {
+        if (gl >= 0) inv.longTermGains += gl; else inv.longTermLosses += gl;
+      }
+      if (entry.asset_class === 'crypto') {
+        if (gl >= 0) inv.cryptoGains += gl; else inv.cryptoLosses += gl;
+      } else {
+        if (gl >= 0) inv.equityGains += gl; else inv.equityLosses += gl;
+      }
+    }
+
+    const netGainLoss = roundTo(inv.shortTermGains + inv.shortTermLosses + inv.longTermGains + inv.longTermLosses, 2);
 
     // Sum distributions for this investor in this tax year
     const investorDistributions = yearDistributions.filter(d => d.user_id === investor.id);
@@ -6072,25 +6103,26 @@ function computeTaxAllocations(taxYear) {
       investor_name: `${investor.first_name} ${investor.last_name}`,
       investor_email: investor.email,
       tax_year: taxYear,
-      ownership_pct: ownershipPct,
-      // Income/loss allocations
-      allocated_short_term_gains: roundTo(fundTotals.shortTermGains * pctDecimal, 2),
-      allocated_short_term_losses: roundTo(fundTotals.shortTermLosses * pctDecimal, 2),
-      allocated_long_term_gains: roundTo(fundTotals.longTermGains * pctDecimal, 2),
-      allocated_long_term_losses: roundTo(fundTotals.longTermLosses * pctDecimal, 2),
-      allocated_net_gain_loss: roundTo(fundTotals.netGainLoss * pctDecimal, 2),
-      allocated_wash_sale_disallowed: roundTo(fundTotals.washSaleDisallowed * pctDecimal, 2),
-      allocated_proceeds: roundTo(fundTotals.totalProceeds * pctDecimal, 2),
-      allocated_cost_basis: roundTo(fundTotals.totalCostBasis * pctDecimal, 2),
-      allocated_crypto_gains: roundTo(fundTotals.cryptoGains * pctDecimal, 2),
-      allocated_crypto_losses: roundTo(fundTotals.cryptoLosses * pctDecimal, 2),
-      allocated_equity_gains: roundTo(fundTotals.equityGains * pctDecimal, 2),
-      allocated_equity_losses: roundTo(fundTotals.equityLosses * pctDecimal, 2),
+      ownership_pct: roundTo(ownershipPct, 2),
+      total_trades: investorLedger.length,
+      // Income/loss allocations — computed from THIS investor's actual trades
+      allocated_short_term_gains: roundTo(inv.shortTermGains, 2),
+      allocated_short_term_losses: roundTo(inv.shortTermLosses, 2),
+      allocated_long_term_gains: roundTo(inv.longTermGains, 2),
+      allocated_long_term_losses: roundTo(inv.longTermLosses, 2),
+      allocated_net_gain_loss: netGainLoss,
+      allocated_wash_sale_disallowed: roundTo(inv.washSaleDisallowed, 2),
+      allocated_proceeds: roundTo(inv.totalProceeds, 2),
+      allocated_cost_basis: roundTo(inv.totalCostBasis, 2),
+      allocated_crypto_gains: roundTo(inv.cryptoGains, 2),
+      allocated_crypto_losses: roundTo(inv.cryptoLosses, 2),
+      allocated_equity_gains: roundTo(inv.equityGains, 2),
+      allocated_equity_losses: roundTo(inv.equityLosses, 2),
       // K-1 distribution & capital account fields (Schedule K-1 Box 19/20)
       total_distributions: roundTo(totalDistributed, 2),
       distribution_count: investorDistributions.length,
       capital_account_beginning: roundTo(account.beginning_balance, 2),
-      capital_account_ending: roundTo(account.ending_balance, 2),
+      capital_account_ending: roundTo(wallet?.equity || account.ending_balance, 2),
       capital_contributed: roundTo(account.contributions || 0, 2),
       capital_withdrawn: roundTo(account.distributions_total || 0, 2),
       computed_at: new Date().toISOString(),
@@ -6112,7 +6144,10 @@ function computeTaxAllocations(taxYear) {
   // Update capital accounts with allocated income/losses
   updateCapitalAccountsFromAllocations(taxYear);
 
-  console.log(`[TaxEngine] K-1 allocations computed for ${taxYear}: ${allocations.length} investors, net ${fundTotals.netGainLoss >= 0 ? 'gain' : 'loss'} $${Math.abs(fundTotals.netGainLoss)}, distributions: $${roundTo(yearDistributions.reduce((s,d) => s + d.amount, 0), 2)}`);
+  console.log(`[TaxEngine] K-1 allocations computed for ${taxYear}: ${allocations.length} investors, fund net ${fundTotals.netGainLoss >= 0 ? 'gain' : 'loss'} $${Math.abs(fundTotals.netGainLoss)}`);
+  for (const a of allocations) {
+    console.log(`  → ${a.investor_name}: ${a.total_trades || 0} trades, net $${a.allocated_net_gain_loss}, ownership ${a.ownership_pct}%`);
+  }
   return { fundTotals, allocations };
 }
 
