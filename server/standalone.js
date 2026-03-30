@@ -2876,8 +2876,61 @@ api.post('/api/auto-trading/toggle', auth, async (req, res) => {
   });
 });
 
+// ─── AUTO-ENABLE TRADING ON STARTUP ───
+// Ensure all investors with wallets have auto-trading enabled.
+// This guarantees 24/7/365 trading survives server restarts.
+function ensureAutoTradingActive() {
+  const allUsers = db.findMany('users');
+  let activatedCount = 0;
+
+  for (const user of allUsers) {
+    const wallet = db.findOne('wallets', w => w.user_id === user.id);
+    if (!wallet) continue; // No wallet = no trading
+
+    let settings = db.findOne('fund_settings', s => s.user_id === user.id);
+
+    if (!settings) {
+      // Create fund_settings with auto-trading enabled
+      settings = db.insert('fund_settings', {
+        user_id: user.id,
+        data: {
+          autoTrading: {
+            isAutoTrading: true,
+            tradingMode: 'balanced',
+            tradingStartedAt: Date.now(),
+            agentsActive: AI_AGENTS.map(a => a.name),
+          },
+        },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      activatedCount++;
+    } else {
+      // Ensure auto-trading is active
+      if (!settings.data) settings.data = {};
+      if (!settings.data.autoTrading) settings.data.autoTrading = {};
+
+      if (!settings.data.autoTrading.isAutoTrading) {
+        settings.data.autoTrading.isAutoTrading = true;
+        settings.data.autoTrading.tradingMode = settings.data.autoTrading.tradingMode || 'balanced';
+        settings.data.autoTrading.tradingStartedAt = settings.data.autoTrading.tradingStartedAt || Date.now();
+        settings.data.autoTrading.agentsActive = AI_AGENTS.map(a => a.name);
+        settings.updated_at = new Date().toISOString();
+        db._save('fund_settings');
+        activatedCount++;
+      }
+    }
+  }
+
+  return activatedCount;
+}
+
 // Start
 server.listen(PORT, '0.0.0.0', () => {
+  // Activate auto-trading for all investors on server boot
+  const activated = ensureAutoTradingActive();
+  const totalTraders = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading).length;
+
   console.log('');
   console.log('═══════════════════════════════════════════');
   console.log('   12 TRIBES — BACKEND SERVER');
@@ -2893,9 +2946,11 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   Users:     ${db.count('users')}`);
   console.log(`   Symbols:   ${Object.keys(marketPrices).length}`);
   console.log(`   AutoTrade: ENABLED (${AUTO_TRADE_CONFIG.tickIntervalMs / 1000}s tick)`);
+  console.log(`   Traders:   ${totalTraders} active${activated > 0 ? ` (${activated} re-activated on boot)` : ''}`);
   console.log(`   Agents:    ${AI_AGENTS.map(a => a.name).join(', ')}`);
   console.log(`   KeepAlive: ${SELF_URL ? 'ON (4min ping)' : 'OFF (set RENDER_EXTERNAL_URL)'}`);
   console.log('');
+  console.log('   All investors trading 24/7/365.');
   console.log('   Awaiting connections.');
   console.log('');
   console.log('═══════════════════════════════════════════');

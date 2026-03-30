@@ -2612,6 +2612,8 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
   };
 
   const handleStop = () => {
+    // Require explicit confirmation before stopping 24/7 trading
+    if (!confirm('Are you sure you want to stop auto-trading? The AI agents will cease all trading activity until you restart.')) return;
     // Disable server-side auto-trading
     fetch(`${API_BASE}/auto-trading/toggle`, {
       method: 'POST',
