@@ -860,6 +860,9 @@ function saveAgentIntelligence() {
     agentPerformance: {},
     symbolPerformance: {},
     sentimentCache: {},
+    indicatorLearning: {},
+    strategyState: {},
+    circuitBreakers: {},
     savedAt: new Date().toISOString(),
   };
   // Only save if we have meaningful data
@@ -871,6 +874,16 @@ function saveAgentIntelligence() {
   }
   for (const [sym, sent] of Object.entries(sentimentStore)) {
     intel.sentimentCache[sym] = sent;
+  }
+  // Persist learning engine state
+  for (const [agent, symbols] of Object.entries(indicatorLearning)) {
+    intel.indicatorLearning[agent] = symbols;
+  }
+  for (const [agent, state] of Object.entries(strategyState)) {
+    intel.strategyState[agent] = state;
+  }
+  for (const [agent, cb] of Object.entries(agentCircuitBreakers)) {
+    intel.circuitBreakers[agent] = cb;
   }
   db.upsert('system_config', s => s.key === 'agent_intelligence', {
     key: 'agent_intelligence', data: intel, updated_at: new Date().toISOString(),
@@ -902,7 +915,25 @@ function loadAgentIntelligence() {
       }
     }
   }
-  console.log(`[Boot] Loaded agent intelligence: ${loaded} agents, ${Object.keys(intel.symbolPerformance || {}).length} symbols`);
+  // Restore learning engine state
+  if (intel.indicatorLearning) {
+    for (const [agent, symbols] of Object.entries(intel.indicatorLearning)) {
+      indicatorLearning[agent] = symbols;
+    }
+  }
+  if (intel.strategyState) {
+    for (const [agent, state] of Object.entries(intel.strategyState)) {
+      strategyState[agent] = state;
+    }
+  }
+  if (intel.circuitBreakers) {
+    for (const [agent, cb] of Object.entries(intel.circuitBreakers)) {
+      agentCircuitBreakers[agent] = cb;
+    }
+  }
+  const learnedAgents = Object.keys(intel.indicatorLearning || {}).length;
+  const breakerAgents = Object.keys(intel.circuitBreakers || {}).length;
+  console.log(`[Boot] Loaded agent intelligence: ${loaded} agents, ${Object.keys(intel.symbolPerformance || {}).length} symbols, ${learnedAgents} learned, ${breakerAgents} breakers`);
   return true;
 }
 
@@ -2882,14 +2913,394 @@ function updatePerformanceFeedback(agentName, symbol, side, pnl) {
   if (recentWinRate > 0.6) ap.adaptiveConfidence = Math.min(1.5, 1.0 + (recentWinRate - 0.5));
   else if (recentWinRate < 0.35) ap.adaptiveConfidence = Math.max(0.3, recentWinRate + 0.15);
   else ap.adaptiveConfidence = 0.8 + recentWinRate * 0.4;
+
+  // ─── Feed into learning engine + circuit breaker ───
+  updateCircuitBreaker(agentName, pnl);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   ADAPTIVE LEARNING ENGINE v1.0
+//   Per-agent, per-symbol indicator weight learning from trade outcomes.
+//   Strategy rotation: agents shift style when conditions change.
+//   Self-healing: circuit breakers, auto-quarantine, parameter tuning.
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Indicator Weight Learning ───
+// Tracks which indicators contributed to winning vs losing trades
+// Weights evolve over time: winning indicators get boosted, losers dampened
+const indicatorLearning = {};
+// Structure: { agentName: { symbol: { indicator: { weight, wins, losses, contribution } } } }
+
+const LEARNABLE_INDICATORS = [
+  'sma_cross', 'ema_support', 'macd', 'bb_band', 'bb_squeeze', 'stochastic',
+  'momentum', 'roc', 'obv', 'vwap', 'rsi', 'regime', 'mtf', 'sentiment', 'correlation'
+];
+
+const DEFAULT_INDICATOR_WEIGHT = 1.0;
+const WEIGHT_LEARN_RATE = 0.08;       // How fast weights adapt (higher = faster learning)
+const WEIGHT_MIN = 0.2;               // Never fully zero-out an indicator
+const WEIGHT_MAX = 2.5;               // Cap runaway positive feedback
+const WEIGHT_DECAY_RATE = 0.005;      // Slow regression to mean over time
+
+function getIndicatorWeights(agentName, symbol) {
+  if (!indicatorLearning[agentName]) indicatorLearning[agentName] = {};
+  if (!indicatorLearning[agentName][symbol]) {
+    const weights = {};
+    for (const ind of LEARNABLE_INDICATORS) {
+      weights[ind] = { weight: DEFAULT_INDICATOR_WEIGHT, wins: 0, losses: 0, contribution: 0, lastUpdated: Date.now() };
+    }
+    indicatorLearning[agentName][symbol] = weights;
+  }
+  return indicatorLearning[agentName][symbol];
+}
+
+// Called after trade close — updates indicator weights based on outcome
+function learnFromTrade(agentName, symbol, tradeResult) {
+  const weights = getIndicatorWeights(agentName, symbol);
+  const { pnl, indicators_used } = tradeResult;
+  if (!indicators_used || indicators_used.length === 0) return;
+
+  const isWin = pnl >= 0;
+  const magnitude = Math.min(Math.abs(pnl) / 3, 1.0); // Normalize: 3% = max magnitude
+
+  for (const ind of indicators_used) {
+    if (!weights[ind]) continue;
+    const w = weights[ind];
+
+    if (isWin) {
+      w.wins++;
+      w.weight = Math.min(WEIGHT_MAX, w.weight + WEIGHT_LEARN_RATE * magnitude);
+      w.contribution += magnitude;
+    } else {
+      w.losses++;
+      w.weight = Math.max(WEIGHT_MIN, w.weight - WEIGHT_LEARN_RATE * magnitude * 1.2); // Penalize losses slightly harder
+      w.contribution -= magnitude * 0.5;
+    }
+    w.lastUpdated = Date.now();
+  }
+
+  // Decay unused indicators toward default (prevents stale weights)
+  for (const ind of LEARNABLE_INDICATORS) {
+    if (weights[ind] && !indicators_used.includes(ind)) {
+      const timeSinceUpdate = Date.now() - weights[ind].lastUpdated;
+      if (timeSinceUpdate > 300000) { // 5 min
+        weights[ind].weight += (DEFAULT_INDICATOR_WEIGHT - weights[ind].weight) * WEIGHT_DECAY_RATE;
+      }
+    }
+  }
+}
+
+// ─── Strategy Rotation ───
+// Detects regime changes and rotates agent strategy bias
+const strategyState = {};
+// Structure: { agentName: { currentStrategy, regimeHistory[], rotationCount, lastRotation, cooldownUntil } }
+
+function getStrategyState(agentName) {
+  if (!strategyState[agentName]) {
+    strategyState[agentName] = {
+      currentStrategy: 'default',
+      regimeHistory: [],           // Last 20 market regime observations
+      rotationCount: 0,
+      lastRotation: Date.now(),
+      cooldownUntil: 0,
+      adaptiveLongBias: null,      // null = use agent default
+      performanceTrend: 'stable',  // rising, stable, declining, critical
+    };
+  }
+  return strategyState[agentName];
+}
+
+function evaluateStrategyRotation(agentName) {
+  const ss = getStrategyState(agentName);
+  const ap = getAgentPerf(agentName);
+  const now = Date.now();
+
+  // Cooldown: don't rotate more than once per 5 minutes
+  if (now < ss.cooldownUntil) return;
+
+  // Assess performance trend from recent P&L
+  const recent = ap.recentPnl || [];
+  if (recent.length < 8) { ss.performanceTrend = 'stable'; return; }
+
+  const firstHalf = recent.slice(0, Math.floor(recent.length / 2));
+  const secondHalf = recent.slice(Math.floor(recent.length / 2));
+  const firstAvg = firstHalf.reduce((s, v) => s + v, 0) / firstHalf.length;
+  const secondAvg = secondHalf.reduce((s, v) => s + v, 0) / secondHalf.length;
+  const recentWinRate = recent.filter(p => p >= 0).length / recent.length;
+
+  // Classify trend
+  if (secondAvg > firstAvg + 0.5 && recentWinRate > 0.55) ss.performanceTrend = 'rising';
+  else if (secondAvg < firstAvg - 1.0 || recentWinRate < 0.3) ss.performanceTrend = 'critical';
+  else if (secondAvg < firstAvg - 0.3 || recentWinRate < 0.4) ss.performanceTrend = 'declining';
+  else ss.performanceTrend = 'stable';
+
+  // Strategy rotation based on trend
+  if (ss.performanceTrend === 'critical') {
+    // Shift to defensive: reduce long bias, tighten signals
+    const agent = AI_AGENTS.find(a => a.name === agentName);
+    if (agent) {
+      ss.adaptiveLongBias = Math.max(0.35, (agent.longBias || 0.55) - 0.15);
+    }
+    ss.currentStrategy = 'defensive';
+    ss.rotationCount++;
+    ss.lastRotation = now;
+    ss.cooldownUntil = now + 300000; // 5 min cooldown
+    console.log(`[Learning] ${agentName}: STRATEGY ROTATION → defensive (critical trend, WR ${(recentWinRate*100).toFixed(0)}%)`);
+  } else if (ss.performanceTrend === 'rising' && ss.currentStrategy !== 'aggressive') {
+    const agent = AI_AGENTS.find(a => a.name === agentName);
+    if (agent) {
+      ss.adaptiveLongBias = Math.min(0.85, (agent.longBias || 0.55) + 0.10);
+    }
+    ss.currentStrategy = 'aggressive';
+    ss.rotationCount++;
+    ss.lastRotation = now;
+    ss.cooldownUntil = now + 300000;
+    console.log(`[Learning] ${agentName}: STRATEGY ROTATION → aggressive (rising trend, WR ${(recentWinRate*100).toFixed(0)}%)`);
+  } else if (ss.performanceTrend === 'stable' && ss.currentStrategy !== 'default') {
+    const agent = AI_AGENTS.find(a => a.name === agentName);
+    if (agent) ss.adaptiveLongBias = null; // Reset to default
+    ss.currentStrategy = 'default';
+    ss.rotationCount++;
+    ss.lastRotation = now;
+    ss.cooldownUntil = now + 180000;
+    console.log(`[Learning] ${agentName}: STRATEGY ROTATION → default (stabilized)`);
+  }
+}
+
+// ─── Agent Circuit Breakers ───
+// Auto-quarantine agents that are hemorrhaging capital
+const agentCircuitBreakers = {};
+// Structure: { agentName: { tripped, tripCount, tripReason, trippedAt, resumeAt, consecutiveLosses, drawdownFromPeak } }
+
+function getCircuitBreaker(agentName) {
+  if (!agentCircuitBreakers[agentName]) {
+    agentCircuitBreakers[agentName] = {
+      tripped: false,
+      tripCount: 0,
+      tripReason: '',
+      trippedAt: 0,
+      resumeAt: 0,
+      consecutiveLosses: 0,
+      maxConsecutiveLosses: 0,
+      drawdownFromPeak: 0,
+      peakPnl: 0,
+      totalPnl: 0,
+      healActions: [],             // Log of self-healing actions taken
+    };
+  }
+  return agentCircuitBreakers[agentName];
+}
+
+function checkCircuitBreaker(agentName) {
+  const cb = getCircuitBreaker(agentName);
+  const now = Date.now();
+
+  // Auto-resume after cooldown
+  if (cb.tripped && now >= cb.resumeAt) {
+    cb.tripped = false;
+    cb.consecutiveLosses = 0;
+    cb.healActions.push({ action: 'AUTO_RESUME', at: new Date().toISOString(), reason: 'Cooldown expired' });
+    if (cb.healActions.length > 50) cb.healActions = cb.healActions.slice(-30);
+    console.log(`[SelfHeal] ${agentName}: Circuit breaker RESET — resuming trading`);
+  }
+
+  return cb.tripped;
+}
+
+function updateCircuitBreaker(agentName, pnl) {
+  const cb = getCircuitBreaker(agentName);
+  const now = Date.now();
+
+  cb.totalPnl += pnl;
+  if (cb.totalPnl > cb.peakPnl) cb.peakPnl = cb.totalPnl;
+  cb.drawdownFromPeak = cb.peakPnl - cb.totalPnl;
+
+  if (pnl < 0) {
+    cb.consecutiveLosses++;
+    if (cb.consecutiveLosses > cb.maxConsecutiveLosses) cb.maxConsecutiveLosses = cb.consecutiveLosses;
+  } else {
+    cb.consecutiveLosses = 0;
+  }
+
+  // ─── TRIP CONDITIONS ───
+  let shouldTrip = false;
+  let reason = '';
+
+  // Condition 1: 5+ consecutive losses
+  if (cb.consecutiveLosses >= 5) {
+    shouldTrip = true;
+    reason = `${cb.consecutiveLosses} consecutive losses`;
+  }
+
+  // Condition 2: Drawdown from peak exceeds threshold
+  if (cb.drawdownFromPeak > 5000) { // $5k drawdown from agent's peak
+    shouldTrip = true;
+    reason = `Drawdown $${cb.drawdownFromPeak.toFixed(0)} from peak`;
+  }
+
+  // Condition 3: Recent P&L heavily negative
+  const ap = getAgentPerf(agentName);
+  const recentPnl = (ap.recentPnl || []).slice(-10);
+  if (recentPnl.length >= 8) {
+    const recentSum = recentPnl.reduce((s, v) => s + v, 0);
+    const recentWinRate = recentPnl.filter(p => p >= 0).length / recentPnl.length;
+    if (recentWinRate < 0.2 && recentPnl.length >= 8) {
+      shouldTrip = true;
+      reason = `Win rate collapsed to ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades`;
+    }
+  }
+
+  if (shouldTrip && !cb.tripped) {
+    cb.tripped = true;
+    cb.tripCount++;
+    cb.tripReason = reason;
+    cb.trippedAt = now;
+
+    // Escalating cooldown: 2min, 5min, 10min, 15min max
+    const cooldownMs = Math.min(900000, cb.tripCount * 120000 + 120000);
+    cb.resumeAt = now + cooldownMs;
+
+    cb.healActions.push({
+      action: 'CIRCUIT_TRIP',
+      at: new Date().toISOString(),
+      reason,
+      cooldownMs,
+      tripNumber: cb.tripCount,
+    });
+    if (cb.healActions.length > 50) cb.healActions = cb.healActions.slice(-30);
+
+    console.log(`[SelfHeal] ${agentName}: CIRCUIT BREAKER TRIPPED — ${reason} — cooldown ${(cooldownMs/1000).toFixed(0)}s`);
+
+    // Self-healing action: reduce agent confidence on trip
+    ap.adaptiveConfidence = Math.max(0.3, ap.adaptiveConfidence * 0.6);
+    console.log(`[SelfHeal] ${agentName}: Confidence reduced to ${ap.adaptiveConfidence.toFixed(2)}`);
+  }
+}
+
+// ─── Auto-Parameter Tuning ───
+// Periodically reviews agent performance and adjusts trading parameters
+function runAutoTuning() {
+  const now = Date.now();
+
+  for (const agent of AI_AGENTS) {
+    if (agent.isRiskManager || agent.isPositionManager) continue;
+
+    const ap = getAgentPerf(agent.name);
+    const cb = getCircuitBreaker(agent.name);
+    const ss = getStrategyState(agent.name);
+
+    // Evaluate strategy rotation
+    evaluateStrategyRotation(agent.name);
+
+    // Auto-tune confidence recovery for reformed agents
+    if (cb.tripCount > 0 && !cb.tripped && ap.streak > 3) {
+      // Agent recovered after circuit trip — cautiously boost confidence
+      const recovery = Math.min(0.1, ap.streak * 0.02);
+      ap.adaptiveConfidence = Math.min(1.3, ap.adaptiveConfidence + recovery);
+      cb.healActions.push({
+        action: 'CONFIDENCE_RECOVERY',
+        at: new Date().toISOString(),
+        newConfidence: ap.adaptiveConfidence,
+        streak: ap.streak,
+      });
+      if (cb.healActions.length > 50) cb.healActions = cb.healActions.slice(-30);
+    }
+
+    // Indicator weight decay — bring stale weights back toward 1.0
+    if (indicatorLearning[agent.name]) {
+      for (const sym of Object.keys(indicatorLearning[agent.name])) {
+        const weights = indicatorLearning[agent.name][sym];
+        for (const ind of LEARNABLE_INDICATORS) {
+          if (weights[ind]) {
+            const staleness = (now - weights[ind].lastUpdated) / 600000; // 10min units
+            if (staleness > 1) {
+              weights[ind].weight += (DEFAULT_INDICATOR_WEIGHT - weights[ind].weight) * WEIGHT_DECAY_RATE * Math.min(staleness, 5);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ─── Learning Metrics Aggregator ───
+function getAgentLearningReport() {
+  const report = { agents: {}, system: { totalRotations: 0, totalCircuitTrips: 0, activeBreakers: 0 } };
+
+  for (const agent of AI_AGENTS) {
+    if (agent.isRiskManager || agent.isPositionManager) continue;
+
+    const ap = getAgentPerf(agent.name);
+    const cb = getCircuitBreaker(agent.name);
+    const ss = getStrategyState(agent.name);
+    const totalTrades = ap.wins + ap.losses;
+    const winRate = totalTrades > 0 ? ap.wins / totalTrades : 0;
+
+    // Top learned indicators
+    const topIndicators = [];
+    if (indicatorLearning[agent.name]) {
+      const allWeights = {};
+      for (const sym of Object.keys(indicatorLearning[agent.name])) {
+        const weights = indicatorLearning[agent.name][sym];
+        for (const ind of LEARNABLE_INDICATORS) {
+          if (weights[ind]) {
+            if (!allWeights[ind]) allWeights[ind] = { totalWeight: 0, count: 0, wins: 0, losses: 0 };
+            allWeights[ind].totalWeight += weights[ind].weight;
+            allWeights[ind].count++;
+            allWeights[ind].wins += weights[ind].wins;
+            allWeights[ind].losses += weights[ind].losses;
+          }
+        }
+      }
+      for (const [ind, data] of Object.entries(allWeights)) {
+        topIndicators.push({
+          indicator: ind,
+          avgWeight: roundTo(data.totalWeight / data.count, 3),
+          wins: data.wins,
+          losses: data.losses,
+          winRate: (data.wins + data.losses) > 0 ? roundTo(data.wins / (data.wins + data.losses), 3) : 0,
+        });
+      }
+      topIndicators.sort((a, b) => b.avgWeight - a.avgWeight);
+    }
+
+    report.agents[agent.name] = {
+      confidence: roundTo(ap.adaptiveConfidence, 3),
+      winRate: roundTo(winRate, 3),
+      totalTrades,
+      streak: ap.streak,
+      strategy: ss.currentStrategy,
+      performanceTrend: ss.performanceTrend,
+      adaptiveLongBias: ss.adaptiveLongBias,
+      rotationCount: ss.rotationCount,
+      circuitBreaker: {
+        tripped: cb.tripped,
+        tripCount: cb.tripCount,
+        tripReason: cb.tripReason,
+        consecutiveLosses: cb.consecutiveLosses,
+        maxConsecutiveLosses: cb.maxConsecutiveLosses,
+        drawdownFromPeak: roundTo(cb.drawdownFromPeak, 2),
+        cooldownRemaining: cb.tripped ? Math.max(0, Math.round((cb.resumeAt - Date.now()) / 1000)) : 0,
+      },
+      recentHealActions: (cb.healActions || []).slice(-5),
+      topIndicators: topIndicators.slice(0, 8),
+    };
+
+    report.system.totalRotations += ss.rotationCount;
+    report.system.totalCircuitTrips += cb.tripCount;
+    if (cb.tripped) report.system.activeBreakers++;
+  }
+
+  report.system.timestamp = new Date().toISOString();
+  return report;
 }
 
 // ─── Signal Quality Scoring v2 ───
 // Multi-indicator confluence system: more agreement = stronger signal
 // Tracks indicator alignment count for position sizing tiers
-function computeSignal(symbol, agentStyle) {
+function computeSignal(symbol, agentStyle, agentName) {
   const hist = priceHistory[symbol];
-  if (!hist || hist.length < 30) return { score: 0, reason: 'Insufficient data', confluence: 0 };
+  if (!hist || hist.length < 30) return { score: 0, reason: 'Insufficient data', confluence: 0, indicators_used: [] };
 
   const price = marketPrices[symbol];
   const sma10 = sma(hist, 10);
@@ -2927,93 +3338,93 @@ function computeSignal(symbol, agentStyle) {
   let reasons = [];
   let confluenceBullish = 0;
   let confluenceBearish = 0;
+  const indicators_used = []; // Track which indicators fired for learning feedback
+
+  // Adaptive indicator weights from learning engine
+  const iw = agentName ? getIndicatorWeights(agentName, symbol) : null;
+  const w = (ind) => {
+    const weight = iw && iw[ind] ? iw[ind].weight : 1.0;
+    return weight;
+  };
 
   // ─── TREND SIGNALS (enhanced with ADX confirmation) ───
   if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'FUNDAMENTAL_ANALYST') {
     // SMA crossover — boosted when ADX confirms trend strength
     const trendBoost = adxVal > 25 ? 1.3 : (adxVal > 18 ? 1.1 : 0.8);
     if (sma10 > sma30 && mom > 0.1) {
-      score += 0.3 * trendBoost; confluenceBullish++; reasons.push(`Uptrend (SMA cross, ADX ${adxVal.toFixed(0)})`);
+      score += 0.3 * trendBoost * w('sma_cross'); confluenceBullish++; indicators_used.push('sma_cross'); reasons.push(`Uptrend (SMA cross, ADX ${adxVal.toFixed(0)})`);
     } else if (sma10 < sma30 && mom < -0.1) {
-      score -= 0.3 * trendBoost; confluenceBearish++; reasons.push(`Downtrend (SMA cross, ADX ${adxVal.toFixed(0)})`);
+      score -= 0.3 * trendBoost * w('sma_cross'); confluenceBearish++; indicators_used.push('sma_cross'); reasons.push(`Downtrend (SMA cross, ADX ${adxVal.toFixed(0)})`);
     }
 
     // EMA support/resistance bounce
     if (ema10 > price * 0.998 && ema10 < price * 1.005 && regime === 'trending_up') {
-      score += 0.2; confluenceBullish++; reasons.push('EMA support bounce');
+      score += 0.2 * w('ema_support'); confluenceBullish++; indicators_used.push('ema_support'); reasons.push('EMA support bounce');
     }
 
     // MACD crossover signal
-    if (macdVal > 0 && ema12 > ema26) { score += 0.15; confluenceBullish++; reasons.push('MACD bullish'); }
-    else if (macdVal < 0 && ema12 < ema26) { score -= 0.15; confluenceBearish++; reasons.push('MACD bearish'); }
+    if (macdVal > 0 && ema12 > ema26) { score += 0.15 * w('macd'); confluenceBullish++; indicators_used.push('macd'); reasons.push('MACD bullish'); }
+    else if (macdVal < 0 && ema12 < ema26) { score -= 0.15 * w('macd'); confluenceBearish++; indicators_used.push('macd'); reasons.push('MACD bearish'); }
   }
 
   // ─── BOLLINGER BAND SIGNALS ───
   if (bbPercentB < 0.05 && stoch.k < 25) {
-    // Price at lower band + stochastic oversold = strong buy
-    score += 0.25; confluenceBullish++; reasons.push(`BB lower band + Stoch OS (${stoch.k.toFixed(0)})`);
+    score += 0.25 * w('bb_band'); confluenceBullish++; indicators_used.push('bb_band'); reasons.push(`BB lower band + Stoch OS (${stoch.k.toFixed(0)})`);
   } else if (bbPercentB > 0.95 && stoch.k > 75) {
-    // Price at upper band + stochastic overbought = strong sell
-    score -= 0.25; confluenceBearish++; reasons.push(`BB upper band + Stoch OB (${stoch.k.toFixed(0)})`);
+    score -= 0.25 * w('bb_band'); confluenceBearish++; indicators_used.push('bb_band'); reasons.push(`BB upper band + Stoch OB (${stoch.k.toFixed(0)})`);
   }
-  // Bollinger squeeze — low volatility preceding breakout
   if (bbWidth < 0.02) {
-    // Squeeze detected — amplify directional conviction
-    if (mom > 0.1) { score += 0.15; reasons.push('BB squeeze — bullish breakout setup'); }
-    else if (mom < -0.1) { score -= 0.15; reasons.push('BB squeeze — bearish breakout setup'); }
+    if (mom > 0.1) { score += 0.15 * w('bb_squeeze'); indicators_used.push('bb_squeeze'); reasons.push('BB squeeze — bullish breakout setup'); }
+    else if (mom < -0.1) { score -= 0.15 * w('bb_squeeze'); indicators_used.push('bb_squeeze'); reasons.push('BB squeeze — bearish breakout setup'); }
   }
 
   // ─── STOCHASTIC DIVERGENCE ───
   if (stoch.k < 20 && stoch.k > stoch.d && mom10 > 0) {
-    score += 0.15; confluenceBullish++; reasons.push('Stochastic bullish crossover in OS');
+    score += 0.15 * w('stochastic'); confluenceBullish++; indicators_used.push('stochastic'); reasons.push('Stochastic bullish crossover in OS');
   } else if (stoch.k > 80 && stoch.k < stoch.d && mom10 < 0) {
-    score -= 0.15; confluenceBearish++; reasons.push('Stochastic bearish crossover in OB');
+    score -= 0.15 * w('stochastic'); confluenceBearish++; indicators_used.push('stochastic'); reasons.push('Stochastic bearish crossover in OB');
   }
 
   // ─── MOMENTUM SIGNALS ───
   if (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'VOLATILITY_TRADER') {
-    if (mom > 0.5) { score += 0.25; confluenceBullish++; reasons.push(`Momentum +${mom.toFixed(1)}%`); }
-    else if (mom < -0.5) { score -= 0.25; confluenceBearish++; reasons.push(`Momentum ${mom.toFixed(1)}%`); }
+    if (mom > 0.5) { score += 0.25 * w('momentum'); confluenceBullish++; indicators_used.push('momentum'); reasons.push(`Momentum +${mom.toFixed(1)}%`); }
+    else if (mom < -0.5) { score -= 0.25 * w('momentum'); confluenceBearish++; indicators_used.push('momentum'); reasons.push(`Momentum ${mom.toFixed(1)}%`); }
 
-    // Short-term acceleration — momentum of momentum
-    if (mom10 > 0.2 && mom > 0) { score += 0.1; reasons.push('Accelerating upward'); }
-    else if (mom10 < -0.2 && mom < 0) { score -= 0.1; reasons.push('Accelerating downward'); }
+    if (mom10 > 0.2 && mom > 0) { score += 0.1 * w('momentum'); reasons.push('Accelerating upward'); }
+    else if (mom10 < -0.2 && mom < 0) { score -= 0.1 * w('momentum'); reasons.push('Accelerating downward'); }
 
-    // Rate of Change confirmation
-    if (rocVal > 1.5 && mom > 0) { score += 0.1; confluenceBullish++; reasons.push(`ROC +${rocVal.toFixed(1)}%`); }
-    else if (rocVal < -1.5 && mom < 0) { score -= 0.1; confluenceBearish++; reasons.push(`ROC ${rocVal.toFixed(1)}%`); }
+    if (rocVal > 1.5 && mom > 0) { score += 0.1 * w('roc'); confluenceBullish++; indicators_used.push('roc'); reasons.push(`ROC +${rocVal.toFixed(1)}%`); }
+    else if (rocVal < -1.5 && mom < 0) { score -= 0.1 * w('roc'); confluenceBearish++; indicators_used.push('roc'); reasons.push(`ROC ${rocVal.toFixed(1)}%`); }
   }
 
   // ─── OBV (On-Balance Volume) DIVERGENCE ───
   const obvTrend = obvVal - obvPrev;
   if (obvTrend > 0 && mom < -0.1) {
-    // OBV rising while price falling — bullish divergence (accumulation)
-    score += 0.15; confluenceBullish++; reasons.push('OBV bullish divergence (accumulation)');
+    score += 0.15 * w('obv'); confluenceBullish++; indicators_used.push('obv'); reasons.push('OBV bullish divergence (accumulation)');
   } else if (obvTrend < 0 && mom > 0.1) {
-    // OBV falling while price rising — bearish divergence (distribution)
-    score -= 0.15; confluenceBearish++; reasons.push('OBV bearish divergence (distribution)');
+    score -= 0.15 * w('obv'); confluenceBearish++; indicators_used.push('obv'); reasons.push('OBV bearish divergence (distribution)');
   }
 
   // ─── VWAP RELATIVE POSITION ───
   if (vwapVal > 0) {
     const vwapDev = (price - vwapVal) / vwapVal;
     if (vwapDev < -0.005 && regime !== 'trending_down') {
-      score += 0.12; confluenceBullish++; reasons.push('Below VWAP — institutional buy zone');
+      score += 0.12 * w('vwap'); confluenceBullish++; indicators_used.push('vwap'); reasons.push('Below VWAP — institutional buy zone');
     } else if (vwapDev > 0.005 && regime !== 'trending_up') {
-      score -= 0.12; confluenceBearish++; reasons.push('Above VWAP — institutional sell zone');
+      score -= 0.12 * w('vwap'); confluenceBearish++; indicators_used.push('vwap'); reasons.push('Above VWAP — institutional sell zone');
     }
   }
 
   // ─── RSI SIGNALS (improved with divergence detection) ───
-  if (rsiVal < 28) { score += 0.25; confluenceBullish++; reasons.push(`RSI deeply oversold (${rsiVal.toFixed(0)})`); }
-  else if (rsiVal < 35 && mom10 > 0) { score += 0.15; confluenceBullish++; reasons.push(`RSI recovering from oversold (${rsiVal.toFixed(0)})`); }
-  else if (rsiVal > 72) { score -= 0.2; confluenceBearish++; reasons.push(`RSI overbought (${rsiVal.toFixed(0)})`); }
-  else if (rsiVal > 65 && mom10 < 0) { score -= 0.1; confluenceBearish++; reasons.push(`RSI fading from overbought (${rsiVal.toFixed(0)})`); }
-  else if (rsiVal > 45 && rsiVal < 55 && regime === 'trending_up') { score += 0.08; reasons.push('RSI neutral in uptrend'); }
+  if (rsiVal < 28) { score += 0.25 * w('rsi'); confluenceBullish++; indicators_used.push('rsi'); reasons.push(`RSI deeply oversold (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal < 35 && mom10 > 0) { score += 0.15 * w('rsi'); confluenceBullish++; indicators_used.push('rsi'); reasons.push(`RSI recovering from oversold (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 72) { score -= 0.2 * w('rsi'); confluenceBearish++; indicators_used.push('rsi'); reasons.push(`RSI overbought (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 65 && mom10 < 0) { score -= 0.1 * w('rsi'); confluenceBearish++; indicators_used.push('rsi'); reasons.push(`RSI fading from overbought (${rsiVal.toFixed(0)})`); }
+  else if (rsiVal > 45 && rsiVal < 55 && regime === 'trending_up') { score += 0.08 * w('rsi'); reasons.push('RSI neutral in uptrend'); }
 
   // ─── REGIME BONUS ───
-  if (regime === 'trending_up') { score += 0.12; confluenceBullish++; reasons.push('Bullish regime'); }
-  else if (regime === 'trending_down') { score -= 0.12; confluenceBearish++; reasons.push('Bearish regime'); }
+  if (regime === 'trending_up') { score += 0.12 * w('regime'); confluenceBullish++; indicators_used.push('regime'); reasons.push('Bullish regime'); }
+  else if (regime === 'trending_down') { score -= 0.12 * w('regime'); confluenceBearish++; indicators_used.push('regime'); reasons.push('Bearish regime'); }
 
   // ─── VOLATILITY CONTEXT (enhanced with ATR) ───
   const atrPct = atrVal / price * 100;
@@ -3036,27 +3447,26 @@ function computeSignal(symbol, agentStyle) {
   // ─── MULTI-TIMEFRAME ALIGNMENT ───
   if (mtf.aligned) {
     // All timeframes agree — strong directional conviction
-    if (mtf.direction > 0) { score += 0.2; confluenceBullish++; reasons.push(`MTF aligned bullish (${mtf.score.toFixed(2)})`); }
-    else if (mtf.direction < 0) { score -= 0.2; confluenceBearish++; reasons.push(`MTF aligned bearish (${mtf.score.toFixed(2)})`); }
+    if (mtf.direction > 0) { score += 0.2 * w('mtf'); confluenceBullish++; indicators_used.push('mtf'); reasons.push(`MTF aligned bullish (${mtf.score.toFixed(2)})`); }
+    else if (mtf.direction < 0) { score -= 0.2 * w('mtf'); confluenceBearish++; indicators_used.push('mtf'); reasons.push(`MTF aligned bearish (${mtf.score.toFixed(2)})`); }
   } else if (Math.abs(mtf.score) > 0.3) {
-    // Partial alignment
-    if (mtf.score > 0) { score += 0.08; reasons.push('MTF partial bullish'); }
-    else { score -= 0.08; reasons.push('MTF partial bearish'); }
+    if (mtf.score > 0) { score += 0.08 * w('mtf'); indicators_used.push('mtf'); reasons.push('MTF partial bullish'); }
+    else { score -= 0.08 * w('mtf'); indicators_used.push('mtf'); reasons.push('MTF partial bearish'); }
   }
 
   // ─── NEWS SENTIMENT INTEGRATION ───
   if (sentiment.score !== 0) {
     const sentWeight = 0.15;
-    score += sentiment.score * sentWeight;
-    if (sentiment.score > 0.3) { confluenceBullish++; reasons.push(`Sentiment bullish (${sentiment.score.toFixed(2)})`); }
-    else if (sentiment.score < -0.3) { confluenceBearish++; reasons.push(`Sentiment bearish (${sentiment.score.toFixed(2)})`); }
+    score += sentiment.score * sentWeight * w('sentiment');
+    if (sentiment.score > 0.3) { confluenceBullish++; indicators_used.push('sentiment'); reasons.push(`Sentiment bullish (${sentiment.score.toFixed(2)})`); }
+    else if (sentiment.score < -0.3) { confluenceBearish++; indicators_used.push('sentiment'); reasons.push(`Sentiment bearish (${sentiment.score.toFixed(2)})`); }
   }
 
   // ─── CROSS-ASSET CORRELATION REGIME ───
   if (corrRegime === 'risk_off' && score > 0) {
-    score *= 0.75; reasons.push('Risk-off regime — dampened longs');
+    score *= (0.75 * w('correlation')); indicators_used.push('correlation'); reasons.push('Risk-off regime — dampened longs');
   } else if (corrRegime === 'risk_on' && score < 0) {
-    score *= 0.75; reasons.push('Risk-on regime — dampened shorts');
+    score *= (0.75 * w('correlation')); indicators_used.push('correlation'); reasons.push('Risk-on regime — dampened shorts');
   }
 
   // ─── MARKET SESSION VOLATILITY ADJUSTMENT ───
@@ -3093,6 +3503,7 @@ function computeSignal(symbol, agentStyle) {
     reason: reasons.join(' | ') || 'No clear signal',
     indicators: { sma10, sma30, rsiVal, mom, vol, regime, adx: adxVal, stochK: stoch.k, bbPctB: bbPercentB, obvTrend, vwapDev: vwapVal ? ((price - vwapVal) / vwapVal * 100).toFixed(2) : 0, mtfScore: mtf.score, sentiment: sentiment.score, atrPct },
     confluence,
+    indicators_used: [...new Set(indicators_used)], // Deduplicated list for learning feedback
   };
 }
 
@@ -3190,7 +3601,9 @@ function runAllAgents(userId, fundData) {
     // Each agent scores ALL its symbols, picks best UNHELD symbol first, falls back to held
     const scored = [];
     for (const symbol of tradable) {
-      const signal = computeSignal(symbol, agent.role);
+      const signal = computeSignal(symbol, agent.role, agent.name);
+      // Check circuit breaker before scoring
+      if (checkCircuitBreaker(agent.name)) continue;
       const adjustedScore = signal.score * agentPerf.adaptiveConfidence;
       scored.push({ symbol, ...signal, adjustedScore, agent: agent.name, isHeld: heldSymbols.has(symbol) });
     }
@@ -3417,6 +3830,7 @@ function persistSignal(signal, userId, context) {
     confluence: signal.confluence,
     reason: signal.reason,
     indicators: signal.indicators || {},
+    indicators_used: signal.indicators_used || [],
     price_at_signal: marketPrices[signal.symbol] || 0,
     regime: symbolRegimes[signal.symbol] || 'unknown',
     session: getMarketSession().session,
@@ -3464,6 +3878,12 @@ function attributeSignalPnL(positionId, pnl, pnlPct) {
     sig.pnl_pct = roundTo(pnlPct, 4);
     sig.outcome = pnl >= 0 ? 'WIN' : 'LOSS';
     sig.closed_at = new Date().toISOString();
+
+    // ─── Feed into adaptive learning engine ───
+    try {
+      const indicatorsUsed = sig.indicators_used || sig.indicator_breakdown ? Object.keys(sig.indicator_breakdown || {}) : [];
+      learnFromTrade(sig.agent, sig.symbol, { pnl: pnlPct, indicators_used: indicatorsUsed });
+    } catch (e) { /* learning is non-critical */ }
   }
   if (signals.length > 0) db._save('signals');
 }
@@ -3603,6 +4023,11 @@ const correlationInterval = setInterval(() => {
 const intelligenceInterval = setInterval(() => {
   try { saveAgentIntelligence(); } catch (e) { console.error('[IntelligencePersistence] Error:', e.message); }
 }, 120000);
+
+// Adaptive learning engine: auto-tune every 90s
+const learningInterval = setInterval(() => {
+  try { runAutoTuning(); } catch (e) { console.error('[LearningEngine] Error:', e.message); }
+}, 90000);
 
 // Boot: load persisted intelligence + initial correlation matrix
 try {
@@ -4106,6 +4531,12 @@ api.get('/api/trading/health', (req, res) => {
       sentimentSample: Object.fromEntries(Object.entries(sentimentStore).slice(0, 5).map(([k, v]) => [k, { score: v.score, source: v.source }])),
       marketSession: getMarketSession(),
     },
+    learning: {
+      activeBreakers: Object.values(agentCircuitBreakers).filter(cb => cb.tripped).length,
+      totalBreakers: Object.keys(agentCircuitBreakers).length,
+      learnedSymbols: Object.values(indicatorLearning).reduce((s, a) => s + Object.keys(a).length, 0),
+      agentStrategies: Object.fromEntries(Object.entries(strategyState).map(([k, v]) => [k, { strategy: v.currentStrategy, trend: v.performanceTrend }])),
+    },
     config: {
       minSignalThreshold: AUTO_TRADE_CONFIG.minSignalStrength,
       maxDailyTrades: AUTO_TRADE_CONFIG.maxDailyTrades,
@@ -4228,6 +4659,16 @@ api.get('/api/signals/heatmap', auth, (req, res) => {
     correlationRegime: correlationCache.marketRegime || 'neutral',
     timestamp: new Date().toISOString(),
   });
+});
+
+// ─── Agent Learning & Self-Healing Dashboard ───
+api.get('/api/agents/learning', auth, (req, res) => {
+  try {
+    const report = getAgentLearningReport();
+    json(res, 200, report);
+  } catch (e) {
+    json(res, 500, { error: 'Learning report generation failed', message: e.message });
+  }
 });
 
 // Trading debug — dry-run one tick for a sample user, expose full decision chain
@@ -4493,6 +4934,7 @@ function shutdown(sig) {
   clearInterval(correlationInterval);
   clearInterval(sentimentInterval);
   clearInterval(intelligenceInterval);
+  clearInterval(learningInterval);
   if (keepAliveInterval) clearInterval(keepAliveInterval);
 
   // Persist agent intelligence before shutdown
