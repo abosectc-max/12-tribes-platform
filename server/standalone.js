@@ -2914,13 +2914,180 @@ api.get('/api/market/prices', (req, res) => {
   });
 });
 
+// ─── ON-DEMAND YAHOO FINANCE RESEARCH ───
+// Fetches live quote + 3-month chart for ANY symbol not in our tracked set
+const onDemandCache = {}; // { symbol: { data, timestamp } }
+const ON_DEMAND_TTL = 60000; // Cache for 60 seconds
+
+async function fetchOnDemandResearch(symbol) {
+  // Check cache first
+  const cached = onDemandCache[symbol];
+  if (cached && Date.now() - cached.timestamp < ON_DEMAND_TTL) return cached.data;
+
+  const https = await import('node:https');
+  const yahooSym = getYahooSymbol(symbol);
+
+  // Fetch chart data (3 months, daily) — gives us price history + current quote
+  const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=3mo&interval=1d`;
+
+  return new Promise((resolve) => {
+    const req = https.get(chartUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; 12Tribes/1.0)' },
+      timeout: 10000,
+    }, (resp) => {
+      let body = '';
+      resp.on('data', chunk => body += chunk);
+      resp.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const result = data?.chart?.result?.[0];
+          if (!result || !result.meta) { resolve(null); return; }
+
+          const meta = result.meta;
+          const closes = result.indicators?.quote?.[0]?.close?.filter(p => p != null) || [];
+          const opens = result.indicators?.quote?.[0]?.open?.filter(p => p != null) || [];
+          const highs = result.indicators?.quote?.[0]?.high?.filter(p => p != null) || [];
+          const lows = result.indicators?.quote?.[0]?.low?.filter(p => p != null) || [];
+          const volumes = result.indicators?.quote?.[0]?.volume?.filter(v => v != null) || [];
+
+          if (closes.length < 2) { resolve(null); return; }
+
+          const currentPrice = meta.regularMarketPrice || closes[closes.length - 1];
+          const prevClose = meta.chartPreviousClose || meta.previousClose || closes[closes.length - 2];
+          const dayOpen = opens.length > 0 ? opens[opens.length - 1] : currentPrice;
+          const dayHigh = highs.length > 0 ? highs[highs.length - 1] : currentPrice;
+          const dayLow = lows.length > 0 ? lows[lows.length - 1] : currentPrice;
+          const changePct = prevClose > 0 ? ((currentPrice - prevClose) / prevClose * 100) : 0;
+
+          // Compute technicals from historical closes
+          const hist = closes;
+          const sma10Val = sma(hist, 10);
+          const sma30Val = sma(hist, 30);
+          const sma50Val = sma(hist, 50);
+          const ema12Val = ema(hist, 12);
+          const ema26Val = ema(hist, 26);
+          const macdVal = ema12Val - ema26Val;
+          const currentRsi = rsi(hist);
+          const mom20Val = momentum(hist, 20);
+          const vol20Val = volatility(hist, 20);
+
+          // Support/Resistance
+          const sortedPrices = [...hist].sort((a, b) => a - b);
+          const support = sortedPrices[Math.floor(sortedPrices.length * 0.1)] || currentPrice * 0.97;
+          const resistance = sortedPrices[Math.floor(sortedPrices.length * 0.9)] || currentPrice * 1.03;
+
+          // Determine regime from SMAs
+          let regime = 'ranging';
+          if (sma10Val > sma30Val && mom20Val > 0.5) regime = 'trending_up';
+          else if (sma10Val < sma30Val && mom20Val < -0.5) regime = 'trending_down';
+
+          // Build signals
+          let signalStrength = 0;
+          const signals = [];
+
+          if (currentRsi > 70) { signals.push({ indicator: 'RSI', signal: 'OVERBOUGHT', detail: `RSI at ${currentRsi.toFixed(1)} — potential reversal zone`, weight: -25 }); signalStrength -= 25; }
+          else if (currentRsi < 30) { signals.push({ indicator: 'RSI', signal: 'OVERSOLD', detail: `RSI at ${currentRsi.toFixed(1)} — potential bounce zone`, weight: 25 }); signalStrength += 25; }
+          else { signals.push({ indicator: 'RSI', signal: 'NEUTRAL', detail: `RSI at ${currentRsi.toFixed(1)} — mid-range`, weight: 0 }); }
+
+          if (regime === 'trending_up') { signals.push({ indicator: 'TREND', signal: 'BULLISH', detail: 'SMA10 above SMA30 with positive momentum', weight: 20 }); signalStrength += 20; }
+          else if (regime === 'trending_down') { signals.push({ indicator: 'TREND', signal: 'BEARISH', detail: 'SMA10 below SMA30 with negative momentum', weight: -20 }); signalStrength -= 20; }
+          else { signals.push({ indicator: 'TREND', signal: 'RANGING', detail: 'No clear trend — consolidation phase', weight: 0 }); }
+
+          if (macdVal > 0) { signals.push({ indicator: 'MACD', signal: 'BULLISH', detail: 'MACD positive — bullish crossover', weight: 15 }); signalStrength += 15; }
+          else if (macdVal < 0) { signals.push({ indicator: 'MACD', signal: 'BEARISH', detail: 'MACD negative — bearish pressure', weight: -15 }); signalStrength -= 15; }
+
+          if (mom20Val > 1) { signals.push({ indicator: 'MOMENTUM', signal: 'STRONG', detail: `${mom20Val.toFixed(2)}% gain over 20 periods`, weight: 15 }); signalStrength += 15; }
+          else if (mom20Val < -1) { signals.push({ indicator: 'MOMENTUM', signal: 'WEAK', detail: `${mom20Val.toFixed(2)}% decline over 20 periods`, weight: -15 }); signalStrength -= 15; }
+
+          if (vol20Val > 3) { signals.push({ indicator: 'VOLATILITY', signal: 'HIGH', detail: `${vol20Val.toFixed(2)}% — elevated risk`, weight: -5 }); signalStrength -= 5; }
+          else { signals.push({ indicator: 'VOLATILITY', signal: 'NORMAL', detail: `${vol20Val.toFixed(2)}% — standard conditions`, weight: 0 }); }
+
+          // 50-day SMA signal
+          if (currentPrice > sma50Val && sma50Val > 0) { signals.push({ indicator: 'SMA50', signal: 'ABOVE', detail: `Price above 50-day SMA ($${sma50Val.toFixed(2)}) — bullish structure`, weight: 10 }); signalStrength += 10; }
+          else if (sma50Val > 0) { signals.push({ indicator: 'SMA50', signal: 'BELOW', detail: `Price below 50-day SMA ($${sma50Val.toFixed(2)}) — bearish structure`, weight: -10 }); signalStrength -= 10; }
+
+          // Volume trend (if available)
+          if (volumes.length >= 20) {
+            const recentVol = volumes.slice(-5).reduce((s, v) => s + v, 0) / 5;
+            const avgVol = volumes.slice(-20).reduce((s, v) => s + v, 0) / 20;
+            if (recentVol > avgVol * 1.5) { signals.push({ indicator: 'VOLUME', signal: 'SURGE', detail: `Recent volume ${((recentVol / avgVol - 1) * 100).toFixed(0)}% above 20-day avg`, weight: 5 }); }
+            else if (recentVol < avgVol * 0.5) { signals.push({ indicator: 'VOLUME', signal: 'DRY', detail: 'Volume well below average — low conviction', weight: -5 }); signalStrength -= 5; }
+          }
+
+          signalStrength = Math.max(-100, Math.min(100, signalStrength));
+
+          let verdict, verdictDetail;
+          if (signalStrength >= 30) { verdict = 'BULLISH'; verdictDetail = 'Multiple indicators align bullish. Consider long entry with tight risk management.'; }
+          else if (signalStrength >= 10) { verdict = 'LEAN_BULLISH'; verdictDetail = 'Slight bullish bias. Wait for confirmation before committing size.'; }
+          else if (signalStrength <= -30) { verdict = 'BEARISH'; verdictDetail = 'Multiple indicators signal bearish pressure. Consider reducing exposure.'; }
+          else if (signalStrength <= -10) { verdict = 'LEAN_BEARISH'; verdictDetail = 'Slight bearish bias. Monitor for breakdown.'; }
+          else { verdict = 'NEUTRAL'; verdictDetail = 'No clear directional bias. Range-bound conditions favor patience.'; }
+
+          // Classify asset
+          const isCrypto = meta.instrumentType === 'CRYPTOCURRENCY' || yahooSym.includes('-USD');
+          const isEtf = meta.instrumentType === 'ETF';
+          const isFx = meta.instrumentType === 'CURRENCY' || yahooSym.includes('=X');
+          const assetClass = isCrypto ? 'Cryptocurrency' : isFx ? 'Forex' : isEtf ? 'ETF' : 'Stock';
+
+          const researchData = {
+            symbol, assetClass,
+            name: meta.shortName || meta.longName || symbol,
+            exchange: meta.exchangeName || meta.fullExchangeName || 'Unknown',
+            currency: meta.currency || 'USD',
+            price: roundTo(currentPrice, currentPrice < 10 ? 4 : 2),
+            open: roundTo(dayOpen, 2), high: roundTo(dayHigh, 2), low: roundTo(dayLow, 2),
+            previousClose: roundTo(prevClose, 2),
+            changePct: roundTo(changePct, 4),
+            dataSource: 'yahoo_finance_live',
+            dataMode: 'real',
+            realDataAvailable: true,
+            technicals: {
+              sma10: roundTo(sma10Val, 4), sma30: roundTo(sma30Val, 4), sma50: roundTo(sma50Val, 4),
+              ema12: roundTo(ema12Val, 4), ema26: roundTo(ema26Val, 4),
+              macd: roundTo(macdVal, 4), rsi: roundTo(currentRsi, 2),
+              momentum: roundTo(mom20Val, 4), volatility: roundTo(vol20Val, 4),
+              regime,
+            },
+            levels: { support: roundTo(support, 4), resistance: roundTo(resistance, 4) },
+            signals,
+            aiVerdict: { verdict, signalStrength, detail: verdictDetail },
+            agents: [], // No agents track on-demand symbols
+            priceHistory: hist.slice(-60).map((p, i) => ({ tick: i, price: roundTo(p, 2) })),
+            chartRange: '3mo',
+            dataPoints: hist.length,
+            timestamp: Date.now(),
+          };
+
+          onDemandCache[symbol] = { data: researchData, timestamp: Date.now() };
+          resolve(researchData);
+        } catch (e) {
+          console.warn(`[Research] Yahoo Finance parse error for ${symbol}:`, e.message);
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.warn(`[Research] Yahoo Finance fetch error for ${symbol}:`, e.message);
+      resolve(null);
+    });
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+
 // ─── MARKET: RESEARCH ───
 // Comprehensive research endpoint — technical analysis, AI signals, and agent insights
-api.get('/api/market/research/:symbol', (req, res) => {
+api.get('/api/market/research/:symbol', async (req, res) => {
   const symbol = req.params.symbol.toUpperCase();
   const price = marketPrices[symbol];
   if (price === undefined) {
-    return json(res, 404, { error: `Symbol "${symbol}" not found. Available: ${Object.keys(marketPrices).join(', ')}` });
+    // On-demand lookup: fetch live from Yahoo Finance for any symbol
+    try {
+      const liveResearch = await fetchOnDemandResearch(symbol);
+      if (liveResearch) return json(res, 200, liveResearch);
+      return json(res, 404, { error: `Symbol "${symbol}" not found on Yahoo Finance. Check the ticker and try again.` });
+    } catch (e) {
+      return json(res, 500, { error: `Failed to fetch live data for "${symbol}": ${e.message}` });
+    }
   }
 
   const hist = priceHistory[symbol] || [price];
@@ -3024,11 +3191,48 @@ api.get('/api/market/research/:symbol', (req, res) => {
 });
 
 // ─── MARKET: SEARCH SYMBOLS ───
-api.get('/api/market/search', (req, res) => {
-  const q = (req.query.q || '').toUpperCase();
+api.get('/api/market/search', async (req, res) => {
+  const q = (req.query.q || '').toUpperCase().trim();
   if (!q) return json(res, 200, { results: Object.keys(marketPrices) });
-  const results = Object.keys(marketPrices).filter(s => s.includes(q));
-  json(res, 200, { results });
+
+  // First: match tracked symbols
+  const tracked = Object.keys(marketPrices).filter(s => s.includes(q));
+
+  // If matches found in tracked set, return them
+  if (tracked.length > 0) return json(res, 200, { results: tracked });
+
+  // No tracked match — try Yahoo Finance symbol validation
+  try {
+    const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(q)}?range=1d&interval=1d`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const yResp = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    clearTimeout(timeout);
+    if (yResp.ok) {
+      const yData = await yResp.json();
+      const meta = yData?.chart?.result?.[0]?.meta;
+      if (meta && meta.regularMarketPrice > 0) {
+        return json(res, 200, {
+          results: [q],
+          onDemand: true,
+          meta: {
+            symbol: meta.symbol || q,
+            name: meta.shortName || meta.longName || q,
+            price: meta.regularMarketPrice,
+            exchange: meta.exchangeName || 'Unknown'
+          }
+        });
+      }
+    }
+  } catch (e) {
+    // Yahoo lookup failed — fall through silently
+  }
+
+  // Nothing found
+  json(res, 200, { results: [] });
 });
 
 // ─── MARKET: AGENTS ───
