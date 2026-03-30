@@ -1192,25 +1192,39 @@ function SignalTracker({ investor, isMobile }) {
   const glass = { background: "rgba(255,255,255,0.03)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)" };
 
   useEffect(() => {
+    const controller = new AbortController();
+    const timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
+    const safeFetch = (url) => Promise.race([fetch(url, { headers, signal: controller.signal }), timeout(12000)]).catch(() => null);
+
     const fetchAll = async () => {
+      // Fetch stats and signals first (fast), heatmap in background (heavy)
       try {
-        const [statsRes, signalsRes, heatmapRes] = await Promise.all([
-          fetch(`${API_BASE}/signals/stats`, { headers }),
-          fetch(`${API_BASE}/signals?limit=100`, { headers }),
-          fetch(`${API_BASE}/signals/heatmap`, { headers }),
+        const [statsRes, signalsRes] = await Promise.all([
+          safeFetch(`${API_BASE}/signals/stats`),
+          safeFetch(`${API_BASE}/signals?limit=100`),
         ]);
-        if (statsRes.ok) setStats(await statsRes.json());
-        if (signalsRes.ok) { const d = await signalsRes.json(); setSignals(d.signals || []); }
-        if (heatmapRes.ok) setHeatmap(await heatmapRes.json());
+        if (statsRes?.ok) setStats(await statsRes.json());
+        if (signalsRes?.ok) { const d = await signalsRes.json(); setSignals(d.signals || []); }
       } catch (e) { console.error('Signal fetch error:', e); }
       setLoading(false);
+
+      // Heatmap loaded separately — non-blocking
+      try {
+        const heatmapRes = await safeFetch(`${API_BASE}/signals/heatmap`);
+        if (heatmapRes?.ok) setHeatmap(await heatmapRes.json());
+      } catch (e) { /* heatmap is non-critical */ }
     };
     fetchAll();
-    const interval = setInterval(fetchAll, 15000); // refresh every 15s
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchAll, 20000); // refresh every 20s
+    return () => { clearInterval(interval); controller.abort(); };
   }, []);
 
-  if (loading) return <div style={{ ...glass, padding: 40, textAlign: "center", color: "rgba(255,255,255,0.4)" }}>Loading signal intelligence...</div>;
+  if (loading) return (
+    <div style={{ ...glass, padding: 40, textAlign: "center", color: "rgba(255,255,255,0.4)" }}>
+      <div style={{ fontSize: 16, marginBottom: 8 }}>Connecting to Signal Engine...</div>
+      <div style={{ fontSize: 12 }}>Fetching signal data from trading server</div>
+    </div>
+  );
 
   const subTabs = [
     { id: "live", label: "Live Feed" },
