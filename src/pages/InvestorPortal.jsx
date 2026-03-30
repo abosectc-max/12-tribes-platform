@@ -4893,16 +4893,21 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
     return `http://${window.location.hostname}:4000/api`;
   })();
 
+  const [error, setError] = useState('');
+
   const fetchFundSummary = async () => {
     setLoading(true);
+    setError('');
     try {
       const [sumRes, allocRes] = await Promise.all([
         fetch(`${API}/admin/tax/fund-summary/${taxYear}`, { headers: authHeaders }),
         fetch(`${API}/admin/tax/allocations/${taxYear}`, { headers: authHeaders }),
       ]);
       if (sumRes.ok) { const d = await sumRes.json(); setFundSummary(d.summary || null); }
+      else { console.warn('[TaxAdmin] Fund summary fetch failed:', sumRes.status); }
       if (allocRes.ok) { const d = await allocRes.json(); setAllocations(d.allocations || []); }
-    } catch {}
+      else { console.warn('[TaxAdmin] Allocations fetch failed:', allocRes.status); }
+    } catch (err) { console.error('[TaxAdmin] Fetch error:', err); setError(err.message); }
     setLoading(false);
   };
 
@@ -4911,6 +4916,7 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
   const computeAllocations = async () => {
     setComputing(true);
     setMsg('');
+    setError('');
     try {
       const r = await fetch(`${API}/admin/tax/allocations/${taxYear}`, { method: 'POST', headers: authHeaders });
       if (r.ok) {
@@ -4919,8 +4925,11 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
         setFundSummary(d.fundTotals || fundSummary);
         setMsg(`K-1 allocations computed for ${d.allocations?.length || 0} investors`);
         setTimeout(() => setMsg(''), 4000);
+      } else {
+        const errData = await r.json().catch(() => ({}));
+        setError(errData.error || `Server returned ${r.status}`);
       }
-    } catch {}
+    } catch (err) { setError(`Network error: ${err.message}`); }
     setComputing(false);
   };
 
@@ -4949,6 +4958,7 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
       </div>
 
       {msg && <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(34,197,94,0.1)', color: '#22C55E', fontSize: 12 }}>{msg}</div>}
+      {error && <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(239,68,68,0.1)', color: '#EF4444', fontSize: 12 }}>⚠ {error}</div>}
 
       {loading && <div style={{ textAlign: 'center', padding: 30, color: 'rgba(255,255,255,0.3)' }}>Loading fund tax data...</div>}
 

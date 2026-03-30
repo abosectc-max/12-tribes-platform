@@ -6344,8 +6344,21 @@ api.post('/api/admin/tax/allocations/:year', auth, async (req, res) => {
   const taxYear = parseInt(req.params.year);
   if (isNaN(taxYear)) return json(res, 400, { error: 'Invalid tax year' });
 
-  const result = computeTaxAllocations(taxYear);
-  json(res, 200, { success: true, ...result });
+  try {
+    const result = computeTaxAllocations(taxYear);
+    // Normalize fundTotals to match fund-summary format for frontend compatibility
+    const ft = result.fundTotals || {};
+    const normalizedSummary = {
+      ...ft,
+      shortTermGainLoss: roundTo((ft.shortTermGains || 0) + (ft.shortTermLosses || 0), 2),
+      longTermGainLoss: roundTo((ft.longTermGains || 0) + (ft.longTermLosses || 0), 2),
+      totalTransactions: ft.totalTrades || 0,
+    };
+    json(res, 200, { success: true, fundTotals: normalizedSummary, allocations: result.allocations });
+  } catch (err) {
+    console.error(`[TaxEngine] K-1 computation failed for ${taxYear}:`, err.message, err.stack);
+    json(res, 500, { error: `K-1 computation failed: ${err.message}` });
+  }
 });
 
 // GET /api/admin/tax/allocations/:year — View computed K-1 allocations
