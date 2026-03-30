@@ -1557,6 +1557,21 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
   const allTimePnL = currentEquity - initialBalance;
   const allTimeReturn = initialBalance > 0 ? (allTimePnL / initialBalance * 100) : 0;
 
+  // Server-backed risk metrics (fallback when local snapshots are sparse)
+  const serverSharpe = perf.sharpeRatio || serverPerf?.sharpeRatio || 0;
+  const serverMaxDD = Math.abs(perf.maxDrawdown) || serverPerf?.maxDrawdown || 0;
+  const serverVolatility = perf.volatility || (() => {
+    const snaps = serverPerf?.snapshots;
+    if (!snaps || snaps.length < 3) return 0;
+    const r = [];
+    for (let i = 1; i < snaps.length; i++) {
+      if (snaps[i - 1].equity > 0) r.push((snaps[i].equity - snaps[i - 1].equity) / snaps[i - 1].equity * 100);
+    }
+    if (r.length < 2) return 0;
+    const m = r.reduce((a, b) => a + b, 0) / r.length;
+    return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / r.length);
+  })();
+
   // Override perf periods with server-computed data when snapshots are sparse
   const hasGoodHistory = perf.equityHistory.length >= 7;
   const periods = hasGoodHistory ? [
@@ -1751,9 +1766,10 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
         {/* Risk Metrics */}
         <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Risk Metrics</div>
-          <RiskBar label="Sharpe Ratio" value={perf.sharpeRatio} max={3} color="#00D4FF" />
-          <RiskBar label="Daily Volatility" value={perf.volatility} max={5} color="#F59E0B" suffix="%" />
-          <RiskBar label="Max Drawdown" value={perf.maxDrawdown} max={25} color="#EF4444" suffix="%" />
+          <RiskBar label="Sharpe Ratio" value={serverSharpe} max={3} color="#00D4FF" />
+          <RiskBar label="CAGR" value={serverPerf?.cagr || allTimeReturn} max={100} color="#10B981" suffix="%" />
+          <RiskBar label="Daily Volatility" value={serverVolatility} max={5} color="#F59E0B" suffix="%" />
+          <RiskBar label="Max Drawdown" value={serverMaxDD} max={25} color="#EF4444" suffix="%" />
           <div style={{ marginTop: 8, padding: "12px 14px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>Win / Loss Streak</span>
