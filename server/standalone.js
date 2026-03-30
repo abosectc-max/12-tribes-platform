@@ -1179,12 +1179,17 @@ function updatePositionValues() {
     pos.return_pct = roundTo((price / pos.entry_price - 1) * 100 * dir, 4);
   });
 
-  // Update wallet equity
+  // Update wallet equity + high-water mark
   db.findMany('wallets').forEach(wallet => {
     const positions = db.findMany('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN');
     const unrealized = positions.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
     wallet.unrealized_pnl = roundTo(unrealized, 2);
     wallet.equity = roundTo(wallet.balance + unrealized, 2);
+
+    // High-water mark: track peak equity for true max drawdown calculation
+    if (!wallet.peak_equity || wallet.equity > wallet.peak_equity) {
+      wallet.peak_equity = wallet.equity;
+    }
   });
   db._save('wallets');
   db._save('positions');
@@ -1307,8 +1312,9 @@ function preTradeRiskCheck(userId, wallet, order) {
     return { approved: false, reason: `Position $${orderValue.toFixed(0)} exceeds ${RISK.maxPositionSizePct}% limit ($${maxPosValue.toFixed(0)})` };
   }
 
-  // Drawdown check
-  const drawdown = ((wallet.initial_balance - wallet.equity) / wallet.initial_balance) * 100;
+  // Drawdown check — measured from peak equity (high-water mark), not initial balance
+  const peakEquity = wallet.peak_equity || wallet.initial_balance;
+  const drawdown = peakEquity > 0 ? ((peakEquity - wallet.equity) / peakEquity) * 100 : 0;
   if (drawdown >= RISK.killSwitchDrawdownPct) {
     wallet.kill_switch_active = true;
     db._save('wallets');
@@ -1409,6 +1415,7 @@ function closePosition(userId, positionId) {
   wallet.realized_pnl = (wallet.realized_pnl || 0) + pnl;
   if (pnl >= 0) wallet.win_count = (wallet.win_count || 0) + 1;
   else wallet.loss_count = (wallet.loss_count || 0) + 1;
+  if (!wallet.first_trade_at) wallet.first_trade_at = new Date().toISOString();
   db._save('wallets');
 
   // Record trade
@@ -1584,6 +1591,7 @@ api.post('/api/auth/register', async (req, res) => {
     balance: INITIAL_BALANCE,
     initial_balance: INITIAL_BALANCE,
     equity: INITIAL_BALANCE,
+    peak_equity: INITIAL_BALANCE,
     unrealized_pnl: 0,
     realized_pnl: 0,
     trade_count: 0,
@@ -1592,6 +1600,7 @@ api.post('/api/auth/register', async (req, res) => {
     deposit_amount: INITIAL_BALANCE,
     deposit_timestamp: new Date().toISOString(),
     kill_switch_active: false,
+    first_trade_at: null,
   });
 
   // Log login
@@ -2684,13 +2693,25 @@ api.get('/api/wallet', auth, (req, res) => {
     db._save('wallets');
   }
 
+  // Backfill peak_equity for legacy wallets
+  if (!wallet.peak_equity) {
+    wallet.peak_equity = Math.max(wallet.equity || 0, wallet.initial_balance || 100000);
+    db._save('wallets');
+  }
+
+  const peakEq = wallet.peak_equity || wallet.initial_balance;
+  const maxDrawdown = peakEq > 0 ? roundTo((peakEq - wallet.equity) / peakEq * 100, 2) : 0;
+
   json(res, 200, {
     id: wallet.id, balance: wallet.balance, initialBalance: wallet.initial_balance,
-    equity: wallet.equity, unrealizedPnL: wallet.unrealized_pnl, realizedPnL: wallet.realized_pnl,
+    equity: wallet.equity, peakEquity: wallet.peak_equity,
+    unrealizedPnL: wallet.unrealized_pnl, realizedPnL: wallet.realized_pnl,
+    maxDrawdown,
     tradeCount: wallet.trade_count, winCount: wallet.win_count, lossCount: wallet.loss_count,
     winRate: (wallet.win_count + wallet.loss_count) > 0 ? (wallet.win_count / (wallet.win_count + wallet.loss_count) * 100) : 0,
     killSwitchActive: wallet.kill_switch_active,
     depositTimestamp: wallet.deposit_timestamp,
+    firstTradeAt: wallet.first_trade_at,
   });
 });
 
@@ -2707,10 +2728,38 @@ api.get('/api/wallet/performance', auth, (req, res) => {
   const periodReturn = startEquity > 0 ? ((currentEquity - startEquity) / startEquity * 100) : 0;
   const allTimeReturn = wallet.initial_balance > 0 ? ((currentEquity - wallet.initial_balance) / wallet.initial_balance * 100) : 0;
 
+  // CAGR: Compound Annual Growth Rate — annualized return accounting for time
+  const firstTradeAt = wallet.first_trade_at || wallet.deposit_timestamp;
+  const daysActive = firstTradeAt ? Math.max(1, (Date.now() - new Date(firstTradeAt).getTime()) / (1000 * 60 * 60 * 24)) : 1;
+  const totalReturnRatio = wallet.initial_balance > 0 ? (currentEquity / wallet.initial_balance) : 1;
+  const cagr = daysActive >= 1 ? ((Math.pow(totalReturnRatio, 365 / daysActive) - 1) * 100) : 0;
+
+  // Max drawdown from peak equity (high-water mark)
+  const peakEquity = wallet.peak_equity || wallet.initial_balance;
+  const maxDrawdown = peakEquity > 0 ? ((peakEquity - currentEquity) / peakEquity * 100) : 0;
+
+  // Sharpe-like ratio: annualized return / volatility estimate from snapshots
+  let sharpeRatio = null;
+  if (snaps.length >= 5) {
+    const returns = [];
+    for (let i = 1; i < snaps.length; i++) {
+      if (snaps[i - 1].equity > 0) returns.push((snaps[i].equity - snaps[i - 1].equity) / snaps[i - 1].equity);
+    }
+    if (returns.length >= 3) {
+      const avgReturn = returns.reduce((s, r) => s + r, 0) / returns.length;
+      const variance = returns.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / returns.length;
+      const stdDev = Math.sqrt(variance);
+      sharpeRatio = stdDev > 0 ? roundTo((avgReturn / stdDev) * Math.sqrt(252), 2) : null; // Annualized
+    }
+  }
+
   json(res, 200, {
     period, currentEquity, initialBalance: wallet.initial_balance,
-    periodReturn, allTimeReturn,
+    periodReturn, allTimeReturn, cagr: roundTo(cagr, 2),
     allTimePnL: currentEquity - wallet.initial_balance,
+    peakEquity, maxDrawdown: roundTo(maxDrawdown, 2),
+    daysActive: roundTo(daysActive, 1),
+    sharpeRatio,
     snapshots: snaps.slice(-90),
   });
 });
@@ -2746,16 +2795,32 @@ api.get('/api/wallet/group', auth, (req, res) => {
 
   const totalEquity = wallets.reduce((s, w) => s + (w.equity || 0), 0);
   const totalInitial = wallets.reduce((s, w) => s + (w.initial_balance || 100000), 0);
+  const totalPeakEquity = wallets.reduce((s, w) => s + (w.peak_equity || w.initial_balance || 100000), 0);
   const totalRealized = wallets.reduce((s, w) => s + (w.realized_pnl || 0), 0);
   const totalUnrealized = wallets.reduce((s, w) => s + (w.unrealized_pnl || 0), 0);
   const totalWins = wallets.reduce((s, w) => s + (w.win_count || 0), 0);
   const totalLosses = wallets.reduce((s, w) => s + (w.loss_count || 0), 0);
 
+  // Fund-level CAGR
+  const earliestTrade = wallets.reduce((earliest, w) => {
+    if (w.first_trade_at && (!earliest || w.first_trade_at < earliest)) return w.first_trade_at;
+    return earliest;
+  }, null);
+  const fundDaysActive = earliestTrade ? Math.max(1, (Date.now() - new Date(earliestTrade).getTime()) / (1000 * 60 * 60 * 24)) : 1;
+  const fundReturnRatio = totalInitial > 0 ? (totalEquity / totalInitial) : 1;
+  const fundCagr = fundDaysActive >= 1 ? ((Math.pow(fundReturnRatio, 365 / fundDaysActive) - 1) * 100) : 0;
+
+  // Fund-level max drawdown from aggregate peak
+  const fundMaxDrawdown = totalPeakEquity > 0 ? ((totalPeakEquity - totalEquity) / totalPeakEquity * 100) : 0;
+
   json(res, 200, {
-    investorCount: wallets.length, totalEquity, totalInitial,
+    investorCount: wallets.length, totalEquity, totalInitial, totalPeakEquity,
     totalRealizedPnL: totalRealized, totalUnrealizedPnL: totalUnrealized,
     totalPnL: totalRealized + totalUnrealized,
     returnPct: totalInitial > 0 ? ((totalEquity / totalInitial - 1) * 100) : 0,
+    cagr: roundTo(fundCagr, 2),
+    maxDrawdown: roundTo(fundMaxDrawdown, 2),
+    daysActive: roundTo(fundDaysActive, 1),
     openPositions: db.count('positions', p => p.status === 'OPEN'),
     closedTrades: db.count('trades'),
     winRate: (totalWins + totalLosses) > 0 ? (totalWins / (totalWins + totalLosses) * 100) : 0,
@@ -2801,7 +2866,8 @@ api.get('/api/trading/risk', auth, (req, res) => {
   const trades = db.findMany('trades', t => t.user_id === req.userId).slice(-50);
   const events = db.findMany('risk_events', e => e.user_id === req.userId).slice(-20);
 
-  const drawdown = ((wallet.initial_balance - wallet.equity) / wallet.initial_balance * 100);
+  const peakEquity = wallet.peak_equity || wallet.initial_balance;
+  const drawdown = peakEquity > 0 ? ((peakEquity - wallet.equity) / peakEquity * 100) : 0;
   const totalTrades = (wallet.win_count || 0) + (wallet.loss_count || 0);
   const winRate = totalTrades > 0 ? (wallet.win_count / totalTrades * 100) : 0;
 
