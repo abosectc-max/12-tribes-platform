@@ -2908,8 +2908,13 @@ function FeedbackView({ investor, isMobile }) {
   const [myFeedback, setMyFeedback] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
-  const API = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) || 'https://one2-tribes-api.onrender.com/api';
-  const token = getSession()?.token;
+  const API = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    return `http://${window.location.hostname}:4000/api`;
+  })();
+  const token = (() => {
+    try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
+  })();
 
   useEffect(() => {
     fetchMyFeedback();
