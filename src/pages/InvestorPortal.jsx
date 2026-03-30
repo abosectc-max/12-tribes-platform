@@ -28,20 +28,20 @@ const {
 //   Apple Liquid Glass UI
 // ═══════════════════════════════════════════
 
-// === GRAPHITE GLASS STYLES ===
+// === APPLE LIQUID GLASS STYLES ===
 const glass = {
-  background: "rgba(38,38,42,0.85)",
-  backdropFilter: "blur(40px) saturate(150%)",
-  WebkitBackdropFilter: "blur(40px) saturate(150%)",
-  border: "1px solid rgba(255,255,255,0.08)",
+  background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
+  backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+  WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+  border: "1px solid rgba(255,255,255,0.18)",
   borderRadius: "24px",
-  boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.15), 0 0 80px rgba(120,119,198,0.04), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.05)",
 };
 
 const inputStyle = {
   width: "100%", padding: "14px 18px", borderRadius: 16,
-  border: "1px solid rgba(255,255,255,0.08)",
-  background: "rgba(30,30,34,0.9)", color: "#fff", fontSize: 15,
+  border: "1px solid rgba(255,255,255,0.12)",
+  background: "rgba(255,255,255,0.06)", color: "#fff", fontSize: 15,
   outline: "none", transition: "all 0.2s", boxSizing: "border-box",
   fontFamily: "inherit",
 };
@@ -1578,8 +1578,9 @@ function ResearchView({ isMobile }) {
   };
 
   const glass = {
-    background: "rgba(38,38,42,0.8)", border: "1px solid rgba(255,255,255,0.06)",
-    borderRadius: 18, backdropFilter: "blur(20px)",
+    background: "linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.04) 100%)", border: "1px solid rgba(255,255,255,0.15)",
+    borderRadius: 18, backdropFilter: "blur(60px) saturate(200%) brightness(1.1)", WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)",
   };
 
   const signalColor = (signal) => {
@@ -2069,7 +2070,7 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
                   <button key={qa} onClick={() => setAmount(String(qa))} style={{
                     padding: "8px 16px", borderRadius: 12, cursor: "pointer",
                     border: parseFloat(amount) === qa ? "1px solid rgba(0,212,255,0.4)" : "1px solid rgba(255,255,255,0.08)",
-                    background: parseFloat(amount) === qa ? "rgba(0,212,255,0.12)" : "rgba(38,38,42,0.6)",
+                    background: parseFloat(amount) === qa ? "rgba(0,212,255,0.12)" : "rgba(255,255,255,0.06)",
                     color: parseFloat(amount) === qa ? "#00D4FF" : "rgba(255,255,255,0.5)",
                     fontSize: 13, fontWeight: 600, transition: "all 0.15s",
                   }}>${qa.toLocaleString()}</button>
@@ -2121,7 +2122,7 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
                 <button key={m.key} onClick={() => setMethod(m.key)} style={{
                   padding: "10px 16px", borderRadius: 14, cursor: "pointer",
                   border: method === m.key ? "1px solid rgba(0,212,255,0.3)" : "1px solid rgba(255,255,255,0.06)",
-                  background: method === m.key ? "rgba(0,212,255,0.1)" : "rgba(38,38,42,0.6)",
+                  background: method === m.key ? "rgba(0,212,255,0.1)" : "rgba(255,255,255,0.06)",
                   color: method === m.key ? "#00D4FF" : "rgba(255,255,255,0.5)",
                   fontSize: 12, fontWeight: 600, transition: "all 0.15s",
                 }}>{m.icon} {m.label}</button>
@@ -2249,12 +2250,12 @@ function FundManagementView({ investorId, wallet, isMobile }) {
   const wMethod = settings?.withdrawal?.method || 'bank_transfer';
 
   const glassStyle = {
-    background: "rgba(38,38,42,0.85)",
-    backdropFilter: "blur(40px) saturate(150%)",
-    WebkitBackdropFilter: "blur(40px) saturate(150%)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
+    backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    border: "1px solid rgba(255,255,255,0.18)",
     borderRadius: 24,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.15), 0 0 80px rgba(120,119,198,0.04), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.05)",
   };
 
   const pillBtn = (active, color = "#00D4FF") => ({
@@ -2635,12 +2636,12 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
     : 0;
 
   const glassStyle = {
-    background: "rgba(38,38,42,0.85)",
-    backdropFilter: "blur(40px) saturate(150%)",
-    WebkitBackdropFilter: "blur(40px) saturate(150%)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
+    backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    border: "1px solid rgba(255,255,255,0.18)",
     borderRadius: 24,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.15), 0 0 80px rgba(120,119,198,0.04), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.05)",
   };
 
   if (!tradingActive && !isStarting) {
@@ -3223,12 +3224,12 @@ function FeedbackView({ investor, isMobile }) {
   };
 
   const glassStyle = {
-    background: "rgba(38,38,42,0.85)",
-    backdropFilter: "blur(40px) saturate(150%)",
-    WebkitBackdropFilter: "blur(40px) saturate(150%)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
+    backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    border: "1px solid rgba(255,255,255,0.18)",
     borderRadius: 24,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.15), 0 0 80px rgba(120,119,198,0.04), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.05)",
   };
 
   const statusColors = {
@@ -3736,11 +3737,12 @@ function TermsAcceptanceScreen({ user, onAccept }) {
   };
 
   const glassStyle = {
-    background: "rgba(38,38,42,0.85)",
-    backdropFilter: "blur(40px) saturate(150%)",
-    WebkitBackdropFilter: "blur(40px) saturate(150%)",
-    border: "1px solid rgba(255,255,255,0.08)",
+    background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
+    backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    border: "1px solid rgba(255,255,255,0.18)",
     borderRadius: 24,
+    boxShadow: "0 8px 32px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.25)",
   };
 
   return (
@@ -4212,11 +4214,12 @@ function AdminPanel({ investor, isMobile }) {
   };
 
   const glass = {
-    background: "rgba(34,34,38,0.85)",
-    backdropFilter: "blur(40px) saturate(150%)",
-    WebkitBackdropFilter: "blur(40px) saturate(150%)",
-    border: "1px solid rgba(255,255,255,0.06)",
+    background: "linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.04) 50%, rgba(200,220,255,0.06) 100%)",
+    backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+    border: "1px solid rgba(255,255,255,0.15)",
     borderRadius: 20,
+    boxShadow: "0 8px 32px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.2)",
   };
 
   const pending = requests.filter(r => r.status === 'pending');

@@ -18,12 +18,12 @@ const {
 // ═══════════════════════════════════════════
 
 const glass = (extra = {}) => ({
-  background: "rgba(255,255,255,0.07)",
-  backdropFilter: "blur(40px) saturate(180%)",
-  WebkitBackdropFilter: "blur(40px) saturate(180%)",
-  border: "1px solid rgba(255,255,255,0.12)",
+  background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
+  backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+  WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+  border: "1px solid rgba(255,255,255,0.18)",
   borderRadius: 24, padding: 24,
-  boxShadow: "0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.15), 0 0 80px rgba(120,119,198,0.04), inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.05)",
   ...extra,
 });
 

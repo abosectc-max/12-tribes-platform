@@ -15,12 +15,12 @@ import BrandLogo from '../components/BrandLogo.jsx';
 // ═══════════════════════════════════════════
 
 const glass = (extra = {}) => ({
-  background: "rgba(255,255,255,0.07)",
-  backdropFilter: "blur(30px) saturate(180%)",
-  WebkitBackdropFilter: "blur(30px) saturate(180%)",
-  border: "1px solid rgba(255,255,255,0.1)",
+  background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(200,220,255,0.08) 100%)",
+  backdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+  WebkitBackdropFilter: "blur(60px) saturate(200%) brightness(1.1)",
+  border: "1px solid rgba(255,255,255,0.18)",
   borderRadius: 20, padding: 16,
-  boxShadow: "0 4px 20px rgba(0,0,0,0.25)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.25)",
   ...extra,
 });
 
