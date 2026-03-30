@@ -1282,7 +1282,7 @@ function SignalTracker({ investor, isMobile }) {
           {signals.length === 0 ? (
             <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>Signals will appear here as trading begins...</div>
           ) : (
-            {isMobile ? (
+            isMobile ? (
               /* Mobile: Card-based signal feed */
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {signals.slice(0, 30).map((sig, i) => (
@@ -1368,7 +1368,7 @@ function SignalTracker({ investor, isMobile }) {
                   ))}
                 </tbody>
               </table>
-            )}
+            )
           )}
         </div>
       )}
