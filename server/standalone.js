@@ -2408,6 +2408,13 @@ api.put('/api/fund-settings', auth, async (req, res) => {
 api.get('/api/wallet', auth, (req, res) => {
   const wallet = db.findOne('wallets', w => w.user_id === req.userId);
   if (!wallet) return json(res, 404, { error: 'Wallet not found' });
+
+  // Backfill initial_balance for legacy wallets
+  if (wallet.initial_balance == null || wallet.initial_balance === 0) {
+    wallet.initial_balance = 100000;
+    db._save('wallets');
+  }
+
   json(res, 200, {
     id: wallet.id, balance: wallet.balance, initialBalance: wallet.initial_balance,
     equity: wallet.equity, unrealizedPnL: wallet.unrealized_pnl, realizedPnL: wallet.realized_pnl,
@@ -2459,8 +2466,17 @@ api.post('/api/wallet/snapshot', auth, (req, res) => {
 // ─── WALLET: GROUP ───
 api.get('/api/wallet/group', auth, (req, res) => {
   const wallets = db.findMany('wallets');
-  const totalEquity = wallets.reduce((s, w) => s + w.equity, 0);
-  const totalInitial = wallets.reduce((s, w) => s + w.initial_balance, 0);
+
+  // Backfill: ensure every wallet has initial_balance (legacy records may be missing it)
+  for (const w of wallets) {
+    if (w.initial_balance == null || w.initial_balance === 0) {
+      w.initial_balance = 100000; // default seed capital
+      db._save('wallets');
+    }
+  }
+
+  const totalEquity = wallets.reduce((s, w) => s + (w.equity || 0), 0);
+  const totalInitial = wallets.reduce((s, w) => s + (w.initial_balance || 100000), 0);
   const totalRealized = wallets.reduce((s, w) => s + (w.realized_pnl || 0), 0);
   const totalUnrealized = wallets.reduce((s, w) => s + (w.unrealized_pnl || 0), 0);
   const totalWins = wallets.reduce((s, w) => s + (w.win_count || 0), 0);
@@ -4107,6 +4123,13 @@ function ensureAutoTradingActive() {
         created_at: new Date().toISOString(),
       });
       console.log(`[Boot] Auto-created wallet for user ${user.id}`);
+    }
+
+    // Backfill initial_balance for legacy wallets missing this field
+    if (wallet.initial_balance == null || wallet.initial_balance === 0) {
+      wallet.initial_balance = 100000;
+      db._save('wallets');
+      console.log(`[Boot] Backfilled initial_balance for user ${user.id}`);
     }
 
     // Reset kill switch on boot — allows trading to resume after restart
