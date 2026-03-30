@@ -6592,11 +6592,103 @@ function ensureAutoTradingActive() {
   return activatedCount;
 }
 
+// ─── TAX LOT BACKFILL — Ensure all open positions have tax lots ───
+// Render Starter has ephemeral storage: tax_lots may be empty after redeploy
+// while positions persist in db. Backfill missing lots so closePosition()
+// can properly dispose them and generate tax_ledger entries for K-1.
+function backfillMissingTaxLots() {
+  const openPositions = db.findMany('positions', p => p.status === 'OPEN');
+  let backfilled = 0;
+
+  for (const pos of openPositions) {
+    // Check if a tax lot already exists for this position
+    const existingLot = db.findOne('tax_lots', l => l.position_id === pos.id);
+    if (existingLot) continue;
+
+    try {
+      createTaxLot(
+        pos.id,
+        pos.user_id,
+        pos.symbol,
+        pos.side,
+        pos.quantity,
+        pos.entry_price,
+        pos.agent || null
+      );
+      backfilled++;
+    } catch (err) {
+      console.error(`[TaxEngine] Backfill failed for position ${pos.id}:`, err.message);
+    }
+  }
+
+  if (backfilled > 0) {
+    console.log(`[TaxEngine] Backfilled ${backfilled} tax lots for orphaned positions`);
+  }
+
+  // Also backfill from recent trade history to populate the tax ledger
+  const recentTrades = db.findMany('trades', t => t.status === 'CLOSED');
+  let ledgerBackfilled = 0;
+
+  for (const trade of recentTrades) {
+    // Check if ledger entry exists for this trade
+    const existingEntry = db.findOne('tax_ledger', e => e.position_id === trade.position_id || e.position_id === trade.id);
+    if (existingEntry) continue;
+
+    const holdDays = trade.opened_at && trade.closed_at
+      ? Math.floor((new Date(trade.closed_at) - new Date(trade.opened_at)) / (1000 * 60 * 60 * 24))
+      : 0;
+    const holdingPeriod = holdDays >= TAX_CONFIG.shortTermThresholdDays ? 'LONG_TERM' : 'SHORT_TERM';
+    const dir = trade.side === 'LONG' ? 1 : -1;
+    const costBasis = roundTo((trade.entry_price || 0) * (trade.quantity || 0), 2);
+    const proceeds = roundTo((trade.close_price || 0) * (trade.quantity || 0), 2);
+    const gainLoss = roundTo((proceeds - costBasis) * dir, 2);
+
+    const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(trade.symbol);
+
+    try {
+      db.insert('tax_ledger', {
+        user_id: trade.user_id,
+        tax_lot_id: null,
+        position_id: trade.position_id || trade.id,
+        symbol: trade.symbol,
+        side: trade.side,
+        asset_class: isCrypto ? 'crypto' : 'equity',
+        quantity: trade.quantity,
+        acquired_at: trade.opened_at,
+        disposed_at: trade.closed_at,
+        hold_days: holdDays,
+        holding_period: holdingPeriod,
+        cost_basis: costBasis,
+        proceeds,
+        gain_loss: gainLoss,
+        wash_sale_disallowed: 0,
+        adjusted_gain_loss: gainLoss,
+        agent: trade.agent || null,
+        cost_basis_method: TAX_CONFIG.costBasisMethod,
+        is_wash_sale: false,
+        form_8949_box: holdingPeriod === 'SHORT_TERM' ? 'A' : 'D',
+      });
+      ledgerBackfilled++;
+    } catch (err) {
+      console.error(`[TaxEngine] Ledger backfill failed for trade ${trade.id}:`, err.message);
+    }
+  }
+
+  if (ledgerBackfilled > 0) {
+    console.log(`[TaxEngine] Backfilled ${ledgerBackfilled} tax ledger entries from trade history`);
+  }
+
+  return { backfilled, ledgerBackfilled };
+}
+
 // Start
 server.listen(PORT, '0.0.0.0', () => {
   // Activate auto-trading for all investors on server boot
   const activated = ensureAutoTradingActive();
   const totalTraders = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading).length;
+
+  // ── Tax Engine: Backfill missing tax lots & ledger entries on boot ──
+  const taxBackfill = backfillMissingTaxLots();
 
   console.log('');
   console.log('═══════════════════════════════════════════');
@@ -6615,6 +6707,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   AutoTrade: ENABLED (${AUTO_TRADE_CONFIG.tickIntervalMs / 1000}s tick)`);
   console.log(`   Traders:   ${totalTraders} active${activated > 0 ? ` (${activated} re-activated on boot)` : ''}`);
   console.log(`   Agents:    ${AI_AGENTS.map(a => a.name).join(', ')}`);
+  console.log(`   TaxEngine: ${taxBackfill.backfilled} lots backfilled, ${taxBackfill.ledgerBackfilled} ledger entries recovered`);
   console.log(`   KeepAlive: ${SELF_URL ? 'ON (4min ping)' : 'OFF (set RENDER_EXTERNAL_URL)'}`);
   console.log('');
   console.log('   All investors trading 24/7/365.');
