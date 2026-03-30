@@ -76,7 +76,7 @@ const DB_TABLES = [
   'users', 'wallets', 'positions', 'trades', 'snapshots',
   'login_log', 'agent_stats', 'broker_connections', 'risk_events',
   'order_queue', 'access_requests', 'auto_trade_log', 'fund_settings',
-  'verification_codes', 'qa_reports', 'feedback',
+  'verification_codes', 'qa_reports', 'feedback', 'withdrawal_requests',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -1834,6 +1834,97 @@ api.get('/api/feedback', auth, (req, res) => {
   const myFeedback = (db.tables.feedback || []).filter(f => f.userId === req.userId);
   const sorted = [...myFeedback].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   json(res, 200, { feedback: sorted });
+});
+
+// ─── WITHDRAWAL REQUESTS ───
+
+// Submit a withdrawal request (any authenticated investor)
+api.post('/api/withdrawals', auth, async (req, res) => {
+  const body = await readBody(req);
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user) return json(res, 401, { error: 'User not found' });
+
+  const wallet = db.findOne('wallets', w => w.user_id === req.userId);
+  if (!wallet) return json(res, 404, { error: 'Wallet not found' });
+
+  const amount = parseFloat(body.amount);
+  if (!amount || amount <= 0) return json(res, 400, { error: 'Invalid withdrawal amount' });
+
+  const availableBalance = wallet.equity || wallet.balance || 0;
+  if (amount > availableBalance) return json(res, 400, { error: `Insufficient funds. Available balance: $${availableBalance.toLocaleString()}` });
+
+  const method = body.method || 'bank_transfer';
+  const notes = (body.notes || '').trim().slice(0, 500);
+
+  // Build withdrawal request record
+  const request = {
+    id: `wr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId: req.userId,
+    userName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email,
+    userEmail: user.email,
+    amount,
+    method,
+    notes,
+    walletEquityAtRequest: availableBalance,
+    status: 'pending',       // pending | approved | processing | completed | denied
+    adminNotes: '',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    processedAt: null,
+    completedAt: null,
+  };
+
+  db.insert('withdrawal_requests', request);
+  json(res, 201, { success: true, withdrawal: request });
+});
+
+// Get user's own withdrawal requests
+api.get('/api/withdrawals', auth, (req, res) => {
+  const myRequests = (db.tables.withdrawal_requests || []).filter(w => w.userId === req.userId);
+  const sorted = [...myRequests].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  json(res, 200, { withdrawals: sorted });
+});
+
+// Admin: Get all withdrawal requests
+api.get('/api/admin/withdrawals', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const all = db.tables.withdrawal_requests || [];
+  const sorted = [...all].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  json(res, 200, { withdrawals: sorted });
+});
+
+// Admin: Update withdrawal request status
+api.put('/api/admin/withdrawals/:requestId', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  const wr = db.findOne('withdrawal_requests', w => w.id === req.params.requestId);
+  if (!wr) return json(res, 404, { error: 'Withdrawal request not found' });
+
+  const prevStatus = wr.status;
+  if (body.status) wr.status = body.status;
+  if (body.adminNotes !== undefined) wr.adminNotes = body.adminNotes;
+  wr.updatedAt = new Date().toISOString();
+
+  if (body.status === 'processing' && prevStatus === 'pending') {
+    wr.processedAt = new Date().toISOString();
+  }
+  if (body.status === 'completed' && prevStatus !== 'completed') {
+    wr.completedAt = new Date().toISOString();
+    // Deduct from wallet
+    const wallet = db.findOne('wallets', w => w.user_id === wr.userId);
+    if (wallet) {
+      wallet.balance = Math.max(0, (wallet.balance || 0) - wr.amount);
+      wallet.equity = Math.max(0, (wallet.equity || 0) - wr.amount);
+      db._save('wallets');
+    }
+  }
+
+  db.update('withdrawal_requests', w => w.id === wr.id, wr);
+  json(res, 200, { success: true, withdrawal: wr });
 });
 
 // ─── FUND SETTINGS (cross-device sync) ───

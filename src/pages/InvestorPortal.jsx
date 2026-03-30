@@ -1952,6 +1952,267 @@ function ResearchView({ isMobile }) {
 //   FUND MANAGEMENT VIEW
 // ════════════════════════════════════════
 
+// ════════════════════════════════════════
+//   WITHDRAWAL REQUEST PANEL
+// ════════════════════════════════════════
+
+function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pillBtn }) {
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState('bank_transfer');
+  const [notes, setNotes] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState('');
+  const [error, setError] = useState('');
+  const [requests, setRequests] = useState([]);
+  const [loadingRequests, setLoadingRequests] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+
+  const API = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    return `http://${window.location.hostname}:4000/api`;
+  })();
+  const token = (() => {
+    try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
+  })();
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  const availableBalance = wallet?.equity || wallet?.balance || 0;
+
+  const fetchRequests = async () => {
+    try {
+      const r = await fetch(`${API}/withdrawals`, { headers: authHeaders });
+      if (r.ok) {
+        const data = await r.json();
+        setRequests(data.withdrawals || []);
+      }
+    } catch {}
+    setLoadingRequests(false);
+  };
+
+  useEffect(() => { fetchRequests(); }, []);
+
+  const handleSubmit = async () => {
+    const withdrawAmt = parseFloat(amount);
+    if (!withdrawAmt || withdrawAmt <= 0) { setError('Enter a valid amount'); return; }
+    if (withdrawAmt > availableBalance) { setError(`Amount exceeds available balance ($${availableBalance.toLocaleString()})`); return; }
+
+    setSubmitting(true);
+    setError('');
+    try {
+      const r = await fetch(`${API}/withdrawals`, {
+        method: 'POST', headers: authHeaders,
+        body: JSON.stringify({ amount: withdrawAmt, method, notes: notes.trim() }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        setSuccess(`Withdrawal request for $${withdrawAmt.toLocaleString()} submitted successfully`);
+        setAmount('');
+        setNotes('');
+        setShowForm(false);
+        fetchRequests();
+        setTimeout(() => setSuccess(''), 5000);
+      } else {
+        setError(data.error || 'Failed to submit request');
+      }
+    } catch { setError('Network error. Please try again.'); }
+    setSubmitting(false);
+  };
+
+  const quickAmounts = [1000, 5000, 10000, 25000, 50000].filter(a => a <= availableBalance);
+
+  const statusConfig = {
+    pending: { bg: 'rgba(245,158,11,0.1)', color: '#F59E0B', label: 'Pending Review' },
+    approved: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF', label: 'Approved' },
+    processing: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7', label: 'Processing' },
+    completed: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E', label: 'Completed' },
+    denied: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444', label: 'Denied' },
+  };
+
+  const pendingTotal = requests.filter(r => ['pending', 'approved', 'processing'].includes(r.status))
+    .reduce((s, r) => s + r.amount, 0);
+
+  return (
+    <div style={{ ...glassStyle, padding: isMobile ? 20 : 28 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>Withdraw Funds</div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
+            Available: <span style={{ color: "#10B981", fontWeight: 700 }}>${availableBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+            {pendingTotal > 0 && <span style={{ color: "#F59E0B", marginLeft: 8 }}>({`$${pendingTotal.toLocaleString()} pending`})</span>}
+          </div>
+        </div>
+        <button onClick={() => setShowForm(!showForm)} style={{
+          padding: "10px 20px", borderRadius: 14, cursor: "pointer", border: "none",
+          background: showForm ? "rgba(255,255,255,0.06)" : "linear-gradient(135deg, #00D4FF, #A855F7)",
+          color: "#fff", fontSize: 13, fontWeight: 700, transition: "all 0.2s",
+        }}>
+          {showForm ? "Cancel" : "Request Withdrawal"}
+        </button>
+      </div>
+
+      {success && (
+        <div style={{ padding: "12px 16px", borderRadius: 14, background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.15)", color: "#22C55E", fontSize: 13, marginBottom: 16 }}>
+          ✓ {success}
+        </div>
+      )}
+
+      {/* Withdrawal Request Form */}
+      {showForm && (
+        <div style={{ padding: 20, borderRadius: 18, background: "rgba(30,30,34,0.6)", border: "1px solid rgba(255,255,255,0.06)", marginBottom: 16 }}>
+
+          {/* Quick Amount Buttons */}
+          {quickAmounts.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Quick Select</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {quickAmounts.map(qa => (
+                  <button key={qa} onClick={() => setAmount(String(qa))} style={{
+                    padding: "8px 16px", borderRadius: 12, cursor: "pointer",
+                    border: parseFloat(amount) === qa ? "1px solid rgba(0,212,255,0.4)" : "1px solid rgba(255,255,255,0.08)",
+                    background: parseFloat(amount) === qa ? "rgba(0,212,255,0.12)" : "rgba(38,38,42,0.6)",
+                    color: parseFloat(amount) === qa ? "#00D4FF" : "rgba(255,255,255,0.5)",
+                    fontSize: 13, fontWeight: 600, transition: "all 0.15s",
+                  }}>${qa.toLocaleString()}</button>
+                ))}
+                <button onClick={() => setAmount(String(Math.floor(availableBalance)))} style={{
+                  padding: "8px 16px", borderRadius: 12, cursor: "pointer",
+                  border: "1px solid rgba(239,68,68,0.2)",
+                  background: "rgba(239,68,68,0.06)",
+                  color: "#EF4444", fontSize: 13, fontWeight: 600,
+                }}>Max</button>
+              </div>
+            </div>
+          )}
+
+          {/* Amount Input */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Withdrawal Amount ($)</div>
+            <input
+              type="number"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              placeholder="0.00"
+              min="0"
+              max={availableBalance}
+              style={{
+                width: "100%", padding: "14px 18px", borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.08)", background: "rgba(30,30,34,0.9)",
+                color: "#fff", fontSize: 22, fontWeight: 700, outline: "none",
+                boxSizing: "border-box", fontFamily: "inherit",
+              }}
+            />
+            {parseFloat(amount) > 0 && (
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", marginTop: 4 }}>
+                Remaining after withdrawal: ${(availableBalance - parseFloat(amount)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </div>
+            )}
+          </div>
+
+          {/* Method */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Withdrawal Method</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {[
+                { key: "bank_transfer", label: "Bank Transfer", icon: "🏦" },
+                { key: "crypto_wallet", label: "Crypto Wallet", icon: "₿" },
+                { key: "wire_transfer", label: "Wire Transfer", icon: "🌐" },
+                { key: "check", label: "Check", icon: "📄" },
+              ].map(m => (
+                <button key={m.key} onClick={() => setMethod(m.key)} style={{
+                  padding: "10px 16px", borderRadius: 14, cursor: "pointer",
+                  border: method === m.key ? "1px solid rgba(0,212,255,0.3)" : "1px solid rgba(255,255,255,0.06)",
+                  background: method === m.key ? "rgba(0,212,255,0.1)" : "rgba(38,38,42,0.6)",
+                  color: method === m.key ? "#00D4FF" : "rgba(255,255,255,0.5)",
+                  fontSize: 12, fontWeight: 600, transition: "all 0.15s",
+                }}>{m.icon} {m.label}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Notes (optional)</div>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Any special instructions for this withdrawal..."
+              maxLength={500}
+              style={{
+                width: "100%", minHeight: 70, padding: "12px 16px", borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.08)", background: "rgba(30,30,34,0.9)",
+                color: "#fff", fontSize: 13, outline: "none", resize: "vertical",
+                fontFamily: "inherit", boxSizing: "border-box",
+              }}
+            />
+          </div>
+
+          {error && (
+            <div style={{ padding: "10px 14px", borderRadius: 12, background: "rgba(239,68,68,0.1)", color: "#EF4444", fontSize: 12, marginBottom: 12 }}>
+              {error}
+            </div>
+          )}
+
+          <button onClick={handleSubmit} disabled={submitting || !amount || parseFloat(amount) <= 0} style={{
+            width: "100%", padding: "14px 0", borderRadius: 14, border: "none",
+            cursor: submitting ? "wait" : "pointer",
+            background: parseFloat(amount) > 0 ? "linear-gradient(135deg, #00D4FF, #A855F7)" : "rgba(255,255,255,0.06)",
+            color: "#fff", fontSize: 14, fontWeight: 700, transition: "all 0.2s",
+            opacity: submitting ? 0.6 : 1,
+          }}>
+            {submitting ? 'Submitting Request...' : `Request $${parseFloat(amount || 0).toLocaleString()} Withdrawal`}
+          </button>
+        </div>
+      )}
+
+      {/* Withdrawal Request History */}
+      {loadingRequests ? (
+        <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, textAlign: "center", padding: 16 }}>Loading requests...</div>
+      ) : requests.length === 0 ? (
+        <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 13, textAlign: "center", padding: 20 }}>
+          No withdrawal requests yet. Click "Request Withdrawal" to get started.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Request History</div>
+          {requests.map(wr => {
+            const sc = statusConfig[wr.status] || statusConfig.pending;
+            return (
+              <div key={wr.id} style={{
+                padding: "14px 16px", borderRadius: 16,
+                background: "rgba(30,30,34,0.5)", border: "1px solid rgba(255,255,255,0.06)",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "#fff" }}>
+                    ${wr.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </div>
+                  <span style={{ padding: "4px 10px", borderRadius: 8, background: sc.bg, color: sc.color, fontSize: 10, fontWeight: 700 }}>
+                    {sc.label}
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 16, fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                  <span>{wr.method?.replace(/_/g, ' ')}</span>
+                  <span>{new Date(wr.createdAt).toLocaleDateString()}</span>
+                  {wr.completedAt && <span style={{ color: "#22C55E" }}>Completed {new Date(wr.completedAt).toLocaleDateString()}</span>}
+                </div>
+                {wr.notes && (
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 8, fontStyle: "italic" }}>"{wr.notes}"</div>
+                )}
+                {wr.adminNotes && (
+                  <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.12)" }}>
+                    <div style={{ fontSize: 10, color: "#A855F7", fontWeight: 600, marginBottom: 2 }}>Admin Response</div>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)" }}>{wr.adminNotes}</div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function FundManagementView({ investorId, wallet, isMobile }) {
   const [settings, setSettings] = useState(() => {
     initFundManager(investorId);
@@ -2179,10 +2440,13 @@ function FundManagementView({ investorId, wallet, isMobile }) {
         </div>
       )}
 
+      {/* ═══ REQUEST WITHDRAWAL ═══ */}
+      <WithdrawalRequestPanel investorId={investorId} wallet={wallet} isMobile={isMobile} glassStyle={glassStyle} pillBtn={pillBtn} />
+
       {/* Withdrawal History */}
       {withdrawHistory.length > 0 && (
         <div style={{ ...glassStyle, padding: isMobile ? 20 : 28 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Withdrawal History</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Scheduled Withdrawal History</div>
           {withdrawHistory.map((w, i) => (
             <div key={i} style={{
               display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -3698,6 +3962,8 @@ function AdminPanel({ investor, isMobile }) {
   const [deleteLoading, setDeleteLoading] = useState(null);
   const [adminFeedback, setAdminFeedback] = useState([]);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [adminWithdrawals, setAdminWithdrawals] = useState([]);
+  const [withdrawalsLoading, setWithdrawalsLoading] = useState(false);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [createForm, setCreateForm] = useState({ email: '', firstName: '', lastName: '', role: 'investor' });
   const [createLoading, setCreateLoading] = useState(false);
@@ -3779,7 +4045,26 @@ function AdminPanel({ investor, isMobile }) {
     } catch { /* silent */ }
   };
 
-  useEffect(() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); }, [fetchRequests, fetchUsers, fetchHealth, fetchQaReports, fetchAdminFeedback]);
+  const fetchAdminWithdrawals = useCallback(async () => {
+    setWithdrawalsLoading(true);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/withdrawals`, { headers: authHeaders });
+      if (resp.ok) { const data = await resp.json(); setAdminWithdrawals(data.withdrawals || []); }
+    } catch { /* silent */ }
+    setWithdrawalsLoading(false);
+  }, [token]);
+
+  const updateWithdrawalStatus = async (wrId, status, adminNotes) => {
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/admin/withdrawals/${wrId}`, {
+        method: 'PUT', headers: authHeaders,
+        body: JSON.stringify({ status, ...(adminNotes !== undefined ? { adminNotes } : {}) }),
+      });
+      if (resp.ok) fetchAdminWithdrawals();
+    } catch { /* silent */ }
+  };
+
+  useEffect(() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); }, [fetchRequests, fetchUsers, fetchHealth, fetchQaReports, fetchAdminFeedback, fetchAdminWithdrawals]);
 
   // Auto-refresh health every 30s when on health tab
   useEffect(() => {
@@ -3972,6 +4257,9 @@ function AdminPanel({ investor, isMobile }) {
         </button>
         <button onClick={() => { setActiveSection('feedback'); fetchAdminFeedback(); }} style={tabStyle(activeSection === 'feedback')}>
           Feedback {adminFeedback.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(0,212,255,0.2)', color: '#00D4FF', fontSize: 10, fontWeight: 800 }}>{adminFeedback.length}</span>}
+        </button>
+        <button onClick={() => { setActiveSection('withdrawals'); fetchAdminWithdrawals(); }} style={tabStyle(activeSection === 'withdrawals')}>
+          Withdrawals {adminWithdrawals.filter(w => w.status === 'pending').length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(245,158,11,0.3)', color: '#F59E0B', fontSize: 10, fontWeight: 800 }}>{adminWithdrawals.filter(w => w.status === 'pending').length}</span>}
         </button>
       </div>
 
@@ -4394,9 +4682,108 @@ function AdminPanel({ investor, isMobile }) {
         </>
       )}
 
+      {/* ═══ WITHDRAWAL MANAGEMENT ═══ */}
+      {activeSection === 'withdrawals' && (
+        <>
+          {withdrawalsLoading && adminWithdrawals.length === 0 && <div style={{ color: 'rgba(255,255,255,0.4)', textAlign: 'center', padding: 40 }}>Loading withdrawal requests...</div>}
+
+          {!withdrawalsLoading && adminWithdrawals.length === 0 && (
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>💰</div>
+              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No withdrawal requests</div>
+            </div>
+          )}
+
+          {/* Summary Stats */}
+          {adminWithdrawals.length > 0 && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+                {[
+                  { label: 'Pending', count: adminWithdrawals.filter(w => w.status === 'pending').length, total: adminWithdrawals.filter(w => w.status === 'pending').reduce((s, w) => s + w.amount, 0), color: '#F59E0B' },
+                  { label: 'Processing', count: adminWithdrawals.filter(w => w.status === 'processing').length, total: adminWithdrawals.filter(w => w.status === 'processing').reduce((s, w) => s + w.amount, 0), color: '#A855F7' },
+                  { label: 'Completed', count: adminWithdrawals.filter(w => w.status === 'completed').length, total: adminWithdrawals.filter(w => w.status === 'completed').reduce((s, w) => s + w.amount, 0), color: '#22C55E' },
+                  { label: 'Denied', count: adminWithdrawals.filter(w => w.status === 'denied').length, total: adminWithdrawals.filter(w => w.status === 'denied').reduce((s, w) => s + w.amount, 0), color: '#EF4444' },
+                ].map(s => (
+                  <div key={s.label} style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>{s.label}</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: s.color, marginTop: 4 }}>{s.count}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>${s.total.toLocaleString()}</div>
+                  </div>
+                ))}
+              </div>
+
+              {adminWithdrawals.map(wr => {
+                const statusColors = {
+                  pending: { bg: 'rgba(245,158,11,0.1)', color: '#F59E0B' },
+                  approved: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF' },
+                  processing: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7' },
+                  completed: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E' },
+                  denied: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444' },
+                };
+                const sc = statusColors[wr.status] || statusColors.pending;
+                return (
+                  <div key={wr.id} style={{ ...glass, padding: 20, marginBottom: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>${wr.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>{wr.userName} · {wr.userEmail}</div>
+                      </div>
+                      <span style={{ padding: '4px 12px', borderRadius: 8, background: sc.bg, color: sc.color, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{wr.status}</span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>
+                      <span>Method: {(wr.method || '').replace(/_/g, ' ')}</span>
+                      <span>Requested: {new Date(wr.createdAt).toLocaleString()}</span>
+                      <span>Balance at request: ${(wr.walletEquityAtRequest || 0).toLocaleString()}</span>
+                    </div>
+
+                    {wr.notes && (
+                      <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 10, fontStyle: 'italic', padding: '8px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                        "{wr.notes}"
+                      </div>
+                    )}
+
+                    {wr.adminNotes && (
+                      <div style={{ padding: '8px 12px', borderRadius: 10, background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.12)', marginBottom: 10 }}>
+                        <div style={{ fontSize: 10, color: '#A855F7', fontWeight: 600, marginBottom: 2 }}>Admin Notes</div>
+                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{wr.adminNotes}</div>
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {['pending', 'approved', 'processing', 'completed', 'denied'].map(s => (
+                        <button key={s} onClick={() => {
+                          if (s === 'completed' && wr.status !== 'completed') {
+                            if (!confirm(`Mark as completed? This will deduct $${wr.amount.toLocaleString()} from the investor's wallet.`)) return;
+                          }
+                          updateWithdrawalStatus(wr.id, s);
+                        }} style={{
+                          padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                          border: wr.status === s ? `1px solid ${(statusColors[s] || statusColors.pending).color}40` : '1px solid rgba(255,255,255,0.06)',
+                          background: wr.status === s ? (statusColors[s] || statusColors.pending).bg : 'rgba(30,30,34,0.6)',
+                          color: wr.status === s ? (statusColors[s] || statusColors.pending).color : 'rgba(255,255,255,0.4)',
+                          textTransform: 'capitalize',
+                        }}>{s}</button>
+                      ))}
+                      <button onClick={() => {
+                        const notes = prompt('Enter admin notes for this withdrawal:');
+                        if (notes !== null) updateWithdrawalStatus(wr.id, wr.status, notes);
+                      }} style={{
+                        padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                        border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(30,30,34,0.6)', color: 'rgba(255,255,255,0.4)',
+                      }}>Add Notes</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </>
+      )}
+
       {/* Refresh Button */}
       <div style={{ textAlign: 'center', marginTop: 24 }}>
-        <button onClick={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); }} style={{
+        <button onClick={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); }} style={{
           padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
           background: 'transparent', color: 'rgba(255,255,255,0.5)',
           fontSize: 13, cursor: 'pointer',
