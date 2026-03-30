@@ -3342,7 +3342,7 @@ function PortfolioDashboard({ investor, onLogout }) {
   const firstName = investor.firstName || investor.name?.split(' ')[0] || 'Investor';
   const sidebarWidth = isMobile ? 0 : 260;
 
-  // Dynamic allocation from actual positions
+  // Dynamic allocation from open positions + trade history (all 7 asset classes)
   const allocation = useMemo(() => {
     const classColors = {
       stock: "#00D4FF", crypto: "#A855F7", forex: "#10B981",
@@ -3361,37 +3361,67 @@ function PortfolioDashboard({ investor, onLogout }) {
       if (['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(sym)) return 'options';
       return 'stock';
     };
-    const totals = {};
-    const positionsAll = positions || [];
-    const totalEquity = wallet?.equity || wallet?.balance || 100000;
 
-    // Sum position values by asset class
+    const totalEquity = wallet?.equity || wallet?.balance || 100000;
+    const positionsAll = positions || [];
+    const trades = tradeHistory || [];
+
+    // 1. Current open position values by asset class
+    const openTotals = {};
     positionsAll.forEach(p => {
       const cls = classifySymbol(p.symbol);
       const posValue = Math.abs((p.quantity || 0) * (p.currentPrice || p.current_price || p.entryPrice || p.entry_price || 0));
-      totals[cls] = (totals[cls] || 0) + posValue;
+      openTotals[cls] = (openTotals[cls] || 0) + posValue;
+    });
+    const totalOpenValue = Object.values(openTotals).reduce((s, v) => s + v, 0);
+
+    // 2. Trade volume by asset class (from closed trade history)
+    // This shows where the fund has been deploying capital across all 7 classes
+    const tradeVolume = {};
+    trades.forEach(t => {
+      const cls = classifySymbol(t.symbol);
+      const vol = Math.abs((t.quantity || 0) * (t.entryPrice || t.entry_price || 0));
+      tradeVolume[cls] = (tradeVolume[cls] || 0) + vol;
+    });
+    const totalTradeVol = Object.values(tradeVolume).reduce((s, v) => s + v, 0);
+
+    // 3. Blend: 60% weight on open positions, 40% on historical trade volume
+    // This ensures all actively traded asset classes appear in the allocation
+    const blended = {};
+    const allClasses = new Set([...Object.keys(openTotals), ...Object.keys(tradeVolume)]);
+    const openWeight = totalOpenValue > 0 ? 0.6 : 0;
+    const histWeight = totalTradeVol > 0 ? (1 - openWeight) : 0;
+
+    allClasses.forEach(cls => {
+      const openPct = totalOpenValue > 0 ? (openTotals[cls] || 0) / totalOpenValue : 0;
+      const histPct = totalTradeVol > 0 ? (tradeVolume[cls] || 0) / totalTradeVol : 0;
+      blended[cls] = (openPct * openWeight) + (histPct * histWeight);
     });
 
-    const totalInvested = Object.values(totals).reduce((s, v) => s + v, 0);
-    // Remaining equity not in positions = cash allocation
-    const cashBalance = Math.max(0, totalEquity - totalInvested);
-    totals['cash'] = (totals['cash'] || 0) + cashBalance;
+    // 4. Cash = remaining equity not in open positions, scaled into the blend
+    const cashFromEquity = Math.max(0, totalEquity - totalOpenValue);
+    const cashPct = totalEquity > 0 ? cashFromEquity / totalEquity : 1;
+    // Scale invested allocation down to make room for cash
+    const investedPct = 1 - cashPct;
+    const finalAlloc = {};
+    Object.entries(blended).forEach(([cls, pct]) => {
+      finalAlloc[cls] = pct * investedPct;
+    });
+    finalAlloc['cash'] = (finalAlloc['cash'] || 0) + cashPct;
 
-    const grandTotal = totalInvested + cashBalance;
-    if (grandTotal <= 0) {
-      // No positions — show 100% cash
-      return [{ name: "Cash", value: 100, color: "#6B7280" }];
-    }
+    // Normalize to 100%
+    const total = Object.values(finalAlloc).reduce((s, v) => s + v, 0);
+    if (total <= 0) return [{ name: "Cash", value: 100, color: "#6B7280" }];
 
-    return Object.entries(totals)
-      .filter(([, v]) => v > 0)
+    return Object.entries(finalAlloc)
+      .filter(([, v]) => v / total > 0.005) // Exclude < 0.5%
       .map(([cls, v]) => ({
         name: classNames[cls] || cls,
-        value: parseFloat((v / grandTotal * 100).toFixed(1)),
+        value: parseFloat((v / total * 100).toFixed(1)),
         color: classColors[cls] || "#6B7280",
       }))
       .sort((a, b) => b.value - a.value);
-  }, [positions, wallet]);
+  }, [positions, wallet, tradeHistory]);
 
   return (
     <div style={{
