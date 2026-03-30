@@ -1239,6 +1239,12 @@ function closePosition(userId, positionId) {
   pos.realized_pnl = pnl;
   db._save('positions');
 
+  // Attribute P&L back to originating signal for signal performance tracking
+  try {
+    const returnPct = ((closePrice / pos.entry_price - 1) * 100 * dir);
+    attributeSignalPnL(pos.id, pnl, returnPct);
+  } catch (e) { /* signal tracking is non-critical */ }
+
   return { success: true, pnl, closePrice, returnPct: ((closePrice / pos.entry_price - 1) * 100 * dir) };
 }
 
@@ -3265,8 +3271,12 @@ function runAllAgents(userId, fundData) {
       const reason = `[${tier}] ${side} signal (${(strength * 100).toFixed(0)}% str, ${signal.confluence} confluence) — ${signal.reason}`;
       logAutoTrade(userId, signal.agent, signal.symbol, side, quantity, reason);
       openPositions.push(result.position);
+      // Persist signal with trade linkage
+      persistSignal(signal, userId, { action: 'EXECUTED', tradeId: result.position?.id, positionId: result.position?.id });
     } else {
       console.warn(`[AutoTrader] TRADE REJECTED: ${signal.agent} ${side} ${quantity}x ${signal.symbol} @ $${price} — ${result.error}`);
+      // Persist rejected signal for audit trail
+      persistSignal(signal, userId, { action: 'REJECTED' });
     }
   }
 }
@@ -3378,6 +3388,204 @@ function logAutoTrade(userId, agent, symbol, side, quantity, reason) {
     const toRemove = logs.slice(0, logs.length - 500);
     toRemove.forEach(l => db.remove('auto_trade_log', r => r.id === l.id));
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   SIGNAL TRACKING ENGINE
+//   Full-spectrum signal persistence, P&L attribution, and alerting.
+//   Every signal generated is stored with complete indicator breakdown.
+//   When trades close, P&L is attributed back to the originating signal.
+// ═══════════════════════════════════════════════════════════════════
+
+// In-memory signal buffer for real-time dashboard (last 200 signals)
+const signalBuffer = [];
+const SIGNAL_BUFFER_MAX = 200;
+
+/**
+ * Persist a signal to the database with full indicator breakdown.
+ * Called during runAllAgents for every signal that passes threshold.
+ */
+function persistSignal(signal, userId, context) {
+  const record = {
+    user_id: userId,
+    signal_id: `SIG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    symbol: signal.symbol,
+    agent: signal.agent,
+    side: signal.adjustedScore > 0 ? 'LONG' : 'SHORT',
+    raw_score: roundTo(signal.score, 4),
+    adjusted_score: roundTo(signal.adjustedScore, 4),
+    confluence: signal.confluence,
+    reason: signal.reason,
+    indicators: signal.indicators || {},
+    price_at_signal: marketPrices[signal.symbol] || 0,
+    regime: symbolRegimes[signal.symbol] || 'unknown',
+    session: getMarketSession().session,
+    sentiment: (sentimentStore[signal.symbol] || {}).score || 0,
+    correlation_regime: correlationCache.marketRegime || 'neutral',
+    action: context.action || 'GENERATED', // GENERATED, EXECUTED, REJECTED, FILTERED
+    trade_id: context.tradeId || null,
+    position_id: context.positionId || null,
+    pnl: null, // filled when trade closes
+    pnl_pct: null,
+    outcome: null, // WIN, LOSS, PENDING
+    closed_at: null,
+    timestamp: new Date().toISOString(),
+  };
+
+  db.insert('signals', record);
+
+  // Add to real-time buffer
+  signalBuffer.push(record);
+  if (signalBuffer.length > SIGNAL_BUFFER_MAX) signalBuffer.shift();
+
+  // Trim DB to last 2000 signals per user
+  const userSignals = db.findMany('signals', s => s.user_id === userId);
+  if (userSignals.length > 2000) {
+    const toRemove = userSignals.slice(0, userSignals.length - 2000);
+    toRemove.forEach(s => db.remove('signals', r => r.id === s.id));
+  }
+
+  // WebSocket alert for high-conviction signals
+  if (Math.abs(signal.adjustedScore) >= 0.7 && context.action === 'EXECUTED') {
+    wsBroadcastSignalAlert(record);
+  }
+
+  return record;
+}
+
+/**
+ * Attribute P&L back to the originating signal when a position closes.
+ * Links closed trade outcomes to their source signals for performance analysis.
+ */
+function attributeSignalPnL(positionId, pnl, pnlPct) {
+  const signals = db.findMany('signals', s => s.position_id === positionId && s.outcome === null);
+  for (const sig of signals) {
+    sig.pnl = roundTo(pnl, 2);
+    sig.pnl_pct = roundTo(pnlPct, 4);
+    sig.outcome = pnl >= 0 ? 'WIN' : 'LOSS';
+    sig.closed_at = new Date().toISOString();
+  }
+  if (signals.length > 0) db._save('signals');
+}
+
+/**
+ * Broadcast high-conviction signal alerts via WebSocket.
+ */
+function wsBroadcastSignalAlert(signal) {
+  const msg = JSON.stringify({
+    type: 'signal_alert',
+    data: {
+      signal_id: signal.signal_id,
+      symbol: signal.symbol,
+      agent: signal.agent,
+      side: signal.side,
+      score: signal.adjusted_score,
+      confluence: signal.confluence,
+      reason: signal.reason,
+      price: signal.price_at_signal,
+      regime: signal.regime,
+      session: signal.session,
+      timestamp: signal.timestamp,
+    },
+    timestamp: Date.now(),
+  });
+  wsClients.forEach(c => {
+    if (c.socket.writable) wsSend(c, msg);
+  });
+}
+
+/**
+ * Compute aggregated signal statistics for a user.
+ */
+function computeSignalStats(userId) {
+  const allSigs = db.findMany('signals', s => s.user_id === userId);
+  const closed = allSigs.filter(s => s.outcome !== null);
+  const wins = closed.filter(s => s.outcome === 'WIN');
+  const losses = closed.filter(s => s.outcome === 'LOSS');
+
+  // Per-agent stats
+  const agentStats = {};
+  for (const sig of allSigs) {
+    if (!agentStats[sig.agent]) {
+      agentStats[sig.agent] = { generated: 0, executed: 0, wins: 0, losses: 0, totalPnL: 0, avgScore: 0, scores: [] };
+    }
+    const as = agentStats[sig.agent];
+    as.generated++;
+    as.scores.push(Math.abs(sig.adjusted_score));
+    if (sig.action === 'EXECUTED') as.executed++;
+    if (sig.outcome === 'WIN') { as.wins++; as.totalPnL += sig.pnl || 0; }
+    if (sig.outcome === 'LOSS') { as.losses++; as.totalPnL += sig.pnl || 0; }
+  }
+  for (const [name, as] of Object.entries(agentStats)) {
+    as.avgScore = as.scores.length > 0 ? roundTo(as.scores.reduce((a, b) => a + b, 0) / as.scores.length, 3) : 0;
+    as.winRate = (as.wins + as.losses) > 0 ? roundTo(as.wins / (as.wins + as.losses) * 100, 1) : 0;
+    as.conversionRate = as.generated > 0 ? roundTo(as.executed / as.generated * 100, 1) : 0;
+    delete as.scores;
+  }
+
+  // Per-symbol stats
+  const symbolStats = {};
+  for (const sig of closed) {
+    if (!symbolStats[sig.symbol]) {
+      symbolStats[sig.symbol] = { signals: 0, wins: 0, losses: 0, totalPnL: 0, avgPnLPct: 0, pnlPcts: [] };
+    }
+    const ss = symbolStats[sig.symbol];
+    ss.signals++;
+    if (sig.outcome === 'WIN') ss.wins++;
+    if (sig.outcome === 'LOSS') ss.losses++;
+    ss.totalPnL += sig.pnl || 0;
+    ss.pnlPcts.push(sig.pnl_pct || 0);
+  }
+  for (const [sym, ss] of Object.entries(symbolStats)) {
+    ss.avgPnLPct = ss.pnlPcts.length > 0 ? roundTo(ss.pnlPcts.reduce((a, b) => a + b, 0) / ss.pnlPcts.length, 2) : 0;
+    ss.winRate = (ss.wins + ss.losses) > 0 ? roundTo(ss.wins / (ss.wins + ss.losses) * 100, 1) : 0;
+    delete ss.pnlPcts;
+  }
+
+  // Per-indicator contribution analysis
+  const indicatorContrib = { bullish: {}, bearish: {} };
+  for (const sig of closed) {
+    const reasons = (sig.reason || '').split(' | ');
+    for (const r of reasons) {
+      if (!r) continue;
+      const bucket = sig.outcome === 'WIN' ? 'bullish' : 'bearish';
+      if (!indicatorContrib[bucket][r]) indicatorContrib[bucket][r] = 0;
+      indicatorContrib[bucket][r]++;
+    }
+  }
+
+  // Confluence distribution
+  const confDist = {};
+  for (const sig of allSigs) {
+    const c = sig.confluence || 0;
+    if (!confDist[c]) confDist[c] = { count: 0, wins: 0, losses: 0, totalPnL: 0 };
+    confDist[c].count++;
+    if (sig.outcome === 'WIN') { confDist[c].wins++; confDist[c].totalPnL += sig.pnl || 0; }
+    if (sig.outcome === 'LOSS') { confDist[c].losses++; confDist[c].totalPnL += sig.pnl || 0; }
+  }
+  for (const c of Object.keys(confDist)) {
+    const d = confDist[c];
+    d.winRate = (d.wins + d.losses) > 0 ? roundTo(d.wins / (d.wins + d.losses) * 100, 1) : 0;
+  }
+
+  return {
+    total: allSigs.length,
+    executed: allSigs.filter(s => s.action === 'EXECUTED').length,
+    filtered: allSigs.filter(s => s.action === 'FILTERED').length,
+    rejected: allSigs.filter(s => s.action === 'REJECTED').length,
+    closed: closed.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: closed.length > 0 ? roundTo(wins.length / closed.length * 100, 1) : 0,
+    totalPnL: roundTo(closed.reduce((s, c) => s + (c.pnl || 0), 0), 2),
+    avgPnL: closed.length > 0 ? roundTo(closed.reduce((s, c) => s + (c.pnl || 0), 0) / closed.length, 2) : 0,
+    conversionRate: allSigs.length > 0 ? roundTo(allSigs.filter(s => s.action === 'EXECUTED').length / allSigs.length * 100, 1) : 0,
+    agentStats,
+    symbolStats,
+    confluenceDist: confDist,
+    topWinIndicators: Object.entries(indicatorContrib.bullish).sort((a, b) => b[1] - a[1]).slice(0, 10),
+    topLossIndicators: Object.entries(indicatorContrib.bearish).sort((a, b) => b[1] - a[1]).slice(0, 10),
+  };
 }
 
 // Auto-trading tick — every 10 seconds
@@ -3952,6 +4160,73 @@ api.post('/api/qa/run', (req, res) => {
     checksPerformed: result.checks.length,
     issuesFound: result.fixes.length,
     report: result.report,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//   SIGNAL TRACKING API — Full audit trail, stats, and live feed
+// ═══════════════════════════════════════════════════════════════════
+
+// Signal history — paginated, filterable
+api.get('/api/signals', auth, (req, res) => {
+  const limit = Math.min(parseInt(req.query?.limit) || 50, 200);
+  const offset = parseInt(req.query?.offset) || 0;
+  const agent = req.query?.agent;
+  const symbol = req.query?.symbol;
+  const action = req.query?.action; // EXECUTED, REJECTED, FILTERED
+  const outcome = req.query?.outcome; // WIN, LOSS, PENDING
+
+  let signals = db.findMany('signals', s => s.user_id === req.userId)
+    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+  if (agent) signals = signals.filter(s => s.agent === agent);
+  if (symbol) signals = signals.filter(s => s.symbol === symbol.toUpperCase());
+  if (action) signals = signals.filter(s => s.action === action.toUpperCase());
+  if (outcome) signals = signals.filter(s => s.outcome === outcome.toUpperCase());
+
+  const total = signals.length;
+  signals = signals.slice(offset, offset + limit);
+
+  json(res, 200, { total, offset, limit, signals });
+});
+
+// Signal stats — aggregated performance analytics
+api.get('/api/signals/stats', auth, (req, res) => {
+  json(res, 200, computeSignalStats(req.userId));
+});
+
+// Live signal feed — real-time buffer (last 200 signals across all users)
+api.get('/api/signals/live', auth, (req, res) => {
+  const limit = Math.min(parseInt(req.query?.limit) || 50, 200);
+  const userSignals = signalBuffer.filter(s => s.user_id === req.userId).slice(-limit);
+  json(res, 200, { signals: userSignals, bufferSize: signalBuffer.length });
+});
+
+// Signal heatmap — strength by symbol, agent grid
+api.get('/api/signals/heatmap', auth, (req, res) => {
+  const symbols = Object.keys(marketPrices);
+  const agents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+  const heatmap = {};
+
+  for (const sym of symbols) {
+    heatmap[sym] = {};
+    for (const agent of agents) {
+      if (agent.symbols.includes(sym) && priceHistory[sym]?.length >= 30) {
+        const sig = computeSignal(sym, agent.role);
+        heatmap[sym][agent.name] = {
+          score: roundTo(sig.score, 3),
+          confluence: sig.confluence,
+          regime: symbolRegimes[sym],
+        };
+      }
+    }
+  }
+
+  json(res, 200, {
+    heatmap,
+    session: getMarketSession(),
+    correlationRegime: correlationCache.marketRegime || 'neutral',
+    timestamp: new Date().toISOString(),
   });
 });
 
