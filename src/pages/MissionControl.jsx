@@ -1,9 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import * as recharts from "recharts";
 import { useResponsive } from "../hooks/useResponsive";
-import { getAllUsers } from "../store/authStore.js";
-import { getWallet, INITIAL_BALANCE } from "../store/walletStore.js";
 import BrandLogo from "../components/BrandLogo.jsx";
+
+const API_BASE = (() => {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  return `http://${hostname}:4000/api`;
+})();
+const getToken = () => { try { return localStorage.getItem('12tribes_auth_token') || ''; } catch { return ''; } };
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadialBarChart, RadialBar, Legend
@@ -15,15 +20,7 @@ const {
 //   Apple Liquid Glass UI
 // ═══════════════════════════════════════════
 
-// === DYNAMIC INVESTOR DATA (from registered users) ===
-function getInvestors() {
-  return getAllUsers().map(u => ({
-    id: u.id,
-    name: u.name,
-    initial: INITIAL_BALANCE,
-    avatar: u.avatar || (u.firstName?.[0] || '') + (u.lastName?.[0] || ''),
-  }));
-}
+// Server data is fetched dynamically in the main component
 
 const ASSET_CLASSES = [
   { name: "Stocks", pct: 25, notional: 15000, leverage: 1.5, effective: 22500, color: "#00D4FF", strategy: "Momentum + Mean Reversion", dailyReturn: 1.0, volatility: 2.0 },
@@ -119,10 +116,10 @@ function generateTrades() {
 
 // === STYLES ===
 const glassStyle = {
-  background: "rgba(255, 255, 255, 0.08)",
-  backdropFilter: "blur(40px) saturate(180%)",
-  WebkitBackdropFilter: "blur(40px) saturate(180%)",
-  border: "1px solid rgba(255, 255, 255, 0.15)",
+  background: "rgba(38, 38, 42, 0.85)",
+  backdropFilter: "blur(40px) saturate(150%)",
+  WebkitBackdropFilter: "blur(40px) saturate(150%)",
+  border: "1px solid rgba(255, 255, 255, 0.12)",
   borderRadius: "24px",
   boxShadow: "0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
 };
@@ -355,45 +352,50 @@ function TradeLog({ trades, isMobile = false }) {
   );
 }
 
-function InvestorTable({ totalAUM, isMobile = false, isTablet = false }) {
-  const investors = getInvestors();
-  const memberCount = investors.length;
+function InvestorTable({ serverUsers, groupData, isMobile = false, isTablet = false }) {
+  const memberCount = serverUsers.length;
   return (
     <GlassCard>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 12, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 6 : 0 }}>
         <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Investor Roster</div>
-        <div style={{ fontSize: isMobile ? 11 : 12, color: "rgba(255,255,255,0.4)" }}>{memberCount} {memberCount === 1 ? 'Member' : 'Members'} | Equal Ownership</div>
+        <div style={{ fontSize: isMobile ? 11 : 12, color: "rgba(255,255,255,0.4)" }}>{memberCount} {memberCount === 1 ? 'Member' : 'Members'}</div>
       </div>
       {memberCount === 0 ? (
         <div style={{ padding: 24, textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>No investors registered yet</div>
       ) : (
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(240px, 1fr))", gap: isMobile ? 10 : 12 }}>
-        {investors.map(inv => {
-          const wallet = getWallet(inv.id);
-          const currentValue = wallet ? wallet.equity : (memberCount > 0 ? totalAUM / memberCount : 0);
-          const gain = currentValue - inv.initial;
-          const gainPct = inv.initial > 0 ? (gain / inv.initial * 100) : 0;
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(280px, 1fr))", gap: isMobile ? 10 : 12 }}>
+        {serverUsers.map(user => {
+          const avatar = (user.firstName?.[0] || '') + (user.lastName?.[0] || '') || user.email?.[0]?.toUpperCase() || '?';
+          const name = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+          const equity = user.walletEquity || 0;
+          const initial = user.walletInitial || 100000;
+          const gain = equity - initial;
+          const gainPct = initial > 0 ? (gain / initial * 100) : 0;
           return (
-            <div key={inv.id} style={{
-              padding: isMobile ? 12 : 14, borderRadius: 16,
-              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+            <div key={user.id} style={{
+              padding: isMobile ? 12 : 16, borderRadius: 16,
+              background: "rgba(38,38,42,0.6)", border: "1px solid rgba(255,255,255,0.06)",
               display: "flex", alignItems: "center", gap: isMobile ? 10 : 12,
             }}>
               <div style={{
-                width: isMobile ? 36 : 40, height: isMobile ? 36 : 40, borderRadius: 12,
-                background: "linear-gradient(135deg, #00D4FF33, #A855F733)",
+                width: isMobile ? 36 : 42, height: isMobile ? 36 : 42, borderRadius: 13,
+                background: "linear-gradient(135deg, rgba(0,212,255,0.2), rgba(168,85,247,0.2))",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 fontSize: isMobile ? 12 : 13, fontWeight: 700, color: "#00D4FF", flexShrink: 0,
-              }}>{inv.avatar}</div>
+              }}>{avatar}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 600, color: "#fff" }}>{inv.name}</div>
-                <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)" }}>{memberCount > 0 ? (100 / memberCount).toFixed(2) : 0}% ownership</div>
+                <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+                <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.35)" }}>{user.email}</div>
+                <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.25)", marginTop: 2 }}>
+                  Role: {user.role || 'investor'} · Joined {user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}
+                </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
-                <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 600, color: "#fff" }}>${currentValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
-                <div style={{ fontSize: isMobile ? 10 : 11, color: gain >= 0 ? "#10B981" : "#EF4444" }}>
-                  {gain >= 0 ? "+" : ""}{gainPct.toFixed(1)}%
+                <div style={{ fontSize: isMobile ? 13 : 15, fontWeight: 700, color: "#fff" }}>${equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                <div style={{ fontSize: isMobile ? 10 : 11, color: gain >= 0 ? "#10B981" : "#EF4444", fontWeight: 600 }}>
+                  {gain >= 0 ? "+" : ""}{gainPct.toFixed(2)}%
                 </div>
+                <div style={{ fontSize: 9, color: "rgba(255,255,255,0.2)" }}>of ${initial.toLocaleString()}</div>
               </div>
             </div>
           );
@@ -556,15 +558,22 @@ function AssetStrategyCards({ isMobile = false, isTablet = false }) {
 
 // === VIEWS ===
 
-function OverviewView({ growthData, pnlData, trades, totalAUM, isMobile, isTablet }) {
+function OverviewView({ growthData, pnlData, trades, groupData, isMobile, isTablet }) {
+  const totalAUM = groupData.totalEquity || 0;
+  const totalPnL = groupData.totalPnL || 0;
+  const returnPct = groupData.returnPct || 0;
+  const openPos = groupData.openPositions || 0;
+  const winRate = groupData.winRate || 0;
+  const memberCount = groupData.investorCount || 0;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
       <div style={{ display: "flex", gap: isMobile ? 12 : 16, flexWrap: "wrap" }}>
-        <MetricCard label="Total AUM" value={totalAUM} prefix="$" change={1.18} color="#00D4FF" isMobile={isMobile} />
-        <MetricCard label="Daily P&L" value={724} prefix="$" change={1.21} color="#10B981" isMobile={isMobile} />
-        <MetricCard label="Active Agents" value={5} suffix="/6" color="#A855F7" isMobile={isMobile} />
-        <MetricCard label="Open Positions" value={18} color="#F59E0B" isMobile={isMobile} />
-        <MetricCard label="Win Rate" value="64.2" suffix="%" color="#10B981" isMobile={isMobile} />
+        <MetricCard label="Total AUM" value={Math.round(totalAUM)} prefix="$" change={returnPct} color="#00D4FF" isMobile={isMobile} />
+        <MetricCard label="Total P&L" value={Math.round(totalPnL)} prefix={totalPnL >= 0 ? "+$" : "-$"} color={totalPnL >= 0 ? "#10B981" : "#EF4444"} isMobile={isMobile} />
+        <MetricCard label="Investors" value={memberCount} color="#A855F7" isMobile={isMobile} />
+        <MetricCard label="Open Positions" value={openPos} color="#F59E0B" isMobile={isMobile} />
+        <MetricCard label="Win Rate" value={winRate.toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "1fr" : "2fr 1fr", gap: isMobile ? 16 : 20 }}>
         <GrowthProjection data={growthData} isMobile={isMobile} />
@@ -600,16 +609,21 @@ function CapitalView({ growthData, isMobile, isTablet }) {
   );
 }
 
-function InvestorsView({ totalAUM, isMobile, isTablet }) {
+function InvestorsView({ groupData, serverUsers, isMobile, isTablet }) {
+  const totalAUM = groupData.totalEquity || 0;
+  const memberCount = serverUsers.length || groupData.investorCount || 0;
+  const perInvestor = memberCount > 0 ? totalAUM / memberCount : 0;
+  const avgGain = groupData.returnPct || 0;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
       <div style={{ display: "flex", gap: isMobile ? 12 : 16, flexWrap: "wrap" }}>
-        <MetricCard label="Total AUM" value={totalAUM} prefix="$" color="#00D4FF" isMobile={isMobile} />
-        <MetricCard label="Per Investor" value={Math.round(totalAUM / 12)} prefix="$" color="#A855F7" isMobile={isMobile} />
-        <MetricCard label="Avg Gain" value={((totalAUM / 60000 - 1) * 100).toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
-        <MetricCard label="Members" value={12} color="#F59E0B" isMobile={isMobile} />
+        <MetricCard label="Total AUM" value={Math.round(totalAUM)} prefix="$" color="#00D4FF" isMobile={isMobile} />
+        <MetricCard label="Per Investor" value={Math.round(perInvestor)} prefix="$" color="#A855F7" isMobile={isMobile} />
+        <MetricCard label="Avg Return" value={avgGain.toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
+        <MetricCard label="Members" value={memberCount} color="#F59E0B" isMobile={isMobile} />
       </div>
-      <InvestorTable totalAUM={totalAUM} isMobile={isMobile} isTablet={isTablet} />
+      <InvestorTable serverUsers={serverUsers} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />
     </div>
   );
 }
@@ -620,19 +634,42 @@ export default function TwelveTribes_MissionControl() {
   const { isMobile, isTablet, isDesktop } = useResponsive();
   const [activeView, setActiveView] = useState("overview");
   const [clock, setClock] = useState(new Date());
-  const [totalAUM, setTotalAUM] = useState(66410);
+  const [groupData, setGroupData] = useState({});
+  const [serverUsers, setServerUsers] = useState([]);
 
   useEffect(() => {
     const timer = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Simulate live AUM fluctuation
+  // Fetch real data from server
   useEffect(() => {
-    const timer = setInterval(() => {
-      setTotalAUM(prev => prev + (Math.random() - 0.45) * 50);
-    }, 3000);
-    return () => clearInterval(timer);
+    const token = getToken();
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const fetchData = async () => {
+      try {
+        const [groupRes, usersRes] = await Promise.all([
+          fetch(`${API_BASE}/wallet/group`, { headers }),
+          fetch(`${API_BASE}/admin/users`, { headers }),
+        ]);
+        if (groupRes.ok) {
+          const gd = await groupRes.json();
+          setGroupData(gd);
+        }
+        if (usersRes.ok) {
+          const ud = await usersRes.json();
+          setServerUsers(Array.isArray(ud) ? ud : ud.users || []);
+        }
+      } catch (err) {
+        console.error("MissionControl fetch error:", err);
+      }
+    };
+
+    fetchData();
+    const poller = setInterval(fetchData, 30000);
+    return () => clearInterval(poller);
   }, []);
 
   const growthData = useMemo(() => generateGrowthData(60000, 252, 0.012), []);
@@ -718,15 +755,15 @@ export default function TwelveTribes_MissionControl() {
 
       {/* Content */}
       <div style={{ padding: isMobile ? "16px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto" }}>
-        {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={trades} totalAUM={Math.round(totalAUM)} isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={trades} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
         {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} />}
         {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} />}
-        {activeView === "investors" && <InvestorsView totalAUM={Math.round(totalAUM)} isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "investors" && <InvestorsView groupData={groupData} serverUsers={serverUsers} isMobile={isMobile} isTablet={isTablet} />}
       </div>
 
       {/* Footer */}
       <div style={{ padding: isMobile ? "12px 16px" : "16px 32px", textAlign: "center", fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.2)" }}>
-        12 TRIBES v1.0 | AI-Powered Investment Platform | Mission Control | All data simulated for demonstration
+        12 TRIBES v1.0 | AI-Powered Investment Platform | Mission Control
       </div>
     </div>
   );
