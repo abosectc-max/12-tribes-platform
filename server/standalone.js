@@ -521,16 +521,26 @@ async function refreshRealMarketData() {
 // ═══════════════════════════════════════════
 
 const DEFAULT_PRICES = {
+  // ─── STOCKS: Tech/Growth ───
   "AAPL": 227.50, "MSFT": 422.30, "NVDA": 138.20, "TSLA": 278.40,
   "AMZN": 198.60, "GOOGL": 175.80, "META": 612.40, "JPM": 248.90,
   "AMD": 164.30, "PLTR": 72.80, "COIN": 248.50,
   "JNJ": 158.20, "VOO": 478.60,
+  // ─── STOCKS: Recovery/Value ───
+  "F": 11.40, "BAC": 42.80, "WISH": 5.20, "RIOT": 12.60, "GE": 174.30, "CCIV": 24.50,
+  // ─── CRYPTO: Full Universe ───
   "BTC": 87432, "ETH": 3287, "SOL": 187.50, "AVAX": 38.20,
   "DOGE": 0.1742, "XRP": 2.18, "ADA": 0.72,
-  "F": 11.40, "BAC": 42.80, "WISH": 5.20, "RIOT": 12.60, "GE": 174.30, "CCIV": 24.50,
+  "DOT": 7.45, "MATIC": 0.58, "LINK": 16.80,
+  // ─── FOREX: Major Pairs ───
   "EUR/USD": 1.0842, "GBP/USD": 1.2934, "USD/JPY": 150.85, "AUD/USD": 0.6521,
+  "USD/CHF": 0.8812, "USD/CAD": 1.3645,
+  // ─── ETFs: Broad Market + Sectors ───
   "SPY": 521.47, "QQQ": 441.22, "GLD": 284.70, "TLT": 87.30,
-  "IWM": 202.40, "EEM": 42.70,
+  "IWM": 202.40, "EEM": 42.70, "DIA": 394.50, "VTI": 268.30,
+  "XLF": 42.80, "XLE": 89.40, "XLK": 218.50, "ARKK": 52.30, "HYG": 77.60,
+  // ─── OPTIONS PROXIES: Leveraged ETFs ───
+  "TQQQ": 62.40, "SOXL": 28.70, "UVXY": 24.80, "SPXS": 9.15, "SQQQ": 10.20, "TNA": 38.60,
 };
 
 const marketPrices = { ...DEFAULT_PRICES };
@@ -1119,8 +1129,9 @@ function tickPrices() {
 
   for (const symbol of Object.keys(marketPrices)) {
     const price = marketPrices[symbol];
-    const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(symbol);
+    const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(symbol);
     const isFx = symbol.includes('/');
+    const isLeveraged = ['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(symbol);
 
     // Check if we have a recent real price for this symbol
     const cached = REAL_PRICE_CACHE[symbol];
@@ -1140,7 +1151,7 @@ function tickPrices() {
       priceDataSource[symbol] = realDataAvailable ? 'stale' : 'initializing';
     } else {
       // SIMULATED or HYBRID FALLBACK: Full synthetic price engine
-      const baseVol = isFx ? 0.0003 : isCrypto ? 0.002 : 0.001;
+      const baseVol = isFx ? 0.0003 : isCrypto ? 0.002 : isLeveraged ? 0.003 : 0.001;
       const sessionAdj = isCrypto ? (0.7 + sessionVol * 0.3) : sessionVol;
       const adjVol = baseVol * sessionAdj;
 
@@ -3329,58 +3340,58 @@ const AI_AGENTS = [
   {
     name: 'Viper',
     role: 'SIGNAL_SCANNER',
-    description: 'Scans momentum and breakout signals across growth/tech',
-    symbols: ['NVDA', 'TSLA', 'META', 'AMD', 'PLTR', 'COIN'],
-    longBias: 0.65,           // 65% long bias (trend following)
+    description: 'Scans momentum and breakout signals across growth/tech + leveraged options proxies',
+    symbols: ['NVDA', 'TSLA', 'META', 'AMD', 'PLTR', 'COIN', 'TQQQ', 'SOXL'],
+    longBias: 0.65,
     reasons: { long: 'Momentum breakout detected', short: 'Trend exhaustion — taking profit' },
   },
   {
     name: 'Oracle',
     role: 'FUNDAMENTAL_ANALYST',
-    description: 'Value investing — analyzes fundamentals, picks stable compounders',
-    symbols: ['AAPL', 'MSFT', 'JPM', 'JNJ', 'SPY', 'VOO'],
-    longBias: 0.70,           // 70% long bias (value buyer)
+    description: 'Value investing + macro forex analysis — fundamentals across stocks & currencies',
+    symbols: ['AAPL', 'MSFT', 'JPM', 'JNJ', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD'],
+    longBias: 0.70,
     reasons: { long: 'Undervalued entry — strong fundamentals', short: 'Overvaluation detected — trimming' },
   },
   {
     name: 'Spectre',
     role: 'VOLATILITY_TRADER',
-    description: 'Exploits volatility in crypto and high-beta assets',
-    symbols: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'ADA'],
-    longBias: 0.55,           // 55% long bias (balanced vol trader)
+    description: 'Exploits volatility in crypto, leveraged ETFs, and high-beta assets',
+    symbols: ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'ADA', 'DOT', 'AVAX', 'LINK', 'MATIC'],
+    longBias: 0.55,
     reasons: { long: 'Vol breakout — riding momentum', short: 'Mean reversion short — overbought' },
   },
   {
     name: 'Sentinel',
     role: 'RISK_MANAGER',
-    description: 'Monitors portfolio risk, hedges, closes losing positions',
-    symbols: ['GLD', 'TLT', 'SPY', 'QQQ', 'AAPL', 'MSFT'],
+    description: 'Monitors portfolio risk, hedges with safe-havens, forex hedging, inverse ETFs',
+    symbols: ['GLD', 'TLT', 'SPY', 'QQQ', 'USD/CHF', 'USD/CAD', 'UVXY', 'SPXS'],
     longBias: 0.60,
-    isRiskManager: true,       // Special role: reviews open positions for risk
+    isRiskManager: true,
     reasons: { long: 'Hedging — defensive position', short: 'Risk-off rotation — reducing exposure' },
   },
   {
     name: 'Phoenix',
     role: 'RECOVERY_SPECIALIST',
-    description: 'Finds turnaround plays in beaten-down sectors',
-    symbols: ['F', 'BAC', 'WISH', 'RIOT', 'GE', 'CCIV'],
+    description: 'Turnaround plays in beaten-down stocks + leveraged momentum for options exposure',
+    symbols: ['F', 'BAC', 'RIOT', 'GE', 'TQQQ', 'SOXL', 'TNA', 'SQQQ'],
     longBias: 0.60,
     reasons: { long: 'Recovery catalyst identified', short: 'Dead cat bounce — exiting' },
   },
   {
     name: 'Titan',
     role: 'POSITION_SIZER',
-    description: 'Manages position sizes, scales winners, trims losers',
-    symbols: ['SPY', 'QQQ', 'IWM', 'EEM', 'AAPL', 'MSFT'],
+    description: 'Scales winners across ETFs + sector rotation specialist',
+    symbols: ['SPY', 'QQQ', 'IWM', 'EEM', 'DIA', 'VTI', 'XLF', 'XLE', 'XLK', 'ARKK', 'HYG'],
     longBias: 0.55,
-    isPositionManager: true,   // Special role: scales existing positions
+    isPositionManager: true,
     reasons: { long: 'Scaling into winner — conviction high', short: 'Sector rotation — reallocating capital' },
   },
 ];
 
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
-  maxOpenPositions: 5,         // REDUCED from 8 — fewer, higher-quality positions
+  maxOpenPositions: 6,         // 6 positions — one per asset class (stocks, ETFs, crypto, forex, options, defensive)
   maxDailyTrades: 20,          // REDUCED from 60 — precision over volume for higher win rate
   baseSizePct: 0.05,           // 5% of equity per trade (concentrated bets on high conviction)
   winnerSizePct: 0.08,         // 8% for high-conviction signals
@@ -4010,6 +4021,91 @@ function computeSignal(symbol, agentStyle, agentName) {
     score *= 0.85; reasons.push(`Off-hours — reduced conviction (${session.session})`);
   }
 
+  // ─── ASSET-CLASS SPECIFIC SIGNAL TUNING ───
+  const assetClassLocal = (() => {
+    if (['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(symbol)) return 'crypto';
+    if (symbol.includes('/')) return 'forex';
+    if (['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(symbol)) return 'options';
+    if (['SPY','QQQ','GLD','TLT','IWM','EEM','VOO','DIA','VTI','XLF','XLE','XLK','ARKK','HYG'].includes(symbol)) return 'etf';
+    return 'stock';
+  })();
+
+  // FOREX: Tighter signals, mean-reversion bias, lower noise tolerance
+  if (assetClassLocal === 'forex') {
+    // Forex is low-vol — require stronger RSI extremes for entry
+    if (rsiVal > 30 && rsiVal < 70) score *= 0.85; // Dampen neutral RSI — forex needs extremes
+    // Carry trade proxy: USD strength matters
+    if (symbol.startsWith('USD') && regime === 'trending_up') { score += 0.15; confluenceBullish++; reasons.push('USD strength trend — carry trade favorable'); }
+    if (symbol.startsWith('USD') && regime === 'trending_down') { score -= 0.15; confluenceBearish++; reasons.push('USD weakness — carry trade unfavorable'); }
+    // Forex mean reversion — BB bands are highly effective
+    if (bbPercentB < 0.03) { score += 0.2; confluenceBullish++; reasons.push('Forex extreme oversold — mean reversion buy'); }
+    if (bbPercentB > 0.97) { score -= 0.2; confluenceBearish++; reasons.push('Forex extreme overbought — mean reversion sell'); }
+    // Tighter session filter — forex off-hours (weekends) are dead
+    const hour = new Date().getUTCHours();
+    if (hour >= 21 || hour < 1) { score *= 0.6; reasons.push('Forex low-liquidity window'); }
+  }
+
+  // ETF: Sector rotation signals + relative strength
+  if (assetClassLocal === 'etf') {
+    // Sector rotation: compare ETF momentum vs SPY as benchmark
+    const spyHist = priceHistory['SPY'];
+    if (spyHist && spyHist.length >= 30 && symbol !== 'SPY') {
+      const spyMom = (spyHist[spyHist.length - 1] - spyHist[spyHist.length - 20]) / spyHist[spyHist.length - 20] * 100;
+      const relStrength = mom - spyMom;
+      if (relStrength > 1.0) { score += 0.2; confluenceBullish++; reasons.push(`Relative strength vs SPY: +${relStrength.toFixed(1)}%`); }
+      if (relStrength < -1.0) { score -= 0.15; confluenceBearish++; reasons.push(`Relative weakness vs SPY: ${relStrength.toFixed(1)}%`); }
+    }
+    // Defensive ETFs (GLD, TLT, HYG) — boost in risk-off, dampen in risk-on
+    if (['GLD', 'TLT', 'HYG'].includes(symbol)) {
+      if (corrRegime === 'risk_off') { score += 0.15; reasons.push('Safe-haven ETF — risk-off boost'); }
+      if (corrRegime === 'risk_on') { score *= 0.8; reasons.push('Safe-haven ETF dampened in risk-on'); }
+    }
+    // Sector ETFs (XLF, XLE, XLK) — momentum-driven
+    if (['XLF', 'XLE', 'XLK', 'ARKK'].includes(symbol) && Math.abs(mom) > 2) {
+      score += (mom > 0 ? 0.15 : -0.15); confluenceBullish += (mom > 0 ? 1 : 0); confluenceBearish += (mom < 0 ? 1 : 0);
+      reasons.push(`Sector momentum ${mom > 0 ? 'surge' : 'drop'}: ${mom.toFixed(1)}%`);
+    }
+  }
+
+  // CRYPTO: BTC dominance proxy, enhanced vol regime, correlation clustering
+  if (assetClassLocal === 'crypto') {
+    const btcHist = priceHistory['BTC'];
+    if (btcHist && btcHist.length >= 20 && symbol !== 'BTC') {
+      const btcMom20 = (btcHist[btcHist.length - 1] - btcHist[btcHist.length - 20]) / btcHist[btcHist.length - 20] * 100;
+      // BTC dominance proxy: if BTC is surging, alts may lag (capital flows to BTC)
+      if (btcMom20 > 3 && mom < 0) { score *= 0.7; reasons.push(`BTC surging (+${btcMom20.toFixed(1)}%) — alt rotation risk`); }
+      // BTC dropping + alt momentum positive = alt season signal
+      if (btcMom20 < -2 && mom > 1) { score += 0.2; confluenceBullish++; reasons.push('Alt-season signal — BTC weak, alt strong'); }
+      // BTC crash dragging everything
+      if (btcMom20 < -5) { score *= 0.6; reasons.push(`BTC crash (${btcMom20.toFixed(1)}%) — market-wide risk`); }
+    }
+    // Enhanced crypto vol regime: high-vol crypto trades need higher confluence
+    if (vol > 3.0) { score *= 0.8; reasons.push(`Extreme crypto vol (${vol.toFixed(1)}%) — tightened`); }
+    // Crypto weekend boost — crypto trades 24/7, weekends can be volatile
+    const dayOfWeek = new Date().getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      if (Math.abs(score) > 0.3) { score *= 1.1; reasons.push('Weekend crypto vol opportunity'); }
+    }
+  }
+
+  // OPTIONS PROXIES (Leveraged ETFs): Higher conviction required, amplified signals
+  if (assetClassLocal === 'options') {
+    // Leveraged ETFs amplify moves 2-3x — require higher confluence for safety
+    score *= 1.3; // Amplify signal to reflect leverage
+    // But also require stronger minimum — weak signals on leveraged instruments are dangerous
+    if (Math.abs(score) < 0.5) { score *= 0.4; reasons.push('Leveraged ETF — weak signal heavily dampened'); }
+    // Inverse ETFs (UVXY, SPXS, SQQQ) — natural hedges, boost in risk-off
+    if (['UVXY', 'SPXS', 'SQQQ'].includes(symbol)) {
+      if (corrRegime === 'risk_off') { score += 0.25; confluenceBullish++; reasons.push('Inverse ETF — risk-off hedge activated'); }
+      if (corrRegime === 'risk_on') { score *= 0.5; reasons.push('Inverse ETF dampened — risk-on market'); }
+    }
+    // Bull leveraged (TQQQ, SOXL, TNA) — boost in strong trends
+    if (['TQQQ', 'SOXL', 'TNA'].includes(symbol)) {
+      if (regime === 'trending_up' && adxVal > 25) { score += 0.2; confluenceBullish++; reasons.push('Bull leveraged + strong uptrend — amplified'); }
+      if (regime === 'trending_down') { score *= 0.5; reasons.push('Bull leveraged in downtrend — heavy dampen'); }
+    }
+  }
+
   // ─── MULTI-INDICATOR CONFLUENCE BONUS ───
   // Higher confluence = exponentially better win rate. Reward it aggressively.
   const confluence = Math.max(confluenceBullish, confluenceBearish);
@@ -4185,9 +4281,10 @@ function runAllAgents(userId, fundData) {
 
   // Asset class categorization for correlation limiting
   const getAssetClass = (sym) => {
-    if (['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(sym)) return 'crypto';
+    if (['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(sym)) return 'crypto';
     if (sym.includes('/')) return 'forex';
-    if (['SPY','QQQ','GLD','TLT','IWM','EEM','VOO'].includes(sym)) return 'etf';
+    if (['SPY','QQQ','GLD','TLT','IWM','EEM','VOO','DIA','VTI','XLF','XLE','XLK','ARKK','HYG'].includes(sym)) return 'etf';
+    if (['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(sym)) return 'options';
     return 'stock';
   };
 
@@ -4197,10 +4294,11 @@ function runAllAgents(userId, fundData) {
     // Skip if already have position in this symbol
     if (openPositions.some(p => p.symbol === signal.symbol)) continue;
 
-    // Correlation limiting — max positions per asset class
+    // Correlation limiting — max positions per asset class (ETFs get 3 due to larger universe)
     const assetClass = getAssetClass(signal.symbol);
     const classCount = openPositions.filter(p => getAssetClass(p.symbol) === assetClass).length;
-    if (classCount >= AUTO_TRADE_CONFIG.maxCorrelatedPositions) continue;
+    const maxForClass = assetClass === 'etf' ? 3 : AUTO_TRADE_CONFIG.maxCorrelatedPositions;
+    if (classCount >= maxForClass) continue;
 
     const side = signal.adjustedScore > 0 ? 'LONG' : 'SHORT';
     const strength = Math.abs(signal.adjustedScore);
@@ -4230,6 +4328,12 @@ function runAllAgents(userId, fundData) {
     else sizePct = AUTO_TRADE_CONFIG.baseSizePct;
 
     sizePct *= drawdownMultiplier;
+
+    // Asset-class position sizing adjustment
+    const sigAssetClass = getAssetClass(signal.symbol);
+    if (sigAssetClass === 'forex') sizePct *= 1.5;      // Forex: larger size, tighter stops compensate
+    if (sigAssetClass === 'crypto') sizePct *= 0.7;      // Crypto: smaller size, higher volatility
+    if (sigAssetClass === 'options') sizePct *= 0.6;      // Options proxies: smaller size, leveraged instruments
 
     const maxPosValue = equity * sizePct;
     const quantity = Math.max(1, Math.floor(maxPosValue / price));
@@ -4266,8 +4370,20 @@ function adaptivePositionManagement(userId, openPositions) {
     const regime = symbolRegimes[pos.symbol] || 'ranging';
     const mom = hist.length >= 20 ? momentum(hist, 10) : 0;
 
+    // ─── ASSET-CLASS ADJUSTED PARAMETERS ───
+    const posAssetClass = (() => {
+      if (['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(pos.symbol)) return 'crypto';
+      if (pos.symbol.includes('/')) return 'forex';
+      if (['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(pos.symbol)) return 'options';
+      if (['SPY','QQQ','GLD','TLT','IWM','EEM','VOO','DIA','VTI','XLF','XLE','XLK','ARKK','HYG'].includes(pos.symbol)) return 'etf';
+      return 'stock';
+    })();
+    // Forex: tighter stops (low vol), Crypto: wider stops (high vol), Options: moderate, ETF: standard
+    const assetStopMultiplier = posAssetClass === 'forex' ? 0.5 : posAssetClass === 'crypto' ? 1.8 : posAssetClass === 'options' ? 1.4 : 1.0;
+    const assetProfitMultiplier = posAssetClass === 'forex' ? 0.6 : posAssetClass === 'crypto' ? 2.0 : posAssetClass === 'options' ? 1.5 : 1.0;
+
     // ─── HARD STOP-LOSS: Absolute max loss per position — non-negotiable ───
-    const maxLoss = AUTO_TRADE_CONFIG.maxLossPct || 0.6;
+    const maxLoss = (AUTO_TRADE_CONFIG.maxLossPct || 0.6) * assetStopMultiplier;
     if (pnlPct < -maxLoss) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
@@ -4291,7 +4407,7 @@ function adaptivePositionManagement(userId, openPositions) {
     }
 
     // ─── PROFIT TARGET: Take profit at target to lock in wins (high win-rate strategy) ───
-    const profitTarget = AUTO_TRADE_CONFIG.profitTargetPct || 1.5;
+    const profitTarget = (AUTO_TRADE_CONFIG.profitTargetPct || 1.5) * assetProfitMultiplier;
     if (pnlPct >= profitTarget) {
       closePosition(userId, pos.id);
       updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
