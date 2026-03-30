@@ -1281,50 +1281,93 @@ function SignalTracker({ investor, isMobile }) {
           {signals.length === 0 ? (
             <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>Signals will appear here as trading begins...</div>
           ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? 600 : undefined }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                  {["Time", "Agent", "Symbol", "Side", "Score", "Confluence", "Action", "P&L", "Outcome"].map(h => (
-                    <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: "rgba(255,255,255,0.35)", fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {signals.slice(0, 50).map((sig, i) => (
-                  <tr key={sig.signal_id || i} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                    <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.5)" }}>{new Date(sig.timestamp).toLocaleTimeString()}</td>
-                    <td style={{ padding: "8px 10px", fontWeight: 600, color: "#A855F7" }}>{sig.agent}</td>
-                    <td style={{ padding: "8px 10px", fontWeight: 600 }}>{sig.symbol}</td>
-                    <td style={{ padding: "8px 10px", color: sig.side === 'LONG' ? "#10B981" : "#EF4444", fontWeight: 600 }}>{sig.side}</td>
-                    <td style={{ padding: "8px 10px" }}>
+            {isMobile ? (
+              /* Mobile: Card-based signal feed */
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {signals.slice(0, 30).map((sig, i) => (
+                  <div key={sig.signal_id || i} style={{
+                    padding: 14, borderRadius: 12,
+                    background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontWeight: 700, color: "#fff", fontSize: 14 }}>{sig.symbol}</span>
+                        <span style={{ color: sig.side === 'LONG' ? "#10B981" : "#EF4444", fontWeight: 600, fontSize: 11 }}>{sig.side}</span>
+                        <span style={{ color: "#A855F7", fontSize: 11, fontWeight: 600 }}>{sig.agent}</span>
+                      </div>
+                      <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{new Date(sig.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                       <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600,
                         background: Math.abs(sig.adjusted_score) >= 0.7 ? "rgba(16,185,129,0.15)" : Math.abs(sig.adjusted_score) >= 0.5 ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.05)",
                         color: Math.abs(sig.adjusted_score) >= 0.7 ? "#10B981" : Math.abs(sig.adjusted_score) >= 0.5 ? "#F59E0B" : "rgba(255,255,255,0.5)",
                       }}>{(sig.adjusted_score * 100).toFixed(0)}%</span>
-                    </td>
-                    <td style={{ padding: "8px 10px" }}>
-                      {"●".repeat(Math.min(sig.confluence || 0, 6))}
-                      <span style={{ color: "rgba(255,255,255,0.2)" }}>{"○".repeat(Math.max(0, 6 - (sig.confluence || 0)))}</span>
-                    </td>
-                    <td style={{ padding: "8px 10px" }}>
+                      <span style={{ fontSize: 11 }}>
+                        {"●".repeat(Math.min(sig.confluence || 0, 6))}
+                        <span style={{ color: "rgba(255,255,255,0.2)" }}>{"○".repeat(Math.max(0, 6 - (sig.confluence || 0)))}</span>
+                      </span>
                       <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600,
                         background: sig.action === 'EXECUTED' ? "rgba(16,185,129,0.15)" : sig.action === 'REJECTED' ? "rgba(239,68,68,0.15)" : "rgba(255,255,255,0.05)",
                         color: sig.action === 'EXECUTED' ? "#10B981" : sig.action === 'REJECTED' ? "#EF4444" : "rgba(255,255,255,0.4)",
                       }}>{sig.action}</span>
-                    </td>
-                    <td style={{ padding: "8px 10px", color: sig.pnl == null ? "rgba(255,255,255,0.2)" : sig.pnl >= 0 ? "#10B981" : "#EF4444", fontWeight: 600 }}>
-                      {sig.pnl != null ? `${sig.pnl >= 0 ? '+' : ''}$${sig.pnl.toFixed(2)}` : '—'}
-                    </td>
-                    <td style={{ padding: "8px 10px" }}>
+                      <span style={{ fontSize: 12, fontWeight: 600,
+                        color: sig.pnl == null ? "rgba(255,255,255,0.2)" : sig.pnl >= 0 ? "#10B981" : "#EF4444",
+                      }}>{sig.pnl != null ? `${sig.pnl >= 0 ? '+' : ''}$${sig.pnl.toFixed(2)}` : '—'}</span>
                       <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600,
                         background: sig.outcome === 'WIN' ? "rgba(16,185,129,0.15)" : sig.outcome === 'LOSS' ? "rgba(239,68,68,0.15)" : "rgba(255,255,255,0.05)",
                         color: sig.outcome === 'WIN' ? "#10B981" : sig.outcome === 'LOSS' ? "#EF4444" : "rgba(255,255,255,0.3)",
                       }}>{sig.outcome || 'PENDING'}</span>
-                    </td>
-                  </tr>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            ) : (
+              /* Desktop: Full table */
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                    {["Time", "Agent", "Symbol", "Side", "Score", "Confluence", "Action", "P&L", "Outcome"].map(h => (
+                      <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: "rgba(255,255,255,0.35)", fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {signals.slice(0, 50).map((sig, i) => (
+                    <tr key={sig.signal_id || i} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                      <td style={{ padding: "8px 10px", color: "rgba(255,255,255,0.5)" }}>{new Date(sig.timestamp).toLocaleTimeString()}</td>
+                      <td style={{ padding: "8px 10px", fontWeight: 600, color: "#A855F7" }}>{sig.agent}</td>
+                      <td style={{ padding: "8px 10px", fontWeight: 600 }}>{sig.symbol}</td>
+                      <td style={{ padding: "8px 10px", color: sig.side === 'LONG' ? "#10B981" : "#EF4444", fontWeight: 600 }}>{sig.side}</td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                          background: Math.abs(sig.adjusted_score) >= 0.7 ? "rgba(16,185,129,0.15)" : Math.abs(sig.adjusted_score) >= 0.5 ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.05)",
+                          color: Math.abs(sig.adjusted_score) >= 0.7 ? "#10B981" : Math.abs(sig.adjusted_score) >= 0.5 ? "#F59E0B" : "rgba(255,255,255,0.5)",
+                        }}>{(sig.adjusted_score * 100).toFixed(0)}%</span>
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        {"●".repeat(Math.min(sig.confluence || 0, 6))}
+                        <span style={{ color: "rgba(255,255,255,0.2)" }}>{"○".repeat(Math.max(0, 6 - (sig.confluence || 0)))}</span>
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600,
+                          background: sig.action === 'EXECUTED' ? "rgba(16,185,129,0.15)" : sig.action === 'REJECTED' ? "rgba(239,68,68,0.15)" : "rgba(255,255,255,0.05)",
+                          color: sig.action === 'EXECUTED' ? "#10B981" : sig.action === 'REJECTED' ? "#EF4444" : "rgba(255,255,255,0.4)",
+                        }}>{sig.action}</span>
+                      </td>
+                      <td style={{ padding: "8px 10px", color: sig.pnl == null ? "rgba(255,255,255,0.2)" : sig.pnl >= 0 ? "#10B981" : "#EF4444", fontWeight: 600 }}>
+                        {sig.pnl != null ? `${sig.pnl >= 0 ? '+' : ''}$${sig.pnl.toFixed(2)}` : '—'}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600,
+                          background: sig.outcome === 'WIN' ? "rgba(16,185,129,0.15)" : sig.outcome === 'LOSS' ? "rgba(239,68,68,0.15)" : "rgba(255,255,255,0.05)",
+                          color: sig.outcome === 'WIN' ? "#10B981" : sig.outcome === 'LOSS' ? "#EF4444" : "rgba(255,255,255,0.3)",
+                        }}>{sig.outcome || 'PENDING'}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           )}
         </div>
       )}
@@ -1845,13 +1888,17 @@ function ResearchView({ isMobile }) {
   }, [query, allSymbols]);
 
   // Auto-refresh research data every 10 seconds
+  const [refreshError, setRefreshError] = useState(false);
   useEffect(() => {
     if (!selectedSymbol) return;
     const interval = setInterval(() => {
       fetch(`${API_BASE}/market/research/${selectedSymbol}`)
         .then(r => r.ok ? r.json() : null)
-        .then(data => { if (data) setResearch(data); })
-        .catch(() => {});
+        .then(data => {
+          if (data) { setResearch(data); setRefreshError(false); }
+          else { setRefreshError(true); }
+        })
+        .catch(() => { setRefreshError(true); });
     }, 10000);
     return () => clearInterval(interval);
   }, [selectedSymbol]);
@@ -2066,6 +2113,20 @@ function ResearchView({ isMobile }) {
                     padding: '3px 10px', borderRadius: 8, fontSize: 10, fontWeight: 600,
                     background: 'rgba(0,212,255,0.1)', color: '#00D4FF',
                   }}>{research.assetClass}</span>
+                  <span style={{
+                    padding: '3px 10px', borderRadius: 8, fontSize: 10, fontWeight: 600,
+                    background: research.dataSource === 'real' ? 'rgba(16,185,129,0.15)'
+                      : research.dataSource === 'initializing' ? 'rgba(0,212,255,0.15)'
+                      : research.dataSource === 'stale' ? 'rgba(239,68,68,0.15)'
+                      : 'rgba(245,158,11,0.15)',
+                    color: research.dataSource === 'real' ? '#10B981'
+                      : research.dataSource === 'initializing' ? '#00D4FF'
+                      : research.dataSource === 'stale' ? '#EF4444'
+                      : '#F59E0B',
+                  }}>{research.dataSource === 'real' ? 'LIVE'
+                    : research.dataSource === 'initializing' ? 'CONNECTING...'
+                    : research.dataSource === 'stale' ? 'STALE'
+                    : 'SIMULATED'}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
                   <span style={{ fontSize: 32, fontWeight: 800, color: '#fff' }}>
@@ -2229,7 +2290,9 @@ function ResearchView({ isMobile }) {
 
           {/* Disclaimer */}
           <div style={{ textAlign: 'center', padding: '8px 16px', fontSize: 10, color: 'rgba(255,255,255,0.15)' }}>
-            Paper trading analysis — not financial advice. Signals are generated from simulated market data.
+            {research?.dataSource === 'real'
+              ? 'Live market data — not financial advice. AI signals are algorithmic analysis, not trade recommendations.'
+              : 'Paper trading analysis — not financial advice. Signals are generated from simulated market data.'}
           </div>
         </>
       )}
@@ -3212,8 +3275,8 @@ function PortfolioDashboard({ investor, onLogout }) {
         {/* Top Bar */}
         <div style={{
           ...glass, borderRadius: 0, borderTop: "none", borderRight: "none",
-          padding: `calc(14px + ${safeAreaTop}) 24px 14px 24px`, display: "flex", alignItems: "center", justifyContent: "space-between",
-          position: "sticky", top: 0, zIndex: 100,
+          padding: `calc(14px + ${safeAreaTop}) ${isMobile ? 16 : 24}px 14px ${isMobile ? 16 : 24}px`, display: "flex", alignItems: "center", justifyContent: "space-between",
+          position: "sticky", top: 0, zIndex: 100, gap: 12,
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             {/* Mobile hamburger */}
@@ -3267,7 +3330,7 @@ function PortfolioDashboard({ investor, onLogout }) {
                     <span style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", marginLeft: 6 }}>return</span>
                   </div>
                   <div>
-                    <span style={{ fontSize: 14, color: "#A855F7", fontWeight: 600 }}>8.33%</span>
+                    <span style={{ fontSize: 14, color: "#A855F7", fontWeight: 600 }}>{(investor.ownershipPct || 0).toFixed(2)}%</span>
                     <span style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", marginLeft: 6 }}>ownership</span>
                   </div>
                 </div>
@@ -3340,9 +3403,9 @@ function PortfolioDashboard({ investor, onLogout }) {
 
           {/* ═══ ACTIVITY VIEW ═══ */}
           {activeTab === "activity" && (
-            <div style={{ ...glass, padding: 24, overflowX: "auto" }}>
+            <div style={{ ...glass, padding: isMobile ? 16 : 24, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
               <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>Transaction History</div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 500 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 12 : 13, minWidth: isMobile ? undefined : 500 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
                     {["Date", "Type", "Description", "Amount"].map(h => (
@@ -3809,8 +3872,8 @@ function SettingsView({ investor, isMobile }) {
             { label: "Investor ID", value: investor.id },
             { label: "Passkey", value: investor.hasPasskey ? "Enabled" : "Not set up" },
             { label: "2FA", value: twoFAEnabled ? "Enabled" : "Disabled", badge: twoFAEnabled ? "Active" : null, badgeColor: "#10B981" },
-            { label: "Ownership", value: "8.33%" },
-            { label: "Account Type", value: "Member — LLC" },
+            { label: "Ownership", value: `${(investor.ownershipPct || 0).toFixed(2)}%` },
+            { label: "Account Type", value: investor.accountType || "Member — LLC" },
           ].map(f => (
             <div key={f.label}>
               <div style={labelStyle}>{f.label}</div>

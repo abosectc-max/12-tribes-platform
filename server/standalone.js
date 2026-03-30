@@ -414,6 +414,107 @@ class Router {
 }
 
 // ═══════════════════════════════════════════
+//   REAL MARKET DATA — Yahoo Finance Integration
+//   Fetches live quotes with automatic fallback to simulated engine
+// ═══════════════════════════════════════════
+
+const MARKET_DATA_MODE = process.env.MARKET_DATA_MODE || 'real'; // 'real' | 'simulated' | 'hybrid'
+const REAL_PRICE_CACHE = {}; // { symbol: { price, timestamp } }
+const REAL_PRICE_TTL = 15000; // 15-second cache to avoid rate limiting
+let lastRealFetchTime = 0;
+let realDataAvailable = false; // Set true once first successful fetch completes
+
+// Yahoo Finance symbol mapping (crypto needs special format)
+const YAHOO_SYMBOL_MAP = {
+  'BTC': 'BTC-USD', 'ETH': 'ETH-USD', 'SOL': 'SOL-USD', 'AVAX': 'AVAX-USD',
+  'DOGE': 'DOGE-USD', 'XRP': 'XRP-USD', 'ADA': 'ADA-USD',
+  'EUR/USD': 'EURUSD=X', 'GBP/USD': 'GBPUSD=X', 'USD/JPY': 'JPY=X', 'AUD/USD': 'AUDUSD=X',
+};
+
+function getYahooSymbol(sym) {
+  return YAHOO_SYMBOL_MAP[sym] || sym;
+}
+
+// Fetch real quotes from Yahoo Finance (batch — up to 10 symbols per call)
+async function fetchRealPrices(symbols) {
+  if (MARKET_DATA_MODE === 'simulated') return {};
+
+  const https = await import('node:https');
+  const yahooSymbols = symbols.map(s => getYahooSymbol(s));
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${yahooSymbols.join(',')}`;
+
+  return new Promise((resolve) => {
+    const req = https.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; 12Tribes/1.0)' },
+      timeout: 8000,
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          const quotes = data?.quoteResponse?.result || [];
+          const prices = {};
+          for (const quote of quotes) {
+            // Map Yahoo symbol back to our symbol
+            const ourSym = symbols.find(s => getYahooSymbol(s) === quote.symbol) || quote.symbol;
+            const price = quote.regularMarketPrice || quote.price;
+            if (price && price > 0) {
+              const decimals = price < 10 ? 4 : 2;
+              prices[ourSym] = roundTo(price, decimals);
+              REAL_PRICE_CACHE[ourSym] = { price: prices[ourSym], timestamp: Date.now() };
+            }
+          }
+          if (Object.keys(prices).length > 0) {
+            realDataAvailable = true;
+            lastRealFetchTime = Date.now();
+          }
+          resolve(prices);
+        } catch (e) {
+          console.warn('[Market Data] Yahoo Finance parse error:', e.message);
+          resolve({});
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.warn('[Market Data] Yahoo Finance fetch error:', e.message);
+      resolve({});
+    });
+    req.on('timeout', () => { req.destroy(); resolve({}); });
+  });
+}
+
+// Batch fetch all symbols — called periodically
+async function refreshRealMarketData() {
+  if (MARKET_DATA_MODE === 'simulated') return;
+
+  const allSyms = Object.keys(DEFAULT_PRICES);
+  // Batch in groups of 10 to avoid URL length issues
+  for (let i = 0; i < allSyms.length; i += 10) {
+    const batch = allSyms.slice(i, i + 10);
+    try {
+      const prices = await fetchRealPrices(batch);
+      for (const [sym, price] of Object.entries(prices)) {
+        if (price > 0) {
+          marketPrices[sym] = price;
+          // Update price history with real data
+          if (priceHistory[sym]) {
+            priceHistory[sym].push(price);
+            if (priceHistory[sym].length > PRICE_HISTORY_LEN) priceHistory[sym].shift();
+            symbolRegimes[sym] = detectRegime(priceHistory[sym]);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[Market Data] Batch fetch error for ${batch.join(',')}: ${e.message}`);
+    }
+    // Small delay between batches to be respectful
+    await new Promise(r => setTimeout(r, 500));
+  }
+  console.log(`[Market Data] Real prices refreshed: ${Object.keys(REAL_PRICE_CACHE).length} symbols, mode=${MARKET_DATA_MODE}`);
+}
+
+// ═══════════════════════════════════════════
 //   MARKET DATA + SIMULATED PRICE ENGINE
 // ═══════════════════════════════════════════
 
@@ -961,10 +1062,17 @@ function detectRegime(hist) {
 }
 
 // ─── Price tick with micro-trend persistence ───
-// Prices exhibit short-term trends (momentum) that agents can exploit
+// In hybrid/real mode: uses real prices as base, simulated micro-noise for intra-tick movement
+// In simulated mode: fully synthetic price engine
 const trendState = {}; // per-symbol trend drift
 for (const sym of Object.keys(DEFAULT_PRICES)) {
   trendState[sym] = { drift: 0, duration: 0, maxDuration: 30 + Math.floor(Math.random() * 60) };
+}
+
+// Track data source per symbol for transparency
+const priceDataSource = {}; // { symbol: 'real' | 'simulated' }
+for (const sym of Object.keys(DEFAULT_PRICES)) {
+  priceDataSource[sym] = 'simulated';
 }
 
 function tickPrices() {
@@ -975,27 +1083,43 @@ function tickPrices() {
     const price = marketPrices[symbol];
     const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA'].includes(symbol);
     const isFx = symbol.includes('/');
-    const baseVol = isFx ? 0.0003 : isCrypto ? 0.002 : 0.001;
 
-    // Apply session-aware volatility — markets are quieter off-hours, more volatile during active sessions
-    // Crypto trades 24/7 so less affected by session
-    const sessionAdj = isCrypto ? (0.7 + sessionVol * 0.3) : sessionVol;
-    const adjVol = baseVol * sessionAdj;
+    // Check if we have a recent real price for this symbol
+    const cached = REAL_PRICE_CACHE[symbol];
+    const hasRealPrice = cached && (Date.now() - cached.timestamp < 60000); // Real price < 60s old
 
-    // Micro-trend system: prices have short-lived directional biases
-    let ts = trendState[symbol];
-    ts.duration++;
-    if (ts.duration >= ts.maxDuration) {
-      // New micro-trend
-      ts.drift = (Math.random() - 0.45) * adjVol * 2; // slight upward bias overall
-      ts.duration = 0;
-      ts.maxDuration = 20 + Math.floor(Math.random() * 80);
+    if (hasRealPrice && MARKET_DATA_MODE !== 'simulated') {
+      // REAL MODE: Use real price with micro-noise for sub-second movement
+      const realPrice = cached.price;
+      const microNoise = realPrice * (Math.random() - 0.5) * 0.0002; // ±0.02% micro-noise
+      const decimals = realPrice < 10 ? 4 : 2;
+      marketPrices[symbol] = roundTo(realPrice + microNoise, decimals);
+      priceDataSource[symbol] = 'real';
+    } else if (MARKET_DATA_MODE === 'real' && !hasRealPrice) {
+      // REAL-ONLY MODE: No real data yet — hold last known price, don't simulate
+      // Price stays frozen at last value until real data arrives
+      // Mark as 'pending' so UI knows data is stale
+      priceDataSource[symbol] = realDataAvailable ? 'stale' : 'initializing';
+    } else {
+      // SIMULATED or HYBRID FALLBACK: Full synthetic price engine
+      const baseVol = isFx ? 0.0003 : isCrypto ? 0.002 : 0.001;
+      const sessionAdj = isCrypto ? (0.7 + sessionVol * 0.3) : sessionVol;
+      const adjVol = baseVol * sessionAdj;
+
+      let ts = trendState[symbol];
+      ts.duration++;
+      if (ts.duration >= ts.maxDuration) {
+        ts.drift = (Math.random() - 0.45) * adjVol * 2;
+        ts.duration = 0;
+        ts.maxDuration = 20 + Math.floor(Math.random() * 80);
+      }
+
+      const noise = (Math.random() - 0.5) * adjVol;
+      const change = ts.drift + noise;
+      const decimals = price < 10 ? 4 : 2;
+      marketPrices[symbol] = roundTo(price * (1 + change), decimals);
+      priceDataSource[symbol] = 'simulated';
     }
-
-    const noise = (Math.random() - 0.5) * adjVol;
-    const change = ts.drift + noise;
-    const decimals = price < 10 ? 4 : 2;
-    marketPrices[symbol] = roundTo(price * (1 + change), decimals);
 
     // Track history
     if (!priceHistory[symbol]) priceHistory[symbol] = [];
@@ -1389,6 +1513,8 @@ api.post('/api/auth/register', async (req, res) => {
     role: isAdmin ? 'admin' : 'investor',
     status: 'active',
     trading_mode: 'paper',
+    ownership_pct: 0, // Dynamic — set by admin via /api/admin/ownership
+    account_type: 'Member — LLC',
     login_count: 1,
     registered_at: new Date().toISOString(),
     last_login_at: new Date().toISOString(),
@@ -1766,9 +1892,17 @@ api.get('/api/auth/me', auth, (req, res) => {
     }
   }
 
+  // Calculate dynamic ownership: if user has explicit ownership_pct use it,
+  // otherwise calculate equal share across all active investors
+  const allUsers = db.findMany('users', u => u.status === 'active');
+  const ownershipPct = (user.ownership_pct && user.ownership_pct > 0)
+    ? user.ownership_pct
+    : (allUsers.length > 0 ? roundTo(100 / allUsers.length, 2) : 0);
+
   json(res, 200, {
     id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name,
     avatar: user.avatar, role: user.role, tradingMode: user.trading_mode,
+    ownershipPct, accountType: user.account_type || 'Member — LLC',
     registeredAt: user.registered_at, lastLoginAt: user.last_login_at, loginCount: user.login_count,
   });
 });
@@ -1961,10 +2095,50 @@ api.get('/api/admin/users', auth, (req, res) => {
       openPositions: openPositions.length,
       isTrading: fundSettings?.data?.autoTrading?.isAutoTrading || false,
       tradingModeActive: fundSettings?.data?.autoTrading?.tradingMode || 'balanced',
+      ownershipPct: u.ownership_pct || 0,
+      accountType: u.account_type || 'Member — LLC',
     };
   });
 
+  // If no explicit ownership is set, calculate equal shares
+  const totalExplicit = allUsers.reduce((s, u) => s + (u.ownershipPct || 0), 0);
+  if (totalExplicit === 0) {
+    const equalShare = roundTo(100 / allUsers.length, 2);
+    allUsers.forEach(u => { u.ownershipPct = equalShare; });
+  }
+
   json(res, 200, allUsers);
+});
+
+// ─── ADMIN: SET INVESTOR OWNERSHIP ───
+api.put('/api/admin/ownership', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  const { shares } = body; // Array of { userId, ownershipPct }
+
+  if (!Array.isArray(shares)) {
+    return json(res, 400, { error: 'Expected { shares: [{ userId, ownershipPct }] }' });
+  }
+
+  // Validate total doesn't exceed 100%
+  const total = shares.reduce((s, sh) => s + (Number(sh.ownershipPct) || 0), 0);
+  if (total > 100.01) {
+    return json(res, 400, { error: `Total ownership ${total.toFixed(2)}% exceeds 100%. Adjust allocations.` });
+  }
+
+  // Apply updates
+  const results = [];
+  for (const { userId, ownershipPct } of shares) {
+    const user = db.findOne('users', u => u.id === userId);
+    if (!user) { results.push({ userId, error: 'User not found' }); continue; }
+    user.ownership_pct = roundTo(Number(ownershipPct) || 0, 2);
+    results.push({ userId, ownershipPct: user.ownership_pct, name: `${user.first_name} ${user.last_name}` });
+  }
+  db._save('users');
+
+  json(res, 200, { message: 'Ownership updated', totalAllocated: roundTo(total, 2), shares: results });
 });
 
 // ─── ADMIN: UPDATE USER ROLE ───
@@ -2601,7 +2775,19 @@ api.post('/api/trading/kill-switch', auth, async (req, res) => {
 
 // ─── MARKET: PRICES ───
 api.get('/api/market/prices', (req, res) => {
-  json(res, 200, { prices: marketPrices, symbols: Object.keys(marketPrices), timestamp: Date.now() });
+  const realCount = Object.values(priceDataSource).filter(s => s === 'real').length;
+  const totalCount = Object.keys(priceDataSource).length;
+  json(res, 200, {
+    prices: marketPrices,
+    symbols: Object.keys(marketPrices),
+    dataSources: priceDataSource,
+    dataMode: MARKET_DATA_MODE,
+    realDataAvailable,
+    realSymbolCount: realCount,
+    totalSymbolCount: totalCount,
+    lastRealFetchTime,
+    timestamp: Date.now(),
+  });
 });
 
 // ─── MARKET: RESEARCH ───
@@ -2694,6 +2880,9 @@ api.get('/api/market/research/:symbol', (req, res) => {
   json(res, 200, {
     symbol, assetClass, price, open, high, low,
     changePct: roundTo(changePct, 4),
+    dataSource: priceDataSource[symbol] || 'simulated',
+    dataMode: MARKET_DATA_MODE,
+    realDataAvailable,
     technicals: {
       sma10: roundTo(sma10, 4), sma30: roundTo(sma30, 4),
       ema12: roundTo(ema12, 4), ema26: roundTo(ema26, 4),
@@ -2787,6 +2976,20 @@ const priceInterval = setInterval(() => {
   tickPrices();
   wsBroadcastPrices();
 }, 2000);
+
+// Real market data refresh — every 30 seconds (if enabled)
+if (MARKET_DATA_MODE !== 'simulated') {
+  // Initial fetch on boot (delayed 3s to let server start)
+  setTimeout(() => {
+    console.log(`[Market Data] Initial real price fetch starting (mode=${MARKET_DATA_MODE})...`);
+    refreshRealMarketData().catch(e => console.warn('[Market Data] Initial fetch error:', e.message));
+  }, 3000);
+
+  // Periodic refresh every 30 seconds
+  setInterval(() => {
+    refreshRealMarketData().catch(e => console.warn('[Market Data] Periodic fetch error:', e.message));
+  }, 30000);
+}
 
 // ═══════════════════════════════════════════
 //   SERVER-SIDE AUTONOMOUS TRADING ENGINE

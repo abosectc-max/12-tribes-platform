@@ -17,3 +17,5 @@ services:
         value: https://12-tribes-platform.vercel.app
       - key: DATA_DIR
         value: /data
+      - key: MARKET_DATA_MODE
+        value: real
