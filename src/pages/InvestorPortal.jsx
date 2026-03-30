@@ -1909,7 +1909,7 @@ function ResearchView({ isMobile }) {
   useEffect(() => {
     if (!selectedSymbol) return;
     const interval = setInterval(() => {
-      fetch(`${API_BASE}/market/research/${selectedSymbol}`)
+      fetch(`${API_BASE}/market/research/${encodeURIComponent(selectedSymbol)}`)
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (data) { setResearch(data); setRefreshError(false); }
@@ -1929,7 +1929,7 @@ function ResearchView({ isMobile }) {
     setQuery(sym);
     setSearchResults([]);
     try {
-      const res = await fetch(`${API_BASE}/market/research/${sym}`);
+      const res = await fetch(`${API_BASE}/market/research/${encodeURIComponent(sym)}`);
       const data = await res.json();
       if (res.ok) {
         setResearch(data);
@@ -2019,7 +2019,7 @@ function ResearchView({ isMobile }) {
       <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: '#fff', marginBottom: 4 }}>Market Research</div>
         <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', marginBottom: 16 }}>
-          AI-powered technical analysis across stocks, crypto, forex & ETFs
+          AI-powered technical analysis across stocks, crypto, forex, ETFs, futures, options & cash
         </div>
 
         {/* Search Bar */}
@@ -2072,9 +2072,12 @@ function ResearchView({ isMobile }) {
         <div style={{ marginTop: 14 }}>
           {[
             { label: 'Stocks', symbols: ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'META', 'AMZN', 'GOOGL'] },
-            { label: 'Crypto', symbols: ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'] },
-            { label: 'Forex', symbols: ['EUR/USD', 'GBP/USD', 'USD/JPY'] },
-            { label: 'ETFs', symbols: ['SPY', 'QQQ', 'GLD'] },
+            { label: 'Crypto', symbols: ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'DOT', 'LINK'] },
+            { label: 'Forex', symbols: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD'] },
+            { label: 'ETFs', symbols: ['SPY', 'QQQ', 'GLD', 'TLT', 'XLF', 'XLE', 'ARKK'] },
+            { label: 'Futures', symbols: ['CL=F', 'GC=F', 'SI=F', 'NG=F', 'ES=F', 'NQ=F'] },
+            { label: 'Options', symbols: ['TQQQ', 'SOXL', 'UVXY', 'SPXS', 'SQQQ'] },
+            { label: 'Cash', symbols: ['BIL', 'SHV', 'SGOV'] },
           ].map(cat => (
             <div key={cat.label} style={{ marginBottom: 8 }}>
               <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1, marginRight: 8 }}>{cat.label}</span>

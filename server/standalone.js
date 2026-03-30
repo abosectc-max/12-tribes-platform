@@ -3094,8 +3094,14 @@ async function fetchOnDemandResearch(symbol) {
 
 // ─── MARKET: RESEARCH ───
 // Comprehensive research endpoint — technical analysis, AI signals, and agent insights
-api.get('/api/market/research/:symbol', async (req, res) => {
-  const symbol = req.params.symbol.toUpperCase();
+// Forex route: handles EUR/USD pattern (slash in URL path)
+api.get('/api/market/research/:base/:quote', async (req, res) => {
+  const symbol = `${req.params.base}/${req.params.quote}`.toUpperCase();
+  req.params.symbol = symbol;
+  return researchHandler(req, res);
+});
+async function researchHandler(req, res) {
+  const symbol = decodeURIComponent(req.params.symbol).toUpperCase();
   const price = marketPrices[symbol];
   if (price === undefined) {
     // On-demand lookup: fetch live from Yahoo Finance for any symbol
@@ -3133,10 +3139,13 @@ api.get('/api/market/research/:symbol', async (req, res) => {
   const changePct = open > 0 ? ((price - open) / open * 100) : 0;
 
   // Classify asset
-  const isCrypto = ['BTC', 'ETH', 'SOL', 'AVAX', 'DOGE', 'XRP', 'ADA'].includes(symbol);
+  const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(symbol);
   const isFx = symbol.includes('/');
-  const isEtf = ['SPY', 'QQQ', 'GLD', 'TLT', 'IWM', 'EEM', 'VOO'].includes(symbol);
-  const assetClass = isCrypto ? 'Cryptocurrency' : isFx ? 'Forex' : isEtf ? 'ETF' : 'Stock';
+  const isFutures = symbol.endsWith('=F');
+  const isCash = ['BIL','SHV','SGOV'].includes(symbol);
+  const isLeveraged = ['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(symbol);
+  const isEtf = ['SPY','QQQ','GLD','TLT','IWM','EEM','VOO','DIA','VTI','XLF','XLE','XLK','ARKK','HYG'].includes(symbol);
+  const assetClass = isCrypto ? 'Cryptocurrency' : isFx ? 'Forex' : isFutures ? 'Futures' : isCash ? 'Cash' : isLeveraged ? 'Options Proxy' : isEtf ? 'ETF' : 'Stock';
 
   // Which AI agents track this symbol
   const trackingAgents = AI_AGENTS.filter(a => a.symbols.includes(symbol)).map(a => ({
@@ -3206,7 +3215,9 @@ api.get('/api/market/research/:symbol', async (req, res) => {
     priceHistory: hist.slice(-60).map((p, i) => ({ tick: i, price: p })),
     timestamp: Date.now(),
   });
-});
+}
+// Single-symbol research route (also handles URL-encoded forex like EUR%2FUSD)
+api.get('/api/market/research/:symbol', async (req, res) => researchHandler(req, res));
 
 // ─── MARKET: SEARCH SYMBOLS ───
 api.get('/api/market/search', async (req, res) => {
