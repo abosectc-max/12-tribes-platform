@@ -3127,6 +3127,7 @@ const AUTO_TRADE_CONFIG = {
 };
 
 let autoTradeTickCount = 0;
+const SERVER_BOOT_TIME = new Date().toISOString(); // Track deploy time for daily limit scoping
 
 // ═══════════════════════════════════════════
 //   SELF-HEALING ADAPTIVE FEEDBACK SYSTEM
@@ -3839,11 +3840,13 @@ function runAllAgents(userId, fundData) {
   }
   if (wallet.kill_switch_active) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE`); return; }
 
-  // Daily trade limit — count only position OPENS today (avoids double-counting with closed trades)
+  // Daily trade limit — count positions opened since LATER of (today midnight, server boot)
+  // This prevents old session trades from exhausting the new session's daily budget after a deploy
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
-  if (todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
-    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: DAILY LIMIT (${todayOpens} opens >= ${AUTO_TRADE_CONFIG.maxDailyTrades})`);
+  const sessionStart = new Date(Math.max(todayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime()));
+  const sessionOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= sessionStart);
+  if (sessionOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
+    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: DAILY LIMIT (${sessionOpens} opens >= ${AUTO_TRADE_CONFIG.maxDailyTrades})`);
     return;
   }
 
@@ -4409,12 +4412,13 @@ function qaCheckDailyLimits() {
   const fixes = [];
   const allSettings = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading);
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const sessionStart = new Date(Math.max(todayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime()));
   let cappedCount = 0;
 
   for (const settings of allSettings) {
     const userId = settings.user_id;
-    const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
-    if (todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) cappedCount++;
+    const sessionOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= sessionStart);
+    if (sessionOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) cappedCount++;
   }
 
   // If ALL active users are daily-capped, log it but DO NOT auto-raise the limit.
@@ -4503,6 +4507,7 @@ function qaCheckTradeFlow() {
   // Run per-user diagnostics to find the EXACT blocker
   const blockerSummary = { NO_WALLET: 0, KILL_SWITCH: 0, DAILY_LIMIT: 0, NO_SIGNALS: 0, ALL_HELD: 0, TRADING: 0 };
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const sessionStartDiag = new Date(Math.max(todayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime()));
 
   for (const settings of activeUsers) {
     const userId = settings.user_id;
@@ -4510,8 +4515,8 @@ function qaCheckTradeFlow() {
     if (!wallet) { blockerSummary.NO_WALLET++; continue; }
     if (wallet.kill_switch_active) { blockerSummary.KILL_SWITCH++; continue; }
 
-    const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
-    if (todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) { blockerSummary.DAILY_LIMIT++; continue; }
+    const sessionOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= sessionStartDiag);
+    if (sessionOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) { blockerSummary.DAILY_LIMIT++; continue; }
 
     // Check signal availability
     const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
@@ -4996,9 +5001,10 @@ api.get('/api/trading/debug', (req, res) => {
     if (wallet.kill_switch_active) { results.push({ userId, blocked: 'KILL_SWITCH' }); continue; }
 
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
-    if (todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
-      results.push({ userId, blocked: 'DAILY_LIMIT', todayOpens, max: AUTO_TRADE_CONFIG.maxDailyTrades });
+    const sessionStart = new Date(Math.max(todayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime()));
+    const sessionOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= sessionStart);
+    if (sessionOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
+      results.push({ userId, blocked: 'DAILY_LIMIT', sessionOpens, max: AUTO_TRADE_CONFIG.maxDailyTrades, sessionStart: sessionStart.toISOString() });
       continue;
     }
 
