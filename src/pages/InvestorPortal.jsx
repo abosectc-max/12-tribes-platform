@@ -28,20 +28,20 @@ const {
 //   Apple Liquid Glass UI
 // ═══════════════════════════════════════════
 
-// === APPLE LIQUID GLASS — CLEAR/WHITE ===
+// === APPLE LIQUID GLASS — TRUE TRANSPARENT ===
 const glass = {
-  background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
-  backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-  WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-  border: "1px solid rgba(255,255,255,0.28)",
+  background: "rgba(255,255,255,0.04)",
+  backdropFilter: "blur(40px) saturate(180%)",
+  WebkitBackdropFilter: "blur(40px) saturate(180%)",
+  border: "1px solid rgba(255,255,255,0.15)",
   borderRadius: "24px",
-  boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 120px rgba(180,200,255,0.06), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(255,255,255,0.1)",
+  boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
 };
 
 const inputStyle = {
   width: "100%", padding: "14px 18px", borderRadius: 16,
   border: "1px solid rgba(255,255,255,0.2)",
-  background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 15,
+  background: "rgba(255,255,255,0.04)", color: "#fff", fontSize: 15,
   outline: "none", transition: "all 0.2s", boxSizing: "border-box",
   fontFamily: "inherit",
 };
@@ -412,9 +412,9 @@ function LoginForm({ onAuth, onSwitch, isMobile }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 14 }}>
             {/* Divider */}
             <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0" }}>
-              <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.08)" }} />
+              <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.04)" }} />
               <span style={{ fontSize: 11, color: "rgba(255,255,255,0.25)" }}>New to 12 Tribes?</span>
-              <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.08)" }} />
+              <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.04)" }} />
             </div>
 
             {/* Create Account Button */}
@@ -1315,14 +1315,14 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>Current Equity</div>
           <div style={{ fontSize: 28, fontWeight: 800, color: "#fff" }}>${currentEquity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
         </div>
-        <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.08)", display: isMobile ? "none" : "block" }} />
+        <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.04)", display: isMobile ? "none" : "block" }} />
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>All-Time P&L</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: allTimePnL >= 0 ? "#10B981" : "#EF4444" }}>
             {allTimePnL >= 0 ? "+" : ""}${Math.abs(allTimePnL).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </div>
         </div>
-        <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.08)", display: isMobile ? "none" : "block" }} />
+        <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.04)", display: isMobile ? "none" : "block" }} />
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>All-Time Return</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: allTimeReturn >= 0 ? "#10B981" : "#EF4444" }}>
@@ -1331,7 +1331,7 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
         </div>
         {perf.winStreak > 0 && (
           <>
-            <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.08)", display: isMobile ? "none" : "block" }} />
+            <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.04)", display: isMobile ? "none" : "block" }} />
             <div style={{ textAlign: "center" }}>
               <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>Win Streak</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: "#10B981" }}>{perf.winStreak} days</div>
@@ -1578,9 +1578,9 @@ function ResearchView({ isMobile }) {
   };
 
   const glass = {
-    background: "linear-gradient(135deg, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0.06) 100%)", border: "1px solid rgba(255,255,255,0.25)",
-    borderRadius: 18, backdropFilter: "blur(80px) saturate(220%) brightness(1.15)", WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.35)",
+    background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 18, backdropFilter: "blur(40px) saturate(180%)", WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    boxShadow: "inset 0 0.5px 0 rgba(255,255,255,0.35)",
   };
 
   const signalColor = (signal) => {
@@ -1632,7 +1632,7 @@ function ResearchView({ isMobile }) {
     const color = strength > 20 ? '#10B981' : strength < -20 ? '#EF4444' : '#F59E0B';
     return (
       <svg width="120" height="70" viewBox="0 0 120 70">
-        <path d="M 10 65 A 50 50 0 0 1 110 65" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="8" strokeLinecap="round" />
+        <path d="M 10 65 A 50 50 0 0 1 110 65" fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="8" strokeLinecap="round" />
         <path d={`M 10 65 A 50 50 0 0 1 ${60 + 50 * Math.cos(Math.PI - normalized * Math.PI)} ${65 - 50 * Math.sin(Math.PI - normalized * Math.PI)}`}
           fill="none" stroke={color} strokeWidth="8" strokeLinecap="round" />
         <text x="60" y="58" textAnchor="middle" fill={color} fontSize="18" fontWeight="800" fontFamily="system-ui">
@@ -2069,7 +2069,7 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
                 {quickAmounts.map(qa => (
                   <button key={qa} onClick={() => setAmount(String(qa))} style={{
                     padding: "8px 16px", borderRadius: 12, cursor: "pointer",
-                    border: parseFloat(amount) === qa ? "1px solid rgba(0,212,255,0.4)" : "1px solid rgba(255,255,255,0.08)",
+                    border: parseFloat(amount) === qa ? "1px solid rgba(0,212,255,0.4)" : "1px solid rgba(255,255,255,0.04)",
                     background: parseFloat(amount) === qa ? "rgba(0,212,255,0.12)" : "rgba(255,255,255,0.06)",
                     color: parseFloat(amount) === qa ? "#00D4FF" : "rgba(255,255,255,0.5)",
                     fontSize: 13, fontWeight: 600, transition: "all 0.15s",
@@ -2097,7 +2097,7 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
               max={availableBalance}
               style={{
                 width: "100%", padding: "14px 18px", borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.08)", background: "rgba(30,30,34,0.9)",
+                border: "1px solid rgba(255,255,255,0.04)", background: "rgba(30,30,34,0.9)",
                 color: "#fff", fontSize: 22, fontWeight: 700, outline: "none",
                 boxSizing: "border-box", fontFamily: "inherit",
               }}
@@ -2140,7 +2140,7 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
               maxLength={500}
               style={{
                 width: "100%", minHeight: 70, padding: "12px 16px", borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.08)", background: "rgba(30,30,34,0.9)",
+                border: "1px solid rgba(255,255,255,0.04)", background: "rgba(30,30,34,0.9)",
                 color: "#fff", fontSize: 13, outline: "none", resize: "vertical",
                 fontFamily: "inherit", boxSizing: "border-box",
               }}
@@ -2250,17 +2250,17 @@ function FundManagementView({ investorId, wallet, isMobile }) {
   const wMethod = settings?.withdrawal?.method || 'bank_transfer';
 
   const glassStyle = {
-    background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
-    backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    border: "1px solid rgba(255,255,255,0.28)",
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(40px) saturate(180%)",
+    WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    border: "1px solid rgba(255,255,255,0.15)",
     borderRadius: 24,
-    boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 120px rgba(180,200,255,0.06), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(255,255,255,0.1)",
+    boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
   };
 
   const pillBtn = (active, color = "#00D4FF") => ({
     padding: "8px 16px", borderRadius: 12, cursor: "pointer",
-    border: active ? `1px solid ${color}40` : "1px solid rgba(255,255,255,0.08)",
+    border: active ? `1px solid ${color}40` : "1px solid rgba(255,255,255,0.04)",
     background: active ? `${color}18` : "rgba(255,255,255,0.03)",
     color: active ? color : "rgba(255,255,255,0.5)",
     fontSize: 12, fontWeight: 600, transition: "all 0.2s",
@@ -2654,12 +2654,12 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
     : 0;
 
   const glassStyle = {
-    background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
-    backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    border: "1px solid rgba(255,255,255,0.28)",
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(40px) saturate(180%)",
+    WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    border: "1px solid rgba(255,255,255,0.15)",
     borderRadius: 24,
-    boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 120px rgba(180,200,255,0.06), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(255,255,255,0.1)",
+    boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
   };
 
   if (!tradingActive && !isStarting) {
@@ -2682,7 +2682,7 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
             <button key={m.key} onClick={() => setTradingMode(m.key)}
               style={{
                 padding: "10px 18px", borderRadius: 14, cursor: "pointer",
-                border: tradingMode === m.key ? "1px solid rgba(0,212,255,0.4)" : "1px solid rgba(255,255,255,0.08)",
+                border: tradingMode === m.key ? "1px solid rgba(0,212,255,0.4)" : "1px solid rgba(255,255,255,0.04)",
                 background: tradingMode === m.key ? "rgba(0,212,255,0.12)" : "rgba(255,255,255,0.03)",
                 color: tradingMode === m.key ? "#00D4FF" : "rgba(255,255,255,0.5)",
                 fontSize: 12, fontWeight: 600, transition: "all 0.2s",
@@ -3242,12 +3242,12 @@ function FeedbackView({ investor, isMobile }) {
   };
 
   const glassStyle = {
-    background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
-    backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    border: "1px solid rgba(255,255,255,0.28)",
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(40px) saturate(180%)",
+    WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    border: "1px solid rgba(255,255,255,0.15)",
     borderRadius: 24,
-    boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 120px rgba(180,200,255,0.06), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(255,255,255,0.1)",
+    boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
   };
 
   const statusColors = {
@@ -3312,7 +3312,7 @@ function FeedbackView({ investor, isMobile }) {
             maxLength={2000}
             style={{
               width: "100%", minHeight: 120, padding: "14px 16px", borderRadius: 16,
-              border: "1px solid rgba(255,255,255,0.08)", background: "rgba(30,30,34,0.9)",
+              border: "1px solid rgba(255,255,255,0.04)", background: "rgba(30,30,34,0.9)",
               color: "#fff", fontSize: 14, outline: "none", resize: "vertical",
               fontFamily: "inherit", boxSizing: "border-box",
             }}
@@ -3422,7 +3422,7 @@ function SettingsView({ investor, isMobile }) {
     ...glass, padding: isMobile ? 24 : 32, maxWidth: 600, marginBottom: 20,
   };
   const labelStyle = { fontSize: 11, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 };
-  const fieldStyle = { padding: "12px 16px", borderRadius: 14, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", fontSize: 15, color: "rgba(255,255,255,0.7)" };
+  const fieldStyle = { padding: "12px 16px", borderRadius: 14, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.04)", fontSize: 15, color: "rgba(255,255,255,0.7)" };
   const btnPrimary = {
     padding: "12px 24px", borderRadius: 14, border: "none", cursor: "pointer",
     background: "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff",
@@ -3576,7 +3576,7 @@ function SettingsView({ investor, isMobile }) {
         ) : twoFASetupMode ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {/* Step 1: Show secret */}
-            <div style={{ padding: 20, borderRadius: 16, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ padding: 20, borderRadius: 16, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.04)" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.5)", marginBottom: 12 }}>STEP 1 — Open your authenticator app and add a new account</div>
               <div style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", marginBottom: 10 }}>Scan the QR code or manually enter this secret key:</div>
               <div style={{
@@ -3593,7 +3593,7 @@ function SettingsView({ investor, isMobile }) {
             </div>
 
             {/* Step 2: Enter code */}
-            <div style={{ padding: 20, borderRadius: 16, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ padding: 20, borderRadius: 16, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.04)" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.5)", marginBottom: 12 }}>STEP 2 — Enter the 6-digit code from your authenticator app</div>
               <input type="text" value={twoFACode}
                 onChange={e => { setTwoFACode(e.target.value.replace(/\D/g, '').slice(0, 6)); setTwoFAMsg(null); }}
@@ -3755,12 +3755,12 @@ function TermsAcceptanceScreen({ user, onAccept }) {
   };
 
   const glassStyle = {
-    background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
-    backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    border: "1px solid rgba(255,255,255,0.28)",
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(40px) saturate(180%)",
+    WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    border: "1px solid rgba(255,255,255,0.15)",
     borderRadius: 24,
-    boxShadow: "0 8px 40px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.4)",
+    boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4)",
   };
 
   return (
@@ -3830,7 +3830,7 @@ function TermsAcceptanceScreen({ user, onAccept }) {
             <h3 style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginTop: 20, marginBottom: 8 }}>14. CONTACT INFORMATION</h3>
             <p style={{ marginBottom: 12 }}>For questions or concerns regarding these Terms, please contact: 12 Tribes AI Investment Group LLC — Email: legal@12tribes.ai</p>
 
-            <div style={{ padding: "16px 0", marginTop: 20, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
+            <div style={{ padding: "16px 0", marginTop: 20, borderTop: "1px solid rgba(255,255,255,0.04)", fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
               © 2026 12 Tribes AI Investment Group LLC. All rights reserved.
             </div>
           </div>
@@ -4232,12 +4232,12 @@ function AdminPanel({ investor, isMobile }) {
   };
 
   const glass = {
-    background: "linear-gradient(135deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.07) 50%, rgba(220,230,255,0.1) 100%)",
-    backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-    border: "1px solid rgba(255,255,255,0.25)",
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(40px) saturate(180%)",
+    WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    border: "1px solid rgba(255,255,255,0.12)",
     borderRadius: 20,
-    boxShadow: "0 8px 40px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.35)",
+    boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.35)",
   };
 
   const pending = requests.filter(r => r.status === 'pending');
@@ -4413,7 +4413,7 @@ function AdminPanel({ investor, isMobile }) {
                   {createSuccess.includes('Temporary Password:') && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
                       <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>Temp Password:</span>
-                      <code style={{ background: 'rgba(255,255,255,0.08)', padding: '4px 10px', borderRadius: 6, fontSize: 14, fontWeight: 700, color: '#fff', letterSpacing: 0.5, userSelect: 'all' }}>
+                      <code style={{ background: 'rgba(255,255,255,0.04)', padding: '4px 10px', borderRadius: 6, fontSize: 14, fontWeight: 700, color: '#fff', letterSpacing: 0.5, userSelect: 'all' }}>
                         {createSuccess.split('Temporary Password: ')[1]}
                       </code>
                       <button type="button" onClick={() => { navigator.clipboard?.writeText(createSuccess.split('Temporary Password: ')[1]); }}

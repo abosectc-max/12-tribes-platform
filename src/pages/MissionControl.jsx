@@ -116,12 +116,12 @@ function generateTrades() {
 
 // === STYLES ===
 const glassStyle = {
-  background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
-  backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-  WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-  border: "1px solid rgba(255,255,255,0.28)",
+  background: "rgba(255,255,255,0.04)",
+  backdropFilter: "blur(40px) saturate(180%)",
+  WebkitBackdropFilter: "blur(40px) saturate(180%)",
+  border: "1px solid rgba(255,255,255,0.15)",
   borderRadius: "24px",
-  boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 120px rgba(180,200,255,0.06), inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(255,255,255,0.1)",
+  boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
 };
 
 const glassCardStyle = {
@@ -132,8 +132,8 @@ const glassCardStyle = {
 
 const glassCardHoverStyle = {
   ...glassCardStyle,
-  background: "linear-gradient(135deg, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.12) 50%, rgba(220,230,255,0.18) 100%)",
-  boxShadow: "0 12px 48px rgba(0,0,0,0.1), 0 0 140px rgba(180,200,255,0.08), inset 0 1px 0 rgba(255,255,255,0.5)",
+  background: "rgba(255,255,255,0.07)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.08), inset 0 0.5px 0 rgba(255,255,255,0.5), inset 0 -0.5px 0 rgba(255,255,255,0.04)",
   transform: "translateY(-2px)",
 };
 

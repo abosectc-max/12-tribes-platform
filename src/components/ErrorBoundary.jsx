@@ -30,12 +30,12 @@ export default class ErrorBoundary extends Component {
         }}>
           <div style={{
             maxWidth: 600,
-            background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.05) 50%, rgba(239,68,68,0.06) 100%)",
-            backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-            WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
+            background: "rgba(255,255,255,0.04)",
+            backdropFilter: "blur(40px) saturate(180%)",
+            WebkitBackdropFilter: "blur(40px) saturate(180%)",
             border: '1px solid rgba(239,68,68,0.25)',
             borderRadius: 24,
-            boxShadow: "0 8px 32px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.2)",
+            boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.3)",
             padding: 40,
             textAlign: 'center',
           }}>

@@ -8,12 +8,12 @@ import { useState, useEffect } from 'react'
 // ═══════════════════════════════════════════
 
 const glass = {
-  background: "linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.08) 50%, rgba(220,230,255,0.12) 100%)",
-  backdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-  WebkitBackdropFilter: "blur(80px) saturate(220%) brightness(1.15)",
-  border: "1px solid rgba(255,255,255,0.28)",
+  background: "rgba(255,255,255,0.04)",
+  backdropFilter: "blur(40px) saturate(180%)",
+  WebkitBackdropFilter: "blur(40px) saturate(180%)",
+  border: "1px solid rgba(255,255,255,0.15)",
   borderRadius: 20,
-  boxShadow: "0 8px 40px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.4)",
+  boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4)",
 }
 
 function isIOSSafari() {
@@ -158,7 +158,7 @@ export default function InstallPrompt() {
             position: 'absolute', bottom: -8, left: '50%', transform: 'translateX(-50%)',
             width: 0, height: 0,
             borderLeft: '10px solid transparent', borderRight: '10px solid transparent',
-            borderTop: '10px solid rgba(255,255,255,0.08)',
+            borderTop: '10px solid rgba(255,255,255,0.04)',
           }} />
         </div>
       </>

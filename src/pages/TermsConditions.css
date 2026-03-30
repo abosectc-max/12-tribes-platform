@@ -36,7 +36,7 @@
   height: 90vh;
   max-height: 900px;
   overflow: hidden;
-  backdrop-filter: blur(60px) saturate(200%) brightness(1.1);
+  backdrop-filter: blur(40px) saturate(180%);
 }
 
 /* Modal Header */
@@ -260,7 +260,7 @@
   border: 1px solid rgba(0, 212, 255, 0.1);
   border-radius: 12px;
   padding: 50px;
-  backdrop-filter: blur(60px) saturate(200%) brightness(1.1);
+  backdrop-filter: blur(40px) saturate(180%);
 }
 
 .terms-doc-header {
