@@ -79,6 +79,8 @@ const DB_TABLES = [
   'verification_codes', 'qa_reports', 'feedback', 'withdrawal_requests',
   // Tax Engine tables
   'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
+  // Distribution & Capital Account tables
+  'distributions', 'capital_accounts',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -2666,6 +2668,22 @@ api.put('/api/admin/withdrawals/:requestId', auth, async (req, res) => {
       wallet.balance = Math.max(0, (wallet.balance || 0) - wr.amount);
       wallet.equity = Math.max(0, (wallet.equity || 0) - wr.amount);
       db._save('wallets');
+    }
+
+    // ─── DISTRIBUTION & K-1 INTEGRATION ───
+    // 1. Record distribution against capital account
+    recordDistribution(wr.userId, wr.amount, wr.id, wr.method);
+
+    // 2. Recalculate ownership ratios (capital-account-weighted)
+    recalculateOwnershipFromCapitalAccounts();
+
+    // 3. Auto-recompute K-1 allocations for current tax year
+    const currentTaxYear = new Date().getFullYear();
+    try {
+      computeTaxAllocations(currentTaxYear);
+      console.log(`[Withdrawal] K-1 allocations auto-recomputed for ${currentTaxYear} after $${wr.amount} withdrawal by user ${wr.userId}`);
+    } catch (err) {
+      console.error(`[Withdrawal] K-1 recompute failed after withdrawal:`, err.message);
     }
   }
 
@@ -5603,6 +5621,149 @@ api.post('/api/auto-trading/toggle', auth, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//   CAPITAL ACCOUNT & DISTRIBUTION ENGINE
+//   Tracks partner capital accounts, records distributions on withdrawal,
+//   adjusts ownership ratios dynamically, and feeds K-1 allocation engine.
+//   IRC §704(b) capital account maintenance methodology.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Ensure a capital account exists for an investor.
+ * Created lazily on first contribution or first withdrawal.
+ */
+function ensureCapitalAccount(userId) {
+  let account = db.findOne('capital_accounts', a => a.user_id === userId);
+  if (account) return account;
+
+  const wallet = db.findOne('wallets', w => w.user_id === userId);
+  const user = db.findOne('users', u => u.id === userId);
+  const initialBalance = wallet?.initial_balance || wallet?.balance || 100000;
+
+  account = db.insert('capital_accounts', {
+    user_id: userId,
+    investor_name: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Unknown',
+    beginning_balance: initialBalance,
+    contributions: initialBalance,
+    distributions_total: 0,
+    allocated_income: 0,
+    allocated_losses: 0,
+    ending_balance: initialBalance,
+    ownership_pct: user?.ownership_pct || 0,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  return account;
+}
+
+/**
+ * Record a distribution (withdrawal) against an investor's capital account.
+ * Creates an immutable distribution record and updates the capital account.
+ * Returns the distribution record for audit trail.
+ */
+function recordDistribution(userId, amount, withdrawalRequestId, method) {
+  const account = ensureCapitalAccount(userId);
+  const user = db.findOne('users', u => u.id === userId);
+  const wallet = db.findOne('wallets', w => w.user_id === userId);
+
+  const balanceBefore = account.ending_balance;
+  const balanceAfter = roundTo(balanceBefore - amount, 2);
+
+  // Create immutable distribution record
+  const distribution = db.insert('distributions', {
+    user_id: userId,
+    investor_name: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Unknown',
+    withdrawal_request_id: withdrawalRequestId || null,
+    amount: roundTo(amount, 2),
+    type: 'cash_distribution',         // cash_distribution | guaranteed_payment | return_of_capital
+    method: method || 'bank_transfer',
+    capital_account_before: balanceBefore,
+    capital_account_after: balanceAfter,
+    wallet_equity_at_distribution: wallet?.equity || 0,
+    tax_year: new Date().getFullYear(),
+    is_return_of_capital: balanceAfter < account.contributions,
+    distribution_date: new Date().toISOString(),
+    created_at: new Date().toISOString(),
+  });
+
+  // Update capital account
+  account.distributions_total = roundTo((account.distributions_total || 0) + amount, 2);
+  account.ending_balance = balanceAfter;
+  account.updated_at = new Date().toISOString();
+  db._save('capital_accounts');
+
+  console.log(`[CapitalAccount] Distribution recorded: $${amount} for user ${userId}. Capital account: $${balanceBefore} → $${balanceAfter}`);
+  return distribution;
+}
+
+/**
+ * Recalculate ownership percentages based on current capital account balances.
+ * Called after any distribution or contribution event.
+ * Uses capital-account-weighted methodology per IRC §704(b).
+ */
+function recalculateOwnershipFromCapitalAccounts() {
+  const activeUsers = db.findMany('users', u => u.status === 'active');
+  if (activeUsers.length === 0) return;
+
+  // Ensure all active users have capital accounts
+  activeUsers.forEach(u => ensureCapitalAccount(u.id));
+
+  const accounts = db.findMany('capital_accounts', a =>
+    activeUsers.some(u => u.id === a.user_id)
+  );
+
+  const totalCapital = accounts.reduce((sum, a) => sum + Math.max(0, a.ending_balance), 0);
+  if (totalCapital <= 0) {
+    // Equal split fallback
+    const equalPct = roundTo(100 / activeUsers.length, 2);
+    accounts.forEach(a => {
+      a.ownership_pct = equalPct;
+      a.updated_at = new Date().toISOString();
+    });
+    activeUsers.forEach(u => { u.ownership_pct = roundTo(100 / activeUsers.length, 2); });
+  } else {
+    accounts.forEach(a => {
+      const pct = roundTo(Math.max(0, a.ending_balance) / totalCapital * 100, 4);
+      a.ownership_pct = pct;
+      a.updated_at = new Date().toISOString();
+      // Sync to user record
+      const user = activeUsers.find(u => u.id === a.user_id);
+      if (user) user.ownership_pct = pct;
+    });
+  }
+
+  db._save('capital_accounts');
+  db._save('users');
+  console.log(`[CapitalAccount] Ownership recalculated. Total capital: $${totalCapital}. ${accounts.length} accounts updated.`);
+}
+
+/**
+ * Update capital accounts with allocated income/losses from tax engine.
+ * Called after K-1 computation to keep capital accounts current.
+ */
+function updateCapitalAccountsFromAllocations(taxYear) {
+  const allocations = db.findMany('tax_allocations', a => a.tax_year === taxYear);
+  for (const alloc of allocations) {
+    const account = ensureCapitalAccount(alloc.user_id);
+    account.allocated_income = roundTo(
+      Math.max(0, alloc.allocated_net_gain_loss), 2
+    );
+    account.allocated_losses = roundTo(
+      Math.min(0, alloc.allocated_net_gain_loss), 2
+    );
+    // Ending balance = beginning + contributions - distributions + income + losses
+    account.ending_balance = roundTo(
+      account.beginning_balance +
+      (account.contributions || 0) -
+      (account.distributions_total || 0) +
+      account.allocated_income +
+      account.allocated_losses, 2
+    );
+    account.updated_at = new Date().toISOString();
+  }
+  db._save('capital_accounts');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //   TAX ENGINE MODULE
 //   Immutable tax ledger, cost basis tracking, wash sale detection,
 //   per-investor allocation, and IRS-ready reporting (Form 8949 / Schedule D)
@@ -5878,15 +6039,32 @@ function computeTaxAllocations(taxYear) {
     }
   });
 
-  // Allocate to each active investor based on ownership percentage
+  // Recalculate ownership from capital accounts before allocating
+  recalculateOwnershipFromCapitalAccounts();
+
+  // Allocate to each active investor based on capital-account-weighted ownership
   const investors = db.findMany('users', u => u.status === 'active');
   const allocations = [];
 
+  // Gather year's distributions per investor for K-1 reporting
+  const yearDistributions = db.findMany('distributions', d =>
+    d.tax_year === taxYear
+  );
+
   for (const investor of investors) {
-    const ownershipPct = investor.ownership_pct > 0
-      ? investor.ownership_pct
-      : (investors.length > 0 ? roundTo(100 / investors.length, 2) : 0);
+    const account = ensureCapitalAccount(investor.id);
+
+    // Use capital-account-derived ownership (dynamic), fall back to user record, then equal split
+    const ownershipPct = account.ownership_pct > 0
+      ? account.ownership_pct
+      : investor.ownership_pct > 0
+        ? investor.ownership_pct
+        : (investors.length > 0 ? roundTo(100 / investors.length, 2) : 0);
     const pctDecimal = ownershipPct / 100;
+
+    // Sum distributions for this investor in this tax year
+    const investorDistributions = yearDistributions.filter(d => d.user_id === investor.id);
+    const totalDistributed = investorDistributions.reduce((s, d) => s + d.amount, 0);
 
     const allocation = {
       user_id: investor.id,
@@ -5894,6 +6072,7 @@ function computeTaxAllocations(taxYear) {
       investor_email: investor.email,
       tax_year: taxYear,
       ownership_pct: ownershipPct,
+      // Income/loss allocations
       allocated_short_term_gains: roundTo(fundTotals.shortTermGains * pctDecimal, 2),
       allocated_short_term_losses: roundTo(fundTotals.shortTermLosses * pctDecimal, 2),
       allocated_long_term_gains: roundTo(fundTotals.longTermGains * pctDecimal, 2),
@@ -5906,6 +6085,13 @@ function computeTaxAllocations(taxYear) {
       allocated_crypto_losses: roundTo(fundTotals.cryptoLosses * pctDecimal, 2),
       allocated_equity_gains: roundTo(fundTotals.equityGains * pctDecimal, 2),
       allocated_equity_losses: roundTo(fundTotals.equityLosses * pctDecimal, 2),
+      // K-1 distribution & capital account fields (Schedule K-1 Box 19/20)
+      total_distributions: roundTo(totalDistributed, 2),
+      distribution_count: investorDistributions.length,
+      capital_account_beginning: roundTo(account.beginning_balance, 2),
+      capital_account_ending: roundTo(account.ending_balance, 2),
+      capital_contributed: roundTo(account.contributions || 0, 2),
+      capital_withdrawn: roundTo(account.distributions_total || 0, 2),
       computed_at: new Date().toISOString(),
     };
 
@@ -5922,7 +6108,10 @@ function computeTaxAllocations(taxYear) {
     }
   }
 
-  console.log(`[TaxEngine] Tax allocations computed for ${taxYear}: ${allocations.length} investors, net ${fundTotals.netGainLoss >= 0 ? 'gain' : 'loss'} $${Math.abs(fundTotals.netGainLoss)}`);
+  // Update capital accounts with allocated income/losses
+  updateCapitalAccountsFromAllocations(taxYear);
+
+  console.log(`[TaxEngine] K-1 allocations computed for ${taxYear}: ${allocations.length} investors, net ${fundTotals.netGainLoss >= 0 ? 'gain' : 'loss'} $${Math.abs(fundTotals.netGainLoss)}, distributions: $${roundTo(yearDistributions.reduce((s,d) => s + d.amount, 0), 2)}`);
   return { fundTotals, allocations };
 }
 
@@ -6247,7 +6436,75 @@ api.get('/api/tax/config', auth, (req, res) => {
   json(res, 200, { success: true, config: TAX_CONFIG });
 });
 
-console.log('[TaxEngine] Tax Engine Module loaded — FIFO cost basis, wash sale detection ON');
+// ─── DISTRIBUTION & CAPITAL ACCOUNT API ENDPOINTS ───
+
+// GET /api/admin/distributions/:year — All distributions for a tax year
+api.get('/api/admin/distributions/:year', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const taxYear = parseInt(req.params.year);
+  const distributions = db.findMany('distributions', d => d.tax_year === taxYear);
+  const totalDistributed = roundTo(distributions.reduce((s, d) => s + d.amount, 0), 2);
+
+  json(res, 200, {
+    success: true,
+    taxYear,
+    totalDistributed,
+    distributionCount: distributions.length,
+    distributions: distributions.sort((a, b) => new Date(b.distribution_date) - new Date(a.distribution_date)),
+  });
+});
+
+// GET /api/admin/capital-accounts — All investor capital accounts
+api.get('/api/admin/capital-accounts', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  // Ensure all active investors have accounts
+  const activeUsers = db.findMany('users', u => u.status === 'active');
+  activeUsers.forEach(u => ensureCapitalAccount(u.id));
+
+  const accounts = db.findMany('capital_accounts', () => true);
+  const totalCapital = roundTo(accounts.reduce((s, a) => s + Math.max(0, a.ending_balance), 0), 2);
+
+  json(res, 200, {
+    success: true,
+    totalCapital,
+    accountCount: accounts.length,
+    accounts: accounts.sort((a, b) => b.ending_balance - a.ending_balance),
+  });
+});
+
+// POST /api/admin/capital-accounts/recalculate — Force ownership recalculation
+api.post('/api/admin/capital-accounts/recalculate', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  recalculateOwnershipFromCapitalAccounts();
+  const accounts = db.findMany('capital_accounts', () => true);
+  json(res, 200, {
+    success: true,
+    message: 'Ownership percentages recalculated from capital accounts',
+    accounts,
+  });
+});
+
+// GET /api/distributions — User's own distributions
+api.get('/api/distributions', auth, (req, res) => {
+  const distributions = db.findMany('distributions', d => d.user_id === req.userId);
+  json(res, 200, {
+    distributions: distributions.sort((a, b) => new Date(b.distribution_date) - new Date(a.distribution_date)),
+  });
+});
+
+// GET /api/capital-account — User's own capital account
+api.get('/api/capital-account', auth, (req, res) => {
+  const account = ensureCapitalAccount(req.userId);
+  json(res, 200, { account });
+});
+
+console.log('[TaxEngine] Tax Engine Module loaded — FIFO cost basis, wash sale detection ON, distribution tracking ACTIVE');
 
 // ─── AUTO-ENABLE TRADING ON STARTUP ───
 // Ensure all investors with wallets have auto-trading enabled.
