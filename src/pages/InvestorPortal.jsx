@@ -1037,6 +1037,7 @@ const SIDEBAR_ITEMS = [
   { id: "signals", label: "Signals", icon: "◎" },
   { id: "paper-trading", label: "Paper Trading", icon: "⬢" },
   { id: "fund-management", label: "Fund Mgmt", icon: "⟐" },
+  { id: "tax-reporting", label: "Tax Center", icon: "§" },
   { id: "feedback", label: "Feedback", icon: "✉" },
   { id: "settings", label: "Settings", icon: "◇" },
 ];
@@ -2336,6 +2337,7 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
   const [requests, setRequests] = useState([]);
   const [loadingRequests, setLoadingRequests] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [taxSummary, setTaxSummary] = useState(null);
 
   const API = (() => {
     if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
@@ -2359,7 +2361,18 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
     setLoadingRequests(false);
   };
 
-  useEffect(() => { fetchRequests(); }, []);
+  const fetchTaxSummary = async () => {
+    try {
+      const yr = new Date().getFullYear();
+      const r = await fetch(`${API}/tax/summary/${yr}`, { headers: authHeaders });
+      if (r.ok) {
+        const data = await r.json();
+        setTaxSummary(data.report || null);
+      }
+    } catch {}
+  };
+
+  useEffect(() => { fetchRequests(); fetchTaxSummary(); }, []);
 
   const handleSubmit = async () => {
     const withdrawAmt = parseFloat(amount);
@@ -2477,6 +2490,44 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
               </div>
             )}
           </div>
+
+          {/* Tax Impact Notice */}
+          {parseFloat(amount) > 0 && taxSummary && (
+            <div style={{
+              padding: 16, borderRadius: 16, marginBottom: 16,
+              background: "rgba(245,158,11,0.04)", border: "1px solid rgba(245,158,11,0.1)",
+            }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: 14 }}>§</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#F59E0B" }}>Tax Impact — {new Date().getFullYear()} YTD</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11 }}>
+                <div>
+                  <span style={{ color: "rgba(255,255,255,0.4)" }}>Realized Gains (ST)</span>
+                  <div style={{ fontWeight: 700, color: (taxSummary.scheduleD?.shortTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444", marginTop: 2 }}>
+                    ${(taxSummary.scheduleD?.shortTermGainLoss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: "rgba(255,255,255,0.4)" }}>Realized Gains (LT)</span>
+                  <div style={{ fontWeight: 700, color: (taxSummary.scheduleD?.longTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444", marginTop: 2 }}>
+                    ${(taxSummary.scheduleD?.longTermGainLoss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: "rgba(255,255,255,0.4)" }}>Total Transactions</span>
+                  <div style={{ fontWeight: 700, color: "#00D4FF", marginTop: 2 }}>{taxSummary.totalTransactions || 0}</div>
+                </div>
+                <div>
+                  <span style={{ color: "rgba(255,255,255,0.4)" }}>Wash Sales</span>
+                  <div style={{ fontWeight: 700, color: (taxSummary.washSaleCount || 0) > 0 ? "#F59E0B" : "#10B981", marginTop: 2 }}>{taxSummary.washSaleCount || 0}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 10, fontSize: 10, color: "rgba(255,255,255,0.25)", lineHeight: 1.5 }}>
+                Withdrawing funds does not change your tax liability — taxes are based on realized trades, not withdrawals. Ensure you retain sufficient funds for estimated quarterly tax payments.
+              </div>
+            </div>
+          )}
 
           {/* Method */}
           <div style={{ marginBottom: 16 }}>
@@ -3519,6 +3570,11 @@ function PortfolioDashboard({ investor, onLogout }) {
             <FundManagementView investorId={investor.id} wallet={wallet} isMobile={isMobile} />
           )}
 
+          {/* ═══ TAX REPORTING CENTER ═══ */}
+          {activeTab === "tax-reporting" && (
+            <TaxReportingView investor={investor} wallet={wallet} isMobile={isMobile} />
+          )}
+
           {/* ═══ FEEDBACK VIEW ═══ */}
           {activeTab === "feedback" && (
             <FeedbackView investor={investor} isMobile={isMobile} />
@@ -3540,6 +3596,422 @@ function PortfolioDashboard({ investor, onLogout }) {
           12 TRIBES v2.0 | AI-Powered Investment Platform | Investor Portal
         </div>
       </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+//   TAX REPORTING CENTER
+// ════════════════════════════════════════
+
+function TaxReportingView({ investor, wallet, isMobile }) {
+  const [taxYear, setTaxYear] = useState(new Date().getFullYear());
+  const [activeSection, setActiveSection] = useState('summary');
+  const [summary, setSummary] = useState(null);
+  const [quarterly, setQuarterly] = useState([]);
+  const [taxLots, setTaxLots] = useState([]);
+  const [washSales, setWashSales] = useState([]);
+  const [ledger, setLedger] = useState([]);
+  const [config, setConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const API = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    return `http://${window.location.hostname}:4000/api`;
+  })();
+  const token = (() => {
+    try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
+  })();
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  const fetchTaxData = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [summaryRes, q1Res, q2Res, q3Res, q4Res, lotsRes, washRes, ledgerRes, configRes] = await Promise.all([
+        fetch(`${API}/tax/summary/${taxYear}`, { headers: authHeaders }),
+        fetch(`${API}/tax/quarterly/${taxYear}/Q1`, { headers: authHeaders }),
+        fetch(`${API}/tax/quarterly/${taxYear}/Q2`, { headers: authHeaders }),
+        fetch(`${API}/tax/quarterly/${taxYear}/Q3`, { headers: authHeaders }),
+        fetch(`${API}/tax/quarterly/${taxYear}/Q4`, { headers: authHeaders }),
+        fetch(`${API}/tax/lots`, { headers: authHeaders }),
+        fetch(`${API}/tax/wash-sales`, { headers: authHeaders }),
+        fetch(`${API}/tax/ledger?year=${taxYear}`, { headers: authHeaders }),
+        fetch(`${API}/tax/config`, { headers: authHeaders }),
+      ]);
+
+      if (summaryRes.ok) { const d = await summaryRes.json(); setSummary(d.report || null); }
+      const qData = [];
+      for (const [i, r] of [q1Res, q2Res, q3Res, q4Res].entries()) {
+        if (r.ok) { const d = await r.json(); qData.push(d.estimate || null); }
+        else qData.push(null);
+      }
+      setQuarterly(qData.filter(Boolean));
+      if (lotsRes.ok) { const d = await lotsRes.json(); setTaxLots(d.lots || []); }
+      if (washRes.ok) { const d = await washRes.json(); setWashSales(d.washSales || []); }
+      if (ledgerRes.ok) { const d = await ledgerRes.json(); setLedger(d.entries || []); }
+      if (configRes.ok) { const d = await configRes.json(); setConfig(d.config || null); }
+    } catch (e) {
+      setError('Failed to load tax data. Ensure the server is running.');
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchTaxData(); }, [taxYear]);
+
+  const downloadCSV = () => {
+    window.open(`${API}/tax/export/${taxYear}?token=${token}`, '_blank');
+  };
+
+  const glass = {
+    background: "rgba(255,255,255,0.04)",
+    backdropFilter: "blur(40px) saturate(180%)",
+    WebkitBackdropFilter: "blur(40px) saturate(180%)",
+    border: "1px solid rgba(255,255,255,0.15)",
+    borderRadius: 24,
+    boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
+  };
+
+  const sections = [
+    { id: 'summary', label: 'Tax Summary', icon: '§' },
+    { id: 'quarterly', label: 'Quarterly Est.', icon: '◔' },
+    { id: 'lots', label: 'Tax Lots', icon: '▤' },
+    { id: 'ledger', label: 'Ledger', icon: '▥' },
+    { id: 'wash-sales', label: 'Wash Sales', icon: '⚠' },
+  ];
+
+  const sd = summary?.scheduleD || {};
+  const f8949 = summary?.form8949 || { partI: [], partII: [] };
+  const totalTx = summary?.totalTransactions || 0;
+  const washCount = summary?.washSaleCount || 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+
+      {/* Header */}
+      <div style={{ ...glass, padding: isMobile ? 20 : 28 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", flexDirection: isMobile ? "column" : "row", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#fff" }}>§ Tax Reporting Center</div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>
+              IRS Form 8949 & Schedule D — Cost Basis: {config?.costBasisMethod || 'FIFO'}
+              {config?.enableWashSaleDetection && ' — Wash Sale Detection: ON'}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={taxYear} onChange={e => setTaxYear(parseInt(e.target.value))} style={{
+              padding: "10px 16px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.1)",
+              background: "rgba(30,30,34,0.9)", color: "#fff", fontSize: 14, fontWeight: 700, outline: "none", cursor: "pointer",
+            }}>
+              {[2026, 2025, 2024].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <button onClick={downloadCSV} style={{
+              padding: "10px 20px", borderRadius: 14, border: "none", cursor: "pointer",
+              background: "linear-gradient(135deg, #10B981, #059669)", color: "#fff",
+              fontSize: 13, fontWeight: 700, whiteSpace: "nowrap",
+            }}>
+              Export CSV
+            </button>
+          </div>
+        </div>
+
+        {/* Section Tabs */}
+        <div style={{ display: "flex", gap: 6, marginTop: 16, flexWrap: "wrap" }}>
+          {sections.map(s => (
+            <button key={s.id} onClick={() => setActiveSection(s.id)} style={{
+              padding: "8px 16px", borderRadius: 12, cursor: "pointer",
+              border: activeSection === s.id ? "1px solid rgba(0,212,255,0.3)" : "1px solid rgba(255,255,255,0.04)",
+              background: activeSection === s.id ? "rgba(0,212,255,0.1)" : "rgba(255,255,255,0.03)",
+              color: activeSection === s.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
+              fontSize: 12, fontWeight: 600, transition: "all 0.15s",
+            }}>{s.icon} {s.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {loading && (
+        <div style={{ ...glass, padding: 40, textAlign: "center", color: "rgba(255,255,255,0.3)" }}>Loading tax data...</div>
+      )}
+      {error && (
+        <div style={{ ...glass, padding: 20, color: "#EF4444", fontSize: 13, background: "rgba(239,68,68,0.06)" }}>{error}</div>
+      )}
+
+      {/* ═══ TAX SUMMARY (Schedule D) ═══ */}
+      {!loading && activeSection === 'summary' && (
+        <>
+          {/* KPI Cards */}
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 12 }}>
+            {[
+              { label: "Net Gain/Loss", value: sd.netGainLoss, prefix: "$", color: (sd.netGainLoss || 0) >= 0 ? "#10B981" : "#EF4444" },
+              { label: "Short-Term G/L", value: sd.shortTermGainLoss, prefix: "$", color: (sd.shortTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444" },
+              { label: "Long-Term G/L", value: sd.longTermGainLoss, prefix: "$", color: (sd.longTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444" },
+              { label: "Transactions", value: totalTx, prefix: "", color: "#00D4FF" },
+            ].map((kpi, i) => (
+              <div key={i} style={{ ...glass, padding: isMobile ? 16 : 20, textAlign: "center" }}>
+                <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>{kpi.label}</div>
+                <div style={{ fontSize: isMobile ? 18 : 24, fontWeight: 700, color: kpi.color }}>
+                  {kpi.prefix}{typeof kpi.value === 'number' ? kpi.value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '0'}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Schedule D Breakdown */}
+          <div style={{ ...glass, padding: isMobile ? 20 : 28 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Schedule D Summary</div>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
+              {/* Part I — Short-Term */}
+              <div style={{ padding: 20, borderRadius: 18, background: "rgba(255,138,101,0.06)", border: "1px solid rgba(255,138,101,0.12)" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#FF8A65", marginBottom: 12 }}>Part I — Short-Term (Box A)</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                    <span style={{ color: "rgba(255,255,255,0.5)" }}>Proceeds</span>
+                    <span style={{ color: "#fff", fontWeight: 600 }}>${(sd.shortTermProceeds || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                    <span style={{ color: "rgba(255,255,255,0.5)" }}>Cost Basis</span>
+                    <span style={{ color: "#fff", fontWeight: 600 }}>${(sd.shortTermCostBasis || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                  </div>
+                  {(sd.shortTermAdjustments || 0) !== 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                      <span style={{ color: "#F59E0B" }}>Wash Sale Adj. (Code W)</span>
+                      <span style={{ color: "#F59E0B", fontWeight: 600 }}>${(sd.shortTermAdjustments || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                    </div>
+                  )}
+                  <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 8, display: "flex", justifyContent: "space-between", fontSize: 14 }}>
+                    <span style={{ color: "rgba(255,255,255,0.7)", fontWeight: 600 }}>Gain/Loss</span>
+                    <span style={{ color: (sd.shortTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>${(sd.shortTermGainLoss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+              </div>
+              {/* Part II — Long-Term */}
+              <div style={{ padding: 20, borderRadius: 18, background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.12)" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#00D4FF", marginBottom: 12 }}>Part II — Long-Term (Box D)</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                    <span style={{ color: "rgba(255,255,255,0.5)" }}>Proceeds</span>
+                    <span style={{ color: "#fff", fontWeight: 600 }}>${(sd.longTermProceeds || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                    <span style={{ color: "rgba(255,255,255,0.5)" }}>Cost Basis</span>
+                    <span style={{ color: "#fff", fontWeight: 600 }}>${(sd.longTermCostBasis || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                  </div>
+                  {(sd.longTermAdjustments || 0) !== 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                      <span style={{ color: "#F59E0B" }}>Wash Sale Adj. (Code W)</span>
+                      <span style={{ color: "#F59E0B", fontWeight: 600 }}>${(sd.longTermAdjustments || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                    </div>
+                  )}
+                  <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 8, display: "flex", justifyContent: "space-between", fontSize: 14 }}>
+                    <span style={{ color: "rgba(255,255,255,0.7)", fontWeight: 600 }}>Gain/Loss</span>
+                    <span style={{ color: (sd.longTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>${(sd.longTermGainLoss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            {washCount > 0 && (
+              <div style={{ marginTop: 16, padding: "12px 16px", borderRadius: 14, background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.12)", display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontSize: 16 }}>⚠</span>
+                <span style={{ fontSize: 12, color: "#F59E0B" }}>{washCount} wash sale event{washCount > 1 ? 's' : ''} detected — disallowed losses added to replacement lot cost basis</span>
+              </div>
+            )}
+            <div style={{ marginTop: 16, fontSize: 10, color: "rgba(255,255,255,0.2)", lineHeight: 1.6 }}>
+              This data is generated for informational purposes. Consult your CPA or tax advisor for official filings. Form 8949 line items available via CSV export.
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ═══ QUARTERLY ESTIMATES ═══ */}
+      {!loading && activeSection === 'quarterly' && (
+        <div style={{ ...glass, padding: isMobile ? 20 : 28 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 4 }}>Quarterly Estimated Tax</div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 20 }}>For 1040-ES estimated payments</div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: 12 }}>
+            {['Q1', 'Q2', 'Q3', 'Q4'].map((q, i) => {
+              const qd = quarterly[i] || {};
+              const isActive = qd.tradeCount > 0;
+              return (
+                <div key={q} style={{
+                  padding: 20, borderRadius: 18,
+                  background: isActive ? "rgba(168,85,247,0.06)" : "rgba(255,255,255,0.02)",
+                  border: isActive ? "1px solid rgba(168,85,247,0.15)" : "1px solid rgba(255,255,255,0.04)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: isActive ? "#A855F7" : "rgba(255,255,255,0.2)" }}>{q} {taxYear}</div>
+                    {isActive && <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(168,85,247,0.15)", color: "#A855F7", fontWeight: 600 }}>{qd.tradeCount} trades</span>}
+                  </div>
+                  {isActive ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                        <span style={{ color: "rgba(255,255,255,0.4)" }}>Short-Term G/L</span>
+                        <span style={{ color: (qd.shortTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444", fontWeight: 600 }}>${(qd.shortTermGainLoss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                        <span style={{ color: "rgba(255,255,255,0.4)" }}>Long-Term G/L</span>
+                        <span style={{ color: (qd.longTermGainLoss || 0) >= 0 ? "#10B981" : "#EF4444", fontWeight: 600 }}>${(qd.longTermGainLoss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                      </div>
+                      <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 6, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                        <span style={{ color: "rgba(255,255,255,0.4)" }}>Net G/L</span>
+                        <span style={{ color: (qd.netGainLoss || 0) >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>${(qd.netGainLoss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                      </div>
+                      {(qd.washSaleAdjustments || 0) > 0 && (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                          <span style={{ color: "#F59E0B" }}>Wash Sale Adj.</span>
+                          <span style={{ color: "#F59E0B", fontWeight: 600 }}>${qd.washSaleAdjustments.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                        </div>
+                      )}
+                      <div style={{ marginTop: 8, padding: "10px 14px", borderRadius: 12, background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.1)" }}>
+                        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", marginBottom: 4 }}>ESTIMATED TAX DUE</div>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: (qd.estimatedTotalTax || 0) > 0 ? "#EF4444" : "rgba(255,255,255,0.3)" }}>
+                          ${(qd.estimatedTotalTax || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </div>
+                        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.25)", marginTop: 2 }}>
+                          ST: ${(qd.estimatedShortTermTax || 0).toLocaleString()} | LT: ${(qd.estimatedLongTermTax || 0).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.2)", textAlign: "center", padding: "16px 0" }}>No trading activity</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 16, fontSize: 10, color: "rgba(255,255,255,0.2)", lineHeight: 1.6 }}>
+            Estimated tax uses approximate rates (32% short-term, 15% long-term). Your actual rate depends on your total income. Consult your CPA for precise 1040-ES payment amounts.
+          </div>
+        </div>
+      )}
+
+      {/* ═══ TAX LOTS ═══ */}
+      {!loading && activeSection === 'lots' && (
+        <div style={{ ...glass, padding: isMobile ? 20 : 28 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>Tax Lots — Cost Basis Tracking</div>
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>{config?.costBasisMethod || 'FIFO'} method — {taxLots.length} lot{taxLots.length !== 1 ? 's' : ''}</div>
+            </div>
+          </div>
+          {taxLots.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 30, color: "rgba(255,255,255,0.2)", fontSize: 13 }}>
+              No tax lots recorded yet. Lots are created when trades execute.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {taxLots.slice(0, 50).map(lot => {
+                const statusColor = lot.status === 'OPEN' ? '#10B981' : lot.status === 'PARTIAL' ? '#F59E0B' : 'rgba(255,255,255,0.3)';
+                return (
+                  <div key={lot.id} style={{
+                    padding: isMobile ? 14 : 16, borderRadius: 16,
+                    background: "rgba(30,30,34,0.5)", border: "1px solid rgba(255,255,255,0.06)",
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{lot.symbol}</span>
+                        <span style={{
+                          fontSize: 10, padding: "2px 8px", borderRadius: 6, fontWeight: 700,
+                          background: lot.side === 'LONG' ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                          color: lot.side === 'LONG' ? "#10B981" : "#EF4444",
+                        }}>{lot.side}</span>
+                        <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, fontWeight: 600, background: `${statusColor}18`, color: statusColor }}>{lot.status}</span>
+                      </div>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>{lot.agent}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: isMobile ? 12 : 20, flexWrap: "wrap", fontSize: 11, color: "rgba(255,255,255,0.4)" }}>
+                      <span>Qty: <b style={{ color: "#fff" }}>{lot.quantity}</b></span>
+                      <span>Basis: <b style={{ color: "#fff" }}>${(lot.adjusted_cost_basis || lot.cost_basis || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</b></span>
+                      <span>Per Unit: <b style={{ color: "#fff" }}>${(lot.price_per_unit || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</b></span>
+                      {lot.wash_sale_adjustment > 0 && (
+                        <span style={{ color: "#F59E0B" }}>Wash Adj: +${lot.wash_sale_adjustment.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                      )}
+                      <span>{new Date(lot.acquired_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                );
+              })}
+              {taxLots.length > 50 && <div style={{ textAlign: "center", fontSize: 12, color: "rgba(255,255,255,0.3)", padding: 8 }}>Showing 50 of {taxLots.length} lots — export CSV for full data</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ TAX LEDGER ═══ */}
+      {!loading && activeSection === 'ledger' && (
+        <div style={{ ...glass, padding: isMobile ? 20 : 28 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 4 }}>Immutable Tax Ledger</div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 16 }}>{ledger.length} entries for {taxYear}</div>
+          {ledger.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 30, color: "rgba(255,255,255,0.2)", fontSize: 13 }}>No ledger entries for {taxYear}.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {ledger.slice(0, 100).map(e => (
+                <div key={e.id} style={{
+                  padding: isMobile ? 14 : 16, borderRadius: 16,
+                  background: e.is_wash_sale ? "rgba(245,158,11,0.04)" : "rgba(30,30,34,0.5)",
+                  border: e.is_wash_sale ? "1px solid rgba(245,158,11,0.12)" : "1px solid rgba(255,255,255,0.06)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{e.symbol}</span>
+                      <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.5)" }}>{e.holding_period === 'SHORT_TERM' ? 'ST' : 'LT'}</span>
+                      {e.is_wash_sale && <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(245,158,11,0.15)", color: "#F59E0B", fontWeight: 700 }}>WASH SALE</span>}
+                    </div>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: e.adjusted_gain_loss >= 0 ? "#10B981" : "#EF4444" }}>
+                      {e.adjusted_gain_loss >= 0 ? '+' : ''}${e.adjusted_gain_loss.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: isMobile ? 10 : 16, flexWrap: "wrap", fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                    <span>Qty: {e.quantity}</span>
+                    <span>Proceeds: ${e.proceeds.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                    <span>Basis: ${e.cost_basis.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                    <span>Hold: {e.hold_days}d</span>
+                    <span>{new Date(e.disposed_at).toLocaleDateString()}</span>
+                    {e.agent && <span>{e.agent}</span>}
+                  </div>
+                </div>
+              ))}
+              {ledger.length > 100 && <div style={{ textAlign: "center", fontSize: 12, color: "rgba(255,255,255,0.3)", padding: 8 }}>Showing 100 of {ledger.length} — export CSV for full data</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ WASH SALES ═══ */}
+      {!loading && activeSection === 'wash-sales' && (
+        <div style={{ ...glass, padding: isMobile ? 20 : 28 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B", marginBottom: 4 }}>⚠ Wash Sale Events</div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginBottom: 16 }}>
+            Losses disallowed under IRS 30-day wash sale rule — added to replacement lot cost basis
+          </div>
+          {washSales.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 30, color: "rgba(255,255,255,0.2)", fontSize: 13 }}>
+              No wash sale events detected. This is good — all losses are currently deductible.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {washSales.map(ws => (
+                <div key={ws.id} style={{
+                  padding: 16, borderRadius: 16,
+                  background: "rgba(245,158,11,0.04)", border: "1px solid rgba(245,158,11,0.12)",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{ws.symbol}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B" }}>−${ws.disallowed_loss.toLocaleString(undefined, { maximumFractionDigits: 2 })} disallowed</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11, color: "rgba(255,255,255,0.4)" }}>
+                    <span>Original Loss: ${Math.abs(ws.original_loss).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                    <span>Loss Date: {new Date(ws.loss_disposed_at).toLocaleDateString()}</span>
+                    <span>Replacement: {new Date(ws.replacement_acquired_at).toLocaleDateString()}</span>
+                    <span>Detected: {new Date(ws.detected_at).toLocaleDateString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -4343,6 +4815,164 @@ const ADMIN_API_BASE = (() => {
   return `http://${hostname}:4000/api`;
 })();
 
+// ════════════════════════════════════════
+//   ADMIN TAX SECTION
+// ════════════════════════════════════════
+
+function AdminTaxSection({ isMobile, glass, authHeaders }) {
+  const [taxYear, setTaxYear] = useState(new Date().getFullYear());
+  const [fundSummary, setFundSummary] = useState(null);
+  const [allocations, setAllocations] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [computing, setComputing] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const API = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    return `http://${window.location.hostname}:4000/api`;
+  })();
+
+  const fetchFundSummary = async () => {
+    setLoading(true);
+    try {
+      const [sumRes, allocRes] = await Promise.all([
+        fetch(`${API}/admin/tax/fund-summary/${taxYear}`, { headers: authHeaders }),
+        fetch(`${API}/admin/tax/allocations/${taxYear}`, { headers: authHeaders }),
+      ]);
+      if (sumRes.ok) { const d = await sumRes.json(); setFundSummary(d.summary || null); }
+      if (allocRes.ok) { const d = await allocRes.json(); setAllocations(d.allocations || []); }
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchFundSummary(); }, [taxYear]);
+
+  const computeAllocations = async () => {
+    setComputing(true);
+    setMsg('');
+    try {
+      const r = await fetch(`${API}/admin/tax/allocations/${taxYear}`, { method: 'POST', headers: authHeaders });
+      if (r.ok) {
+        const d = await r.json();
+        setAllocations(d.allocations || []);
+        setFundSummary(d.fundTotals || fundSummary);
+        setMsg(`K-1 allocations computed for ${d.allocations?.length || 0} investors`);
+        setTimeout(() => setMsg(''), 4000);
+      }
+    } catch {}
+    setComputing(false);
+  };
+
+  const fs = fundSummary || {};
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>§ Fund Tax Administration</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <select value={taxYear} onChange={e => setTaxYear(parseInt(e.target.value))} style={{
+            padding: '8px 14px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
+            background: 'rgba(30,30,34,0.9)', color: '#fff', fontSize: 13, fontWeight: 700, outline: 'none',
+          }}>
+            {[2026, 2025, 2024].map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={computeAllocations} disabled={computing} style={{
+            padding: '8px 18px', borderRadius: 12, border: 'none', cursor: computing ? 'wait' : 'pointer',
+            background: 'linear-gradient(135deg, #A855F7, #7C3AED)', color: '#fff', fontSize: 12, fontWeight: 700,
+            opacity: computing ? 0.6 : 1,
+          }}>
+            {computing ? 'Computing...' : 'Compute K-1 Allocations'}
+          </button>
+        </div>
+      </div>
+
+      {msg && <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(34,197,94,0.1)', color: '#22C55E', fontSize: 12 }}>{msg}</div>}
+
+      {loading && <div style={{ textAlign: 'center', padding: 30, color: 'rgba(255,255,255,0.3)' }}>Loading fund tax data...</div>}
+
+      {/* Fund-Level Summary (Form 1065) */}
+      {!loading && fundSummary && (
+        <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 14 }}>Fund Summary — Form 1065 Data</div>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 10 }}>
+            {[
+              { label: 'Net Gain/Loss', value: fs.netGainLoss, color: (fs.netGainLoss || 0) >= 0 ? '#10B981' : '#EF4444' },
+              { label: 'Short-Term G/L', value: fs.shortTermGainLoss, color: (fs.shortTermGainLoss || 0) >= 0 ? '#10B981' : '#EF4444' },
+              { label: 'Long-Term G/L', value: fs.longTermGainLoss, color: (fs.longTermGainLoss || 0) >= 0 ? '#10B981' : '#EF4444' },
+              { label: 'Total Trades', value: fs.totalTransactions, color: '#00D4FF', noPrefix: true },
+            ].map((k, i) => (
+              <div key={i} style={{ padding: 14, borderRadius: 14, background: 'rgba(30,30,34,0.5)', textAlign: 'center' }}>
+                <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>{k.label}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: k.color }}>{k.noPrefix ? '' : '$'}{typeof k.value === 'number' ? k.value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '0'}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>
+            <span>Wash Sales: <b style={{ color: '#F59E0B' }}>{fs.washSaleEvents || 0}</b> (${(fs.totalWashSaleDisallowed || 0).toLocaleString()} disallowed)</span>
+            <span>Crypto: <b style={{ color: '#00D4FF' }}>{fs.byAssetClass?.crypto?.trades || 0}</b> trades (${(fs.byAssetClass?.crypto?.gainLoss || 0).toLocaleString()})</span>
+            <span>Equity: <b style={{ color: '#A855F7' }}>{fs.byAssetClass?.equity?.trades || 0}</b> trades (${(fs.byAssetClass?.equity?.gainLoss || 0).toLocaleString()})</span>
+          </div>
+          {fs.byAgent && Object.keys(fs.byAgent).length > 0 && (
+            <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {Object.entries(fs.byAgent).map(([agent, data]) => (
+                <div key={agent} style={{ padding: '6px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', fontSize: 11 }}>
+                  <span style={{ color: 'rgba(255,255,255,0.5)' }}>{agent}:</span>{' '}
+                  <span style={{ color: data.gainLoss >= 0 ? '#10B981' : '#EF4444', fontWeight: 600 }}>${data.gainLoss.toLocaleString()}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.25)', marginLeft: 4 }}>({data.trades} trades)</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* K-1 Investor Allocations */}
+      {!loading && allocations.length > 0 && (
+        <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 14 }}>K-1 Investor Allocations — {taxYear}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {allocations.map(a => (
+              <div key={a.user_id} style={{
+                padding: 16, borderRadius: 16, background: 'rgba(30,30,34,0.5)', border: '1px solid rgba(255,255,255,0.06)',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{a.investor_name}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{a.investor_email} — {a.ownership_pct}% ownership</div>
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: (a.allocated_net_gain_loss || 0) >= 0 ? '#10B981' : '#EF4444' }}>
+                    ${(a.allocated_net_gain_loss || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 6, fontSize: 11 }}>
+                  <div><span style={{ color: 'rgba(255,255,255,0.35)' }}>ST Gains:</span> <span style={{ color: '#10B981' }}>${(a.allocated_short_term_gains || 0).toLocaleString()}</span></div>
+                  <div><span style={{ color: 'rgba(255,255,255,0.35)' }}>ST Losses:</span> <span style={{ color: '#EF4444' }}>${(a.allocated_short_term_losses || 0).toLocaleString()}</span></div>
+                  <div><span style={{ color: 'rgba(255,255,255,0.35)' }}>LT Gains:</span> <span style={{ color: '#10B981' }}>${(a.allocated_long_term_gains || 0).toLocaleString()}</span></div>
+                  <div><span style={{ color: 'rgba(255,255,255,0.35)' }}>LT Losses:</span> <span style={{ color: '#EF4444' }}>${(a.allocated_long_term_losses || 0).toLocaleString()}</span></div>
+                </div>
+                {(a.allocated_wash_sale_disallowed || 0) > 0 && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: '#F59E0B' }}>
+                    Wash sale disallowed: ${a.allocated_wash_sale_disallowed.toLocaleString()}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!loading && !fundSummary && allocations.length === 0 && (
+        <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>§</div>
+          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>No tax data for {taxYear} yet</div>
+          <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: 12, marginTop: 4 }}>Tax lots are created automatically as trades execute</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminPanel({ investor, isMobile }) {
   const [requests, setRequests] = useState([]);
   const [users, setUsers] = useState([]);
@@ -4657,6 +5287,9 @@ function AdminPanel({ investor, isMobile }) {
         </button>
         <button onClick={() => { setActiveSection('withdrawals'); fetchAdminWithdrawals(); }} style={tabStyle(activeSection === 'withdrawals')}>
           Withdrawals {adminWithdrawals.filter(w => w.status === 'pending').length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(245,158,11,0.3)', color: '#F59E0B', fontSize: 10, fontWeight: 800 }}>{adminWithdrawals.filter(w => w.status === 'pending').length}</span>}
+        </button>
+        <button onClick={() => setActiveSection('tax-admin')} style={tabStyle(activeSection === 'tax-admin')}>
+          § Tax Admin
         </button>
       </div>
 
@@ -5176,6 +5809,11 @@ function AdminPanel({ investor, isMobile }) {
             </>
           )}
         </>
+      )}
+
+      {/* ═══ TAX ADMIN ═══ */}
+      {activeSection === 'tax-admin' && (
+        <AdminTaxSection isMobile={isMobile} glass={glass} authHeaders={authHeaders} />
       )}
 
       {/* Refresh Button */}
