@@ -447,9 +447,29 @@ const PRICE_HISTORY_LEN = 120; // ~4 minutes of 2s ticks
 const priceHistory = {};
 const symbolRegimes = {}; // 'trending_up' | 'trending_down' | 'ranging'
 
+// Seed price history with realistic synthetic data so agents can trade immediately after restart
 for (const sym of Object.keys(DEFAULT_PRICES)) {
-  priceHistory[sym] = [DEFAULT_PRICES[sym]];
+  const basePrice = DEFAULT_PRICES[sym];
+  const hist = [];
+  let p = basePrice * (0.97 + Math.random() * 0.06); // Start slightly off from current
+  const baseVol = basePrice < 1 ? 0.008 : basePrice < 50 ? 0.003 : basePrice < 500 ? 0.002 : 0.0015;
+  // Generate 120 ticks of realistic price action with trends and mean-reversion
+  let drift = (Math.random() - 0.45) * baseVol * 2;
+  for (let i = 0; i < PRICE_HISTORY_LEN; i++) {
+    // Occasional regime shifts
+    if (i % 30 === 0) drift = (Math.random() - 0.45) * baseVol * 2;
+    const noise = (Math.random() - 0.5) * baseVol;
+    p = p * (1 + drift + noise);
+    hist.push(roundTo(p, basePrice < 10 ? 4 : 2));
+  }
+  // Ensure last price matches current market price
+  hist[hist.length - 1] = basePrice;
+  priceHistory[sym] = hist;
   symbolRegimes[sym] = 'ranging';
+}
+// Detect initial regimes from seeded data
+for (const sym of Object.keys(DEFAULT_PRICES)) {
+  symbolRegimes[sym] = detectRegime(priceHistory[sym]);
 }
 
 // ─── Technical Indicators (computed from price history) ───
@@ -2368,7 +2388,7 @@ const AUTO_TRADE_CONFIG = {
   winnerSizePct: 0.055,        // 5.5% for high-conviction signals
   eliteSizePct: 0.07,          // 7% for multi-indicator confluence trades
   consensusThreshold: 0.3,     // Lower threshold — act on strong signals fast
-  minSignalStrength: 0.65,     // Slightly higher minimum — filter out marginal trades
+  minSignalStrength: 0.50,     // Moderate threshold — allows more frequent trading while filtering noise
   maxCorrelatedPositions: 3,   // Max positions in same asset class
   maxDrawdownPct: 15,          // Kill switch trigger at -15% from peak equity
 };
