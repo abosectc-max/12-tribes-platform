@@ -2633,7 +2633,16 @@ function runAutoTradeTick() {
  */
 function runAllAgents(userId, fundData) {
   const wallet = db.findOne('wallets', w => w.user_id === userId);
-  if (!wallet) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: NO WALLET`); return; }
+  if (!wallet) {
+    // Auto-create wallet on demand if missing
+    wallet = db.insert('wallets', {
+      user_id: userId, balance: 100000, equity: 100000, initial_balance: 100000,
+      unrealized_pnl: 0, realized_pnl: 0, trade_count: 0,
+      win_count: 0, loss_count: 0, kill_switch_active: false,
+      created_at: new Date().toISOString(),
+    });
+    console.log(`[AutoTrader] Auto-created wallet for user ${userId}`);
+  }
   if (wallet.kill_switch_active) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE`); return; }
 
   // Daily trade limit — count only position OPENS today (avoids double-counting with closed trades)
@@ -2656,25 +2665,28 @@ function runAllAgents(userId, fundData) {
   // ─── PHASE 2: Signal generation from all agents ───
   const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
   const allSignals = [];
+  const heldSymbols = new Set(openPositions.map(p => p.symbol));
 
   for (const agent of signalAgents) {
     const agentPerf = getAgentPerf(agent.name);
     const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined && priceHistory[s]?.length >= 30);
     if (tradable.length === 0) continue;
 
-    // Each agent scores ALL its symbols and picks the best
-    let bestSignal = null;
+    // Each agent scores ALL its symbols, picks best UNHELD symbol first, falls back to held
+    const scored = [];
     for (const symbol of tradable) {
       const signal = computeSignal(symbol, agent.role);
       const adjustedScore = signal.score * agentPerf.adaptiveConfidence;
-
-      if (!bestSignal || Math.abs(adjustedScore) > Math.abs(bestSignal.adjustedScore)) {
-        bestSignal = { symbol, ...signal, adjustedScore, agent: agent.name };
-      }
+      scored.push({ symbol, ...signal, adjustedScore, agent: agent.name, isHeld: heldSymbols.has(symbol) });
     }
 
-    if (bestSignal && Math.abs(bestSignal.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength) {
-      allSignals.push(bestSignal);
+    // Sort by absolute adjusted score descending
+    scored.sort((a, b) => Math.abs(b.adjustedScore) - Math.abs(a.adjustedScore));
+
+    // Pick best unheld signal first; if none pass threshold, skip
+    const bestUnheld = scored.find(s => !s.isHeld && Math.abs(s.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength);
+    if (bestUnheld) {
+      allSignals.push(bestUnheld);
     }
   }
 
@@ -3064,6 +3076,7 @@ api.get('/api/trading/debug', (req, res) => {
 
     const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
     const heldSymbols = openPositions.map(p => p.symbol);
+    const heldSet = new Set(heldSymbols);
 
     const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
     const signals = [];
@@ -3071,27 +3084,29 @@ api.get('/api/trading/debug', (req, res) => {
     for (const agent of signalAgents) {
       const agentPerf = getAgentPerf(agent.name);
       const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined && priceHistory[s]?.length >= 30);
-      let bestSignal = null;
+      const scored = [];
       for (const symbol of tradable) {
         const signal = computeSignal(symbol, agent.role);
         const adjustedScore = signal.score * agentPerf.adaptiveConfidence;
-        if (!bestSignal || Math.abs(adjustedScore) > Math.abs(bestSignal.adjustedScore)) {
-          bestSignal = { symbol, score: signal.score, adjustedScore, confluence: signal.confluence, agent: agent.name };
-        }
+        scored.push({ symbol, score: signal.score, adjustedScore, confluence: signal.confluence, agent: agent.name, isHeld: heldSet.has(symbol) });
       }
-      if (bestSignal) {
-        const passesThreshold = Math.abs(bestSignal.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength;
-        const alreadyHeld = heldSymbols.includes(bestSignal.symbol);
-        const side = bestSignal.adjustedScore > 0 ? 'LONG' : 'SHORT';
-        const price = marketPrices[bestSignal.symbol];
+      scored.sort((a, b) => Math.abs(b.adjustedScore) - Math.abs(a.adjustedScore));
+      // Show best unheld signal (matching actual trading logic)
+      const bestUnheld = scored.find(s => !s.isHeld);
+      const pick = bestUnheld || scored[0];
+      if (pick) {
+        const passesThreshold = Math.abs(pick.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength;
+        const alreadyHeld = pick.isHeld;
+        const side = pick.adjustedScore > 0 ? 'LONG' : 'SHORT';
+        const price = marketPrices[pick.symbol];
         const equity = wallet.equity || wallet.balance || 100000;
-        let sizePct = bestSignal.confluence >= 4 ? AUTO_TRADE_CONFIG.eliteSizePct : AUTO_TRADE_CONFIG.baseSizePct;
+        let sizePct = pick.confluence >= 4 ? AUTO_TRADE_CONFIG.eliteSizePct : AUTO_TRADE_CONFIG.baseSizePct;
         const qty = price ? Math.max(1, Math.floor(equity * sizePct / price)) : 0;
         const cost = price ? qty * price : 0;
         const canAfford = side === 'LONG' ? cost <= wallet.balance : true;
-        const riskCheck = price ? preTradeRiskCheck(userId, wallet, { symbol: bestSignal.symbol, side, quantity: qty, price }) : { approved: false, reason: 'no price' };
+        const riskCheck = price ? preTradeRiskCheck(userId, wallet, { symbol: pick.symbol, side, quantity: qty, price }) : { approved: false, reason: 'no price' };
         signals.push({
-          ...bestSignal, passesThreshold, alreadyHeld, side, price, qty, cost,
+          ...pick, passesThreshold, alreadyHeld, side, price, qty, cost,
           balance: wallet.balance, canAfford, riskApproved: riskCheck.approved, riskReason: riskCheck.reason || 'ok',
           wouldExecute: passesThreshold && !alreadyHeld && canAfford && riskCheck.approved,
         });
