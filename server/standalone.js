@@ -2636,11 +2636,11 @@ function runAllAgents(userId, fundData) {
   if (!wallet) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: NO WALLET`); return; }
   if (wallet.kill_switch_active) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE`); return; }
 
+  // Daily trade limit — count only position OPENS today (avoids double-counting with closed trades)
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const todayTrades = db.count('trades', t => t.user_id === userId && new Date(t.closed_at) >= todayStart);
   const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
-  if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
-    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: DAILY LIMIT (${todayTrades}+${todayOpens} >= ${AUTO_TRADE_CONFIG.maxDailyTrades})`);
+  if (todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
+    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: DAILY LIMIT (${todayOpens} opens >= ${AUTO_TRADE_CONFIG.maxDailyTrades})`);
     return;
   }
 
@@ -3056,10 +3056,9 @@ api.get('/api/trading/debug', (req, res) => {
     if (wallet.kill_switch_active) { results.push({ userId, blocked: 'KILL_SWITCH' }); continue; }
 
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-    const todayTrades = db.count('trades', t => t.user_id === userId && new Date(t.closed_at) >= todayStart);
     const todayOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= todayStart);
-    if (todayTrades + todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
-      results.push({ userId, blocked: 'DAILY_LIMIT', todayTrades, todayOpens, max: AUTO_TRADE_CONFIG.maxDailyTrades });
+    if (todayOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
+      results.push({ userId, blocked: 'DAILY_LIMIT', todayOpens, max: AUTO_TRADE_CONFIG.maxDailyTrades });
       continue;
     }
 
@@ -3101,7 +3100,7 @@ api.get('/api/trading/debug', (req, res) => {
 
     results.push({
       userId, balance: wallet.balance, equity: wallet.equity, openCount: openPositions.length,
-      heldSymbols, todayTrades, todayOpens, signals,
+      heldSymbols, todayOpens, signals,
     });
   }
 
@@ -3195,8 +3194,25 @@ function ensureAutoTradingActive() {
   let activatedCount = 0;
 
   for (const user of allUsers) {
-    const wallet = db.findOne('wallets', w => w.user_id === user.id);
-    if (!wallet) continue; // No wallet = no trading
+    let wallet = db.findOne('wallets', w => w.user_id === user.id);
+
+    // Auto-create wallet if missing
+    if (!wallet) {
+      wallet = db.insert('wallets', {
+        user_id: user.id, balance: 100000, equity: 100000, initial_balance: 100000,
+        unrealized_pnl: 0, realized_pnl: 0, trade_count: 0,
+        win_count: 0, loss_count: 0, kill_switch_active: false,
+        created_at: new Date().toISOString(),
+      });
+      console.log(`[Boot] Auto-created wallet for user ${user.id}`);
+    }
+
+    // Reset kill switch on boot — allows trading to resume after restart
+    if (wallet.kill_switch_active) {
+      wallet.kill_switch_active = false;
+      db._save('wallets');
+      console.log(`[Boot] Reset kill switch for user ${user.id}`);
+    }
 
     let settings = db.findOne('fund_settings', s => s.user_id === user.id);
 
