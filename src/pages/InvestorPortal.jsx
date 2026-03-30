@@ -1042,7 +1042,7 @@ const SIDEBAR_ITEMS = [
   { id: "settings", label: "Settings", icon: "◇" },
 ];
 
-function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onToggle, isMobile }) {
+function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onToggle, isMobile, adminNotifCount = 0 }) {
   const sidebarWidth = 260;
 
   // Desktop: permanent sidebar. Mobile: slide-out drawer.
@@ -3408,6 +3408,7 @@ function PortfolioDashboard({ investor, onLogout }) {
         investor={investor} onLogout={onLogout}
         isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)}
         isMobile={isMobile}
+        adminNotifCount={adminNotifCount}
       />
 
       {/* Main Content (offset by sidebar width on desktop) */}
