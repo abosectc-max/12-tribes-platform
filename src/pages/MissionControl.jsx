@@ -612,7 +612,7 @@ function CapitalView({ growthData, isMobile, isTablet, totalAUM = 0 }) {
 
 function InvestorsView({ groupData, serverUsers, isMobile, isTablet }) {
   const totalAUM = groupData.totalEquity || 0;
-  const investors = serverUsers.filter(u => u.role !== 'admin');
+  const investors = serverUsers; // Show all members — admins are investors too
   const memberCount = investors.length || groupData.investorCount || 0;
   const perInvestor = memberCount > 0 ? totalAUM / memberCount : 0;
   const avgGain = groupData.returnPct || 0;
