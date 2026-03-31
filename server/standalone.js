@@ -3686,16 +3686,17 @@ setTimeout(() => {
 const CLOUD_BACKUP_KEY = process.env.CLOUD_BACKUP_KEY || '';
 let CLOUD_BACKUP_BIN = process.env.CLOUD_BACKUP_BIN || '';
 
-// npoint.io config (default — public, zero setup)
-let NPOINT_ID = process.env.CLOUD_BACKUP_ID || '';
+// jsonblob.com config (default — public, zero setup, zero auth)
+let BLOB_ID = process.env.CLOUD_BACKUP_ID || '';
 
 const CLOUD_SYNC_INTERVAL_MS = 600000; // 10 minutes
-const CLOUD_BACKEND = (CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) ? 'jsonbin' : 'npoint';
-let CLOUD_SYNC_ENABLED = !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) || !!NPOINT_ID;
+const CLOUD_BACKEND = (CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) ? 'jsonbin' : 'jsonblob';
+let CLOUD_SYNC_ENABLED = !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) || !!BLOB_ID;
 
 /**
- * Auto-create npoint.io document on first boot (zero-config bootstrap).
- * The document ID is logged for the admin to save as CLOUD_BACKUP_ID env var.
+ * Auto-create jsonblob.com blob on first boot (zero-config bootstrap).
+ * jsonblob.com is free, requires NO auth, and returns a blob ID in the Location header.
+ * The blob ID is logged for the admin to save as CLOUD_BACKUP_ID env var on Render.
  */
 async function ensureCloudBin() {
   // If JSONBin is fully configured, use that
@@ -3704,23 +3705,23 @@ async function ensureCloudBin() {
     return true;
   }
 
-  // If npoint ID is set, use that
-  if (NPOINT_ID) {
-    console.log(`[CLOUD-SYNC] Using npoint.io backend (doc: ${NPOINT_ID})`);
+  // If blob ID is set via env var, use that
+  if (BLOB_ID) {
+    console.log(`[CLOUD-SYNC] Using jsonblob.com backend (blob: ${BLOB_ID})`);
     return true;
   }
 
-  // Check system_config for a previously auto-created npoint ID
-  const savedId = db.findOne('system_config', s => s.key === 'cloud_npoint_id');
+  // Check system_config for a previously auto-created blob ID (within same runtime)
+  const savedId = db.findOne('system_config', s => s.key === 'cloud_blob_id');
   if (savedId?.value) {
-    NPOINT_ID = savedId.value;
+    BLOB_ID = savedId.value;
     CLOUD_SYNC_ENABLED = true;
-    console.log(`[CLOUD-SYNC] Loaded npoint ID from system_config: ${NPOINT_ID}`);
+    console.log(`[CLOUD-SYNC] Loaded blob ID from system_config: ${BLOB_ID}`);
     return true;
   }
 
-  // Auto-create a new npoint.io document (zero auth required)
-  console.log('[CLOUD-SYNC] No cloud storage configured — auto-creating npoint.io document...');
+  // Auto-create a new jsonblob.com blob (zero auth required)
+  console.log('[CLOUD-SYNC] No cloud storage configured — auto-creating jsonblob.com blob...');
   try {
     const https = await import('node:https');
     const initData = JSON.stringify({
@@ -3730,12 +3731,13 @@ async function ensureCloudBin() {
 
     return new Promise((resolve) => {
       const req = https.request({
-        hostname: 'api.npoint.io',
+        hostname: 'jsonblob.com',
         port: 443,
-        path: '/',
+        path: '/api/jsonBlob',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
           'Content-Length': Buffer.byteLength(initData),
         },
       }, (res) => {
@@ -3743,58 +3745,32 @@ async function ensureCloudBin() {
         res.on('data', d => body += d);
         res.on('end', () => {
           try {
-            // npoint returns the document with its ID in the URL
-            // The response redirects or returns the URL path
-            if (res.statusCode >= 200 && res.statusCode < 400) {
-              // Try to extract ID from Location header or response body
-              const location = res.headers.location || '';
-              let docId = '';
+            // jsonblob returns 201 with Location header: https://jsonblob.com/api/jsonBlob/{id}
+            const location = res.headers.location || '';
+            let blobId = '';
 
-              if (location) {
-                docId = location.split('/').filter(Boolean).pop();
-              } else {
-                // Try parsing response for the ID
-                try {
-                  const parsed = JSON.parse(body);
-                  // npoint returns the data as-is; the ID is in the URL we were redirected to
-                  // We need to check if there's an ID field
-                  docId = parsed.id || '';
-                } catch {}
-              }
+            if (location) {
+              blobId = location.split('/').filter(Boolean).pop();
+            }
 
-              if (!docId && res.headers['x-id']) {
-                docId = res.headers['x-id'];
-              }
-
-              // If we still don't have an ID, construct from the URL pattern
-              if (!docId && body) {
-                // Try one more parse - sometimes the full URL is returned
-                const urlMatch = body.match(/npoint\.io\/([a-zA-Z0-9]+)/);
-                if (urlMatch) docId = urlMatch[1];
-              }
-
-              if (docId) {
-                NPOINT_ID = docId;
-                CLOUD_SYNC_ENABLED = true;
-                console.log(`[CLOUD-SYNC] ═══════════════════════════════════════════`);
-                console.log(`[CLOUD-SYNC] ✅ Auto-created npoint.io document: ${NPOINT_ID}`);
-                console.log(`[CLOUD-SYNC]`);
-                console.log(`[CLOUD-SYNC] ⚠️  TO MAKE THIS PERMANENT, add this Render env var:`);
-                console.log(`[CLOUD-SYNC]    CLOUD_BACKUP_ID=${NPOINT_ID}`);
-                console.log(`[CLOUD-SYNC]`);
-                console.log(`[CLOUD-SYNC]    Without this env var, a NEW document is created`);
-                console.log(`[CLOUD-SYNC]    on each deploy and previous data is lost.`);
-                console.log(`[CLOUD-SYNC] ═══════════════════════════════════════════`);
-                db.upsert('system_config', s => s.key === 'cloud_npoint_id', {
-                  key: 'cloud_npoint_id', value: NPOINT_ID,
-                });
-                resolve(true);
-              } else {
-                console.error(`[CLOUD-SYNC] ❌ Auto-create: couldn't extract document ID. Status: ${res.statusCode}, Body: ${body.substring(0, 300)}`);
-                resolve(false);
-              }
+            if (blobId && res.statusCode === 201) {
+              BLOB_ID = blobId;
+              CLOUD_SYNC_ENABLED = true;
+              console.log(`[CLOUD-SYNC] ═══════════════════════════════════════════`);
+              console.log(`[CLOUD-SYNC] ✅ Auto-created jsonblob.com blob: ${BLOB_ID}`);
+              console.log(`[CLOUD-SYNC]`);
+              console.log(`[CLOUD-SYNC] ⚠️  TO MAKE THIS PERMANENT, add this Render env var:`);
+              console.log(`[CLOUD-SYNC]    CLOUD_BACKUP_ID=${BLOB_ID}`);
+              console.log(`[CLOUD-SYNC]`);
+              console.log(`[CLOUD-SYNC]    Without this env var, a NEW blob is created`);
+              console.log(`[CLOUD-SYNC]    on each deploy and previous data is lost.`);
+              console.log(`[CLOUD-SYNC] ═══════════════════════════════════════════`);
+              db.upsert('system_config', s => s.key === 'cloud_blob_id', {
+                key: 'cloud_blob_id', value: BLOB_ID,
+              });
+              resolve(true);
             } else {
-              console.error(`[CLOUD-SYNC] ❌ Auto-create failed: HTTP ${res.statusCode} — ${body.substring(0, 200)}`);
+              console.error(`[CLOUD-SYNC] ❌ Auto-create failed: HTTP ${res.statusCode}, Location: ${location}, Body: ${body.substring(0, 300)}`);
               resolve(false);
             }
           } catch (e) {
@@ -3891,25 +3867,26 @@ function getCloudBackendConfig(payload) {
     };
   }
 
-  // Default: npoint.io
+  // Default: jsonblob.com (zero auth, free, reliable)
   return {
     push: {
-      hostname: 'api.npoint.io', port: 443,
-      path: `/${NPOINT_ID}`,
-      method: 'POST',
+      hostname: 'jsonblob.com', port: 443,
+      path: `/api/jsonBlob/${BLOB_ID}`,
+      method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
         ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
       },
     },
     pull: {
-      hostname: 'api.npoint.io', port: 443,
-      path: `/${NPOINT_ID}`,
+      hostname: 'jsonblob.com', port: 443,
+      path: `/api/jsonBlob/${BLOB_ID}`,
       method: 'GET',
-      headers: {},
+      headers: { 'Accept': 'application/json' },
     },
-    parseResponse: (body) => JSON.parse(body), // npoint returns raw data
-    name: 'npoint.io',
+    parseResponse: (body) => JSON.parse(body), // jsonblob returns raw data
+    name: 'jsonblob.com',
   };
 }
 
@@ -4145,7 +4122,7 @@ api.get('/api/admin/cloud-sync/status', auth, (req, res) => {
   json(res, 200, {
     enabled: CLOUD_SYNC_ENABLED,
     backend: CLOUD_BACKEND,
-    npointId: NPOINT_ID || null,
+    blobId: BLOB_ID || null,
     jsonbinConfigured: !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN),
     lastSyncTime: lastCloudSyncTime,
     syncIntervalMs: CLOUD_SYNC_INTERVAL_MS,
@@ -4154,7 +4131,7 @@ api.get('/api/admin/cloud-sync/status', auth, (req, res) => {
     tablesTracked: CLOUD_SYNC_TABLES.length,
     tableManifest: snapshot._meta.tableManifest,
     instructions: !CLOUD_SYNC_ENABLED ? {
-      option1: 'AUTOMATIC: Server auto-creates npoint.io storage on boot. Copy the CLOUD_BACKUP_ID from logs to Render env vars.',
+      option1: 'AUTOMATIC: Server auto-creates jsonblob.com storage on boot. Copy the CLOUD_BACKUP_ID from logs to Render env vars.',
       option2: 'MANUAL: Create free JSONBin.io account → Set CLOUD_BACKUP_KEY + CLOUD_BACKUP_BIN on Render.',
     } : undefined,
   });
