@@ -5820,7 +5820,7 @@ const AUTO_TRADE_CONFIG = {
   winnerSizePct: 0.06,         // 6% for high-conviction signals
   eliteSizePct: 0.08,          // 8% for multi-indicator confluence trades
   consensusThreshold: 0.45,    // Slightly lower to allow more signal diversity
-  minSignalStrength: 0.55,     // LOWERED from 0.78 — 0.78 was choking signal flow, causing stalls
+  minSignalStrength: 0.48,     // LOWERED from 0.55 — combined with confidence floor 0.45, ensures recovery from stalls
   minConfluence: 3,            // LOWERED from 4 — 3 confirming indicators is still high quality
   maxCorrelatedPositions: 3,   // Increased from 2 — Sentinel/Titan need room in ETF/forex classes
   maxDrawdownPct: 15,          // Relaxed from 12% — prevents premature kill switch on normal volatility
@@ -5882,25 +5882,27 @@ function updatePerformanceFeedback(agentName, symbol, side, pnl) {
   const recentWinRate = ap.recentPnl.length > 5 ? recentWins / ap.recentPnl.length : 0.5;
 
   // Enhanced adaptive confidence with streak awareness
+  // CRITICAL: Floor must stay above 0.45 to prevent death spiral where
+  // low confidence → no trades pass threshold → no recovery possible.
   if (recentWinRate > 0.65) {
     ap.adaptiveConfidence = Math.min(1.8, 1.0 + (recentWinRate - 0.5) * 1.5);
   } else if (recentWinRate > 0.55) {
     ap.adaptiveConfidence = Math.min(1.5, 1.0 + (recentWinRate - 0.5));
   } else if (recentWinRate < 0.30) {
-    ap.adaptiveConfidence = Math.max(0.2, recentWinRate * 0.8);
+    ap.adaptiveConfidence = Math.max(0.50, 0.45 + recentWinRate * 0.5);
   } else if (recentWinRate < 0.40) {
-    ap.adaptiveConfidence = Math.max(0.4, recentWinRate + 0.1);
+    ap.adaptiveConfidence = Math.max(0.55, recentWinRate + 0.2);
   } else {
     ap.adaptiveConfidence = 0.85 + recentWinRate * 0.3;
   }
   // Hot streak bonus: 4+ consecutive wins = extra conviction
   if (ap.streak >= 6) ap.adaptiveConfidence *= 1.25;
   else if (ap.streak >= 4) ap.adaptiveConfidence *= 1.12;
-  // Cold streak penalty: 4+ consecutive losses = heavy dampen
-  if (ap.streak <= -6) ap.adaptiveConfidence *= 0.5;
-  else if (ap.streak <= -4) ap.adaptiveConfidence *= 0.7;
-  // Hard cap
-  ap.adaptiveConfidence = Math.max(0.15, Math.min(2.0, ap.adaptiveConfidence));
+  // Cold streak penalty: 4+ consecutive losses = moderate dampen (not death spiral)
+  if (ap.streak <= -6) ap.adaptiveConfidence *= 0.7;
+  else if (ap.streak <= -4) ap.adaptiveConfidence *= 0.8;
+  // Hard cap — floor 0.45 prevents death spiral (0.45 * 1.0 signal = 0.45, needs confluence to pass)
+  ap.adaptiveConfidence = Math.max(0.45, Math.min(2.0, ap.adaptiveConfidence));
 
   // ─── Feed into learning engine + circuit breaker ───
   updateCircuitBreaker(agentName, pnl);
@@ -6766,6 +6768,26 @@ function computeSignal(symbol, agentStyle, agentName) {
 
 function runAutoTradeTick() {
   autoTradeTickCount++;
+
+  // ─── STALL RECOVERY: Gradually restore agent confidence if no trades happening ───
+  // Every 20 ticks (~10 min at 30s interval), check if ALL agents are stalled.
+  // If so, nudge confidence upward to break the death spiral.
+  if (autoTradeTickCount % 20 === 0) {
+    const openCount = db.count('positions', p => p.status === 'OPEN');
+    const recentTradeCount = db.count('trades', t => Date.now() - new Date(t.closed_at || t.opened_at).getTime() < 600000);
+    if (openCount === 0 && recentTradeCount === 0) {
+      // No positions and no trades in 10 min — stall detected, restore confidence
+      for (const ap of Object.values(agentPerformance)) {
+        if (ap.adaptiveConfidence < 0.7) {
+          ap.adaptiveConfidence = Math.min(0.85, ap.adaptiveConfidence + 0.15);
+          ap.streak = Math.max(-2, ap.streak); // Reduce negative streak severity
+        }
+      }
+      if (autoTradeTickCount % 60 === 0) {
+        console.log(`[AutoTrader] STALL RECOVERY: No positions/trades for 10+ min — nudging agent confidence upward`);
+      }
+    }
+  }
 
   const allFundSettings = db.findMany('fund_settings');
 
