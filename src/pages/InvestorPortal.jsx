@@ -118,20 +118,60 @@ function generatePortfolioHistory(initial, days) {
   return data;
 }
 
-function generateTransactions() {
-  const types = ["Deposit", "Dividend", "Rebalance", "Fee"];
+/**
+ * Build real activity feed from live trade data + wallet events.
+ * Combines: open positions (BUY/SELL entries), closed trades (realized P&L),
+ * and the initial deposit. No fake data.
+ */
+function buildActivityFromTrades(positions, tradeHistory, wallet) {
   const txns = [];
-  for (let i = 0; i < 10; i++) {
-    const type = types[Math.floor(Math.random() * types.length)];
-    const amount = type === "Deposit" ? 100000 : type === "Fee" ? -(Math.random() * 20 + 5) : (Math.random() * 200 + 10);
+
+  // Initial deposit
+  if (wallet) {
+    const depositDate = wallet.depositTimestamp || wallet.createdAt;
     txns.push({
-      id: `TXN_${String(i + 1).padStart(4, "0")}`,
-      date: new Date(2026, Math.floor(Math.random() * 3), Math.floor(Math.random() * 28) + 1).toLocaleDateString(),
-      type, amount: amount.toFixed(2),
-      description: type === "Deposit" ? "Initial contribution" : type === "Dividend" ? "Monthly distribution" : type === "Fee" ? "Management fee" : "Quarterly rebalance",
+      id: 'TXN_DEPOSIT',
+      date: depositDate ? new Date(depositDate).toLocaleDateString() : new Date().toLocaleDateString(),
+      type: 'Deposit',
+      amount: (wallet.initialBalance || wallet.depositAmount || 100000).toFixed(2),
+      description: 'Initial capital contribution',
+      sortTime: depositDate ? new Date(depositDate).getTime() : 0,
     });
   }
-  return txns.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  // Open positions → "Entry" transactions
+  if (Array.isArray(positions)) {
+    positions.forEach((p, i) => {
+      const cost = (p.entryPrice || 0) * (p.quantity || 0);
+      txns.push({
+        id: p.id || `TXN_OPEN_${i}`,
+        date: p.openTimestamp ? new Date(p.openTimestamp).toLocaleDateString() : new Date(p.openTime || Date.now()).toLocaleDateString(),
+        type: p.side === 'LONG' ? 'Buy' : 'Sell',
+        amount: (p.side === 'LONG' ? -cost : -(cost * 0.5)).toFixed(2),
+        description: `${p.side} ${p.quantity}x ${p.symbol} @ $${(p.entryPrice || 0).toFixed(2)}${p.agent ? ` (${p.agent})` : ''}`,
+        sortTime: p.openTime || new Date(p.openTimestamp || 0).getTime(),
+      });
+    });
+  }
+
+  // Closed trades → "Close" transactions with realized P&L
+  if (Array.isArray(tradeHistory)) {
+    tradeHistory.forEach((t, i) => {
+      const pnl = t.realizedPnL || 0;
+      txns.push({
+        id: t.id || `TXN_CLOSE_${i}`,
+        date: t.closeTimestamp ? new Date(t.closeTimestamp).toLocaleDateString() : new Date(t.closeTime || Date.now()).toLocaleDateString(),
+        type: pnl >= 0 ? 'Profit' : 'Loss',
+        amount: pnl.toFixed(2),
+        description: `Closed ${t.side} ${t.quantity}x ${t.symbol} @ $${(t.closePrice || 0).toFixed(2)}${t.agent ? ` (${t.agent})` : ''} — ${(t.returnPct || 0).toFixed(1)}%`,
+        sortTime: t.closeTime || new Date(t.closeTimestamp || 0).getTime(),
+      });
+    });
+  }
+
+  // Sort newest first
+  txns.sort((a, b) => (b.sortTime || 0) - (a.sortTime || 0));
+  return txns;
 }
 
 function generateMonthlyStatements() {
@@ -3412,7 +3452,7 @@ function PortfolioDashboard({ investor, onLogout }) {
   const positions = getPositions(investor.id);
   const tradeHistory = getTradeHistory(investor.id);
   const portfolioHistory = useMemo(() => generatePortfolioHistory(initialBalance, 82), [investor]);
-  const transactions = useMemo(() => generateTransactions(), [investor]);
+  const transactions = useMemo(() => buildActivityFromTrades(positions, tradeHistory, wallet), [positions, tradeHistory, wallet]);
   const statements = useMemo(() => generateMonthlyStatements(), []);
 
   const firstName = investor.firstName || investor.name?.split(' ')[0] || 'Investor';
@@ -3651,33 +3691,53 @@ function PortfolioDashboard({ investor, onLogout }) {
             <ResearchView isMobile={isMobile} />
           )}
 
-          {/* ═══ ACTIVITY VIEW ═══ */}
+          {/* ═══ ACTIVITY VIEW — Live Trade Feed ═══ */}
           {activeTab === "activity" && (
             <div style={{ ...glass, padding: isMobile ? 16 : 24, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>Transaction History</div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 12 : 13, minWidth: isMobile ? undefined : 500 }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-                    {["Date", "Type", "Description", "Amount"].map(h => (
-                      <th key={h} style={{ padding: "12px 14px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {transactions.map(t => (
-                    <tr key={t.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                      <td style={{ padding: "12px 14px", color: "rgba(255,255,255,0.6)" }}>{t.date}</td>
-                      <td style={{ padding: "12px 14px" }}>
-                        <span style={{ padding: "3px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600, background: t.type === "Deposit" ? "rgba(0,212,255,0.1)" : t.type === "Fee" ? "rgba(239,68,68,0.1)" : "rgba(16,185,129,0.1)", color: t.type === "Deposit" ? "#00D4FF" : t.type === "Fee" ? "#EF4444" : "#10B981" }}>{t.type}</span>
-                      </td>
-                      <td style={{ padding: "12px 14px", color: "rgba(255,255,255,0.6)" }}>{t.description}</td>
-                      <td style={{ padding: "12px 14px", fontFamily: "monospace", fontWeight: 600, color: parseFloat(t.amount) >= 0 ? "#10B981" : "#EF4444" }}>
-                        {parseFloat(t.amount) >= 0 ? "+" : ""}${t.amount}
-                      </td>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>Live Activity Feed</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>{transactions.length} events</div>
+              </div>
+              {transactions.length === 0 ? (
+                <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>◈</div>
+                  <div>No activity yet. AI agents are analyzing markets.</div>
+                </div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 12 : 13, minWidth: isMobile ? undefined : 500 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                      {["Date", "Type", "Details", "Amount"].map(h => (
+                        <th key={h} style={{ padding: "12px 14px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>{h}</th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {transactions.map(t => {
+                      const typeColors = {
+                        Deposit: { bg: "rgba(0,212,255,0.1)", fg: "#00D4FF" },
+                        Buy: { bg: "rgba(59,130,246,0.1)", fg: "#3B82F6" },
+                        Sell: { bg: "rgba(168,85,247,0.1)", fg: "#A855F7" },
+                        Profit: { bg: "rgba(16,185,129,0.1)", fg: "#10B981" },
+                        Loss: { bg: "rgba(239,68,68,0.1)", fg: "#EF4444" },
+                      };
+                      const tc = typeColors[t.type] || { bg: "rgba(255,255,255,0.05)", fg: "rgba(255,255,255,0.6)" };
+                      return (
+                        <tr key={t.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                          <td style={{ padding: "12px 14px", color: "rgba(255,255,255,0.6)", whiteSpace: "nowrap" }}>{t.date}</td>
+                          <td style={{ padding: "12px 14px" }}>
+                            <span style={{ padding: "3px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600, background: tc.bg, color: tc.fg }}>{t.type}</span>
+                          </td>
+                          <td style={{ padding: "12px 14px", color: "rgba(255,255,255,0.6)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis" }}>{t.description}</td>
+                          <td style={{ padding: "12px 14px", fontFamily: "monospace", fontWeight: 600, color: parseFloat(t.amount) >= 0 ? "#10B981" : "#EF4444", whiteSpace: "nowrap" }}>
+                            {parseFloat(t.amount) >= 0 ? "+" : ""}${parseFloat(t.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
 

@@ -6801,6 +6801,7 @@ function qaCheckDataIntegrity() {
     risk_events: { maxAge: 30 * 86400000, maxRows: 50000 },  // 30 days or 50K rows
     auto_trade_log: { maxAge: 30 * 86400000, maxRows: 20000 }, // 30 days or 20K rows
     signals: { maxAge: 7 * 86400000, maxRows: 5000 },         // 7 days or 5K rows
+    trade_flags: { maxAge: 3 * 86400000, maxRows: 2000 },     // 3 days or 2K rows
   };
   const pruneNow = Date.now();
   for (const [table, limits] of Object.entries(PRUNE_LIMITS)) {
