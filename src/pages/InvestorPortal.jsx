@@ -5639,6 +5639,7 @@ function AdminPanel({ investor, isMobile }) {
   const [createSuccess, setCreateSuccess] = useState('');
   const [complianceData, setComplianceData] = useState(null);
   const [complianceLoading, setComplianceLoading] = useState(false);
+  const [complianceError, setComplianceError] = useState('');
 
   const token = (() => {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
@@ -5734,12 +5735,34 @@ function AdminPanel({ investor, isMobile }) {
     } catch { /* silent */ }
   };
 
-  const fetchCompliance = async () => {
+  const fetchCompliance = async (retries = 2) => {
     setComplianceLoading(true);
-    try {
-      const resp = await fetch(`${ADMIN_API_BASE}/compliance/dashboard`, { headers: authHeaders });
-      if (resp.ok) setComplianceData(await resp.json());
-    } catch (e) { console.error('Compliance fetch error:', e); }
+    setComplianceError('');
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 12000);
+        const resp = await fetch(`${ADMIN_API_BASE}/compliance/dashboard`, { headers: authHeaders, signal: controller.signal });
+        clearTimeout(timer);
+        if (resp.ok) {
+          setComplianceData(await resp.json());
+          setComplianceLoading(false);
+          return;
+        }
+        if (resp.status === 502 || resp.status === 503) {
+          // Server cold-starting — wait and retry
+          if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; }
+          setComplianceError('Server is starting up. Please try again in a moment.');
+        } else if (resp.status === 401 || resp.status === 403) {
+          setComplianceError('Session expired or insufficient permissions. Please sign out and back in.');
+        } else {
+          setComplianceError(`Server returned ${resp.status}. Please retry.`);
+        }
+      } catch (e) {
+        if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; }
+        setComplianceError(e.name === 'AbortError' ? 'Request timed out — server may be waking up. Please retry.' : `Network error: ${e.message}`);
+      }
+    }
     setComplianceLoading(false);
   };
 
@@ -5751,6 +5774,14 @@ function AdminPanel({ investor, isMobile }) {
     const interval = setInterval(fetchHealth, 30000);
     return () => clearInterval(interval);
   }, [activeSection, fetchHealth]);
+
+  // Auto-refresh compliance every 60s when on compliance tab
+  useEffect(() => {
+    if (activeSection !== 'compliance') return;
+    if (!complianceData && !complianceLoading) fetchCompliance(3);
+    const interval = setInterval(() => fetchCompliance(1), 60000);
+    return () => clearInterval(interval);
+  }, [activeSection]);
 
   const [actionError, setActionError] = useState('');
   const [actionSuccess, setActionSuccess] = useState('');
@@ -6611,9 +6642,31 @@ function AdminPanel({ investor, isMobile }) {
       {activeSection === 'compliance' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {complianceLoading ? (
-            <div style={{ ...glass, padding: 40, textAlign: 'center', color: 'rgba(255,255,255,0.3)' }}>Loading compliance data...</div>
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 24, marginBottom: 12 }}>🛡️</div>
+              <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 14 }}>Loading compliance data...</div>
+              <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 11, marginTop: 6 }}>Connecting to compliance engine (may take a moment if server is waking up)</div>
+            </div>
+          ) : complianceError ? (
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 24, marginBottom: 12 }}>⚠️</div>
+              <div style={{ color: '#F59E0B', fontSize: 14, marginBottom: 12 }}>{complianceError}</div>
+              <button onClick={() => fetchCompliance(3)} style={{
+                padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(0,212,255,0.3)',
+                background: 'rgba(0,212,255,0.1)', color: '#00D4FF', fontSize: 13, fontWeight: 600,
+                cursor: 'pointer',
+              }}>Retry</button>
+            </div>
           ) : !complianceData ? (
-            <div style={{ ...glass, padding: 40, textAlign: 'center', color: 'rgba(255,255,255,0.3)' }}>No compliance data available</div>
+            <div style={{ ...glass, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 24, marginBottom: 12 }}>🛡️</div>
+              <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 14, marginBottom: 12 }}>No compliance data loaded yet</div>
+              <button onClick={() => fetchCompliance(3)} style={{
+                padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(0,212,255,0.3)',
+                background: 'rgba(0,212,255,0.1)', color: '#00D4FF', fontSize: 13, fontWeight: 600,
+                cursor: 'pointer',
+              }}>Load Compliance Dashboard</button>
+            </div>
           ) : (
             <>
               {/* Overall Score Card */}
