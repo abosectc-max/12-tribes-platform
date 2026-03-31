@@ -87,6 +87,8 @@ const DB_TABLES = [
   'passkey_credentials',
   // Trade flag queue — guards flag instead of auto-rejecting
   'trade_flags',
+  // System config — agent intelligence, cloud sync state
+  'system_config',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -329,6 +331,20 @@ class JsonDB {
 
   count(table, predicate) {
     return predicate ? this.tables[table].filter(predicate).length : this.tables[table].length;
+  }
+
+  upsert(table, predicate, record) {
+    if (!this.tables[table]) this.tables[table] = [];
+    const existing = this.tables[table].find(predicate);
+    if (existing) {
+      Object.assign(existing, record, { updated_at: new Date().toISOString() });
+    } else {
+      if (!record.id) record.id = randomUUID();
+      record.created_at = new Date().toISOString();
+      this.tables[table].push(record);
+    }
+    this._save(table);
+    return existing || record;
   }
 }
 
@@ -3648,6 +3664,490 @@ setTimeout(() => {
     console.error(`[BOOT-BACKUP] Initial profile backup failed: ${err.message}`);
   }
 }, 60000);
+
+// ═══════════════════════════════════════════════════════════════════════
+//   CLOUD PERSISTENCE ENGINE — Survives Render Ephemeral Wipes
+//   Syncs ALL investor data to cloud storage via Node.js built-in HTTPS
+//   Zero external dependencies — uses JSONBin.io free tier (or custom endpoint)
+//
+//   Config (set in Render Environment Variables):
+//     CLOUD_BACKUP_KEY  — JSONBin.io X-Master-Key (from account settings)
+//     CLOUD_BACKUP_BIN  — JSONBin.io Bin ID (created once)
+//
+//   Flow:
+//     STARTUP  → Pull latest cloud snapshot → Hydrate empty local tables
+//     RUNTIME  → Push snapshot every 10 minutes
+//     SHUTDOWN → Final push before exit
+// ═══════════════════════════════════════════════════════════════════════
+
+const CLOUD_BACKUP_KEY = process.env.CLOUD_BACKUP_KEY || '';
+let CLOUD_BACKUP_BIN = process.env.CLOUD_BACKUP_BIN || '';
+const CLOUD_SYNC_INTERVAL_MS = 600000; // 10 minutes
+let CLOUD_SYNC_ENABLED = !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN);
+
+// Auto-create JSONBin if only API key is set (self-bootstrapping)
+async function ensureCloudBin() {
+  if (!CLOUD_BACKUP_KEY || CLOUD_BACKUP_BIN) return; // Already configured or no key
+
+  console.log('[CLOUD-SYNC] API key found but no bin ID — auto-creating JSONBin...');
+  try {
+    const https = await import('node:https');
+    const initData = JSON.stringify({
+      _meta: { type: 'CLOUD_SYNC_SNAPSHOT', initialized: true, timestamp: new Date().toISOString() },
+      data: {},
+    });
+
+    return new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'api.jsonbin.io',
+        port: 443,
+        path: '/v3/b',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Master-Key': CLOUD_BACKUP_KEY,
+          'X-Bin-Name': '12-tribes-cloud-sync',
+          'X-Bin-Private': 'true',
+          'Content-Length': Buffer.byteLength(initData),
+        },
+      }, (res) => {
+        let body = '';
+        res.on('data', d => body += d);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed?.metadata?.id) {
+              CLOUD_BACKUP_BIN = parsed.metadata.id;
+              CLOUD_SYNC_ENABLED = true;
+              console.log(`[CLOUD-SYNC] ✅ Auto-created JSONBin: ${CLOUD_BACKUP_BIN}`);
+              console.log(`[CLOUD-SYNC] ⚠️  IMPORTANT: Set this Render env var to make it permanent:`);
+              console.log(`[CLOUD-SYNC]    CLOUD_BACKUP_BIN=${CLOUD_BACKUP_BIN}`);
+              // Persist the bin ID in system_config so it survives within this runtime
+              db.upsert('system_config', s => s.key === 'cloud_backup_bin', {
+                key: 'cloud_backup_bin', value: CLOUD_BACKUP_BIN,
+              });
+              resolve(true);
+            } else {
+              console.error(`[CLOUD-SYNC] ❌ Auto-create failed: ${body.substring(0, 200)}`);
+              resolve(false);
+            }
+          } catch (e) {
+            console.error(`[CLOUD-SYNC] ❌ Auto-create parse error: ${e.message}`);
+            resolve(false);
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        console.error(`[CLOUD-SYNC] ❌ Auto-create network error: ${err.message}`);
+        resolve(false);
+      });
+
+      req.setTimeout(15000, () => { req.destroy(); resolve(false); });
+      req.write(initData);
+      req.end();
+    });
+  } catch (err) {
+    console.error(`[CLOUD-SYNC] ❌ Auto-create exception: ${err.message}`);
+    return false;
+  }
+}
+
+// Also check system_config for a previously auto-created bin ID
+if (CLOUD_BACKUP_KEY && !CLOUD_BACKUP_BIN) {
+  const savedBin = db.findOne('system_config', s => s.key === 'cloud_backup_bin');
+  if (savedBin?.value) {
+    CLOUD_BACKUP_BIN = savedBin.value;
+    CLOUD_SYNC_ENABLED = true;
+    console.log(`[CLOUD-SYNC] Loaded bin ID from system_config: ${CLOUD_BACKUP_BIN}`);
+  }
+}
+
+// Tables that MUST survive deploys — all investor-critical data
+const CLOUD_SYNC_TABLES = [
+  'users', 'wallets', 'positions', 'trades', 'snapshots',
+  'agent_stats', 'fund_settings', 'auto_trade_log',
+  'signals', 'risk_events', 'order_queue',
+  'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
+  'distributions', 'capital_accounts', 'trade_flags',
+  'broker_connections', 'withdrawal_requests', 'passkey_credentials',
+  'feedback', 'qa_reports', 'access_requests', 'system_config',
+];
+
+let lastCloudSyncTime = null;
+let cloudSyncInProgress = false;
+
+/**
+ * Build a compact snapshot of all critical tables.
+ * Only includes non-empty tables to minimize payload.
+ */
+function buildCloudSnapshot() {
+  const snapshot = {
+    _meta: {
+      version: '2.0',
+      type: 'CLOUD_SYNC_SNAPSHOT',
+      timestamp: new Date().toISOString(),
+      serverUrl: SELF_URL || 'unknown',
+      tableManifest: {},
+    },
+    data: {},
+  };
+
+  for (const table of CLOUD_SYNC_TABLES) {
+    const rows = db.tables[table] || [];
+    if (rows.length > 0) {
+      snapshot.data[table] = rows;
+      snapshot._meta.tableManifest[table] = rows.length;
+    }
+  }
+
+  return snapshot;
+}
+
+/**
+ * Push snapshot to JSONBin.io via HTTPS PUT.
+ * Returns a Promise that resolves to { success, sizeKB, timestamp }.
+ */
+async function cloudSyncPush() {
+  if (!CLOUD_SYNC_ENABLED) return { success: false, reason: 'Cloud sync not configured' };
+  if (cloudSyncInProgress) return { success: false, reason: 'Sync already in progress' };
+
+  cloudSyncInProgress = true;
+
+  try {
+    const https = await import('node:https');
+    const snapshot = buildCloudSnapshot();
+    const payload = JSON.stringify(snapshot);
+    const sizeKB = (Buffer.byteLength(payload) / 1024).toFixed(1);
+
+    return new Promise((resolve) => {
+      const options = {
+        hostname: 'api.jsonbin.io',
+        port: 443,
+        path: `/v3/b/${CLOUD_BACKUP_BIN}`,
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Master-Key': CLOUD_BACKUP_KEY,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      };
+
+      const req = https.request(options, (res) => {
+        let body = '';
+        res.on('data', d => body += d);
+        res.on('end', () => {
+          cloudSyncInProgress = false;
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            lastCloudSyncTime = new Date().toISOString();
+            const tables = Object.keys(snapshot._meta.tableManifest).length;
+            const records = Object.values(snapshot._meta.tableManifest).reduce((a, b) => a + b, 0);
+            console.log(`[CLOUD-SYNC] ✅ PUSH OK — ${sizeKB}KB, ${tables} tables, ${records} records synced to cloud`);
+            resolve({ success: true, sizeKB: parseFloat(sizeKB), tables, records, timestamp: lastCloudSyncTime });
+          } else {
+            console.error(`[CLOUD-SYNC] ❌ PUSH FAILED: HTTP ${res.statusCode} — ${body.substring(0, 200)}`);
+            resolve({ success: false, reason: `HTTP ${res.statusCode}`, sizeKB: parseFloat(sizeKB) });
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        cloudSyncInProgress = false;
+        console.error(`[CLOUD-SYNC] ❌ PUSH ERROR: ${err.message}`);
+        resolve({ success: false, reason: err.message });
+      });
+
+      req.setTimeout(30000, () => {
+        cloudSyncInProgress = false;
+        req.destroy();
+        console.error('[CLOUD-SYNC] ❌ PUSH TIMEOUT (30s)');
+        resolve({ success: false, reason: 'Timeout' });
+      });
+
+      req.write(payload);
+      req.end();
+    });
+  } catch (err) {
+    cloudSyncInProgress = false;
+    console.error(`[CLOUD-SYNC] ❌ PUSH EXCEPTION: ${err.message}`);
+    return { success: false, reason: err.message };
+  }
+}
+
+/**
+ * Pull latest snapshot from JSONBin.io via HTTPS GET.
+ * Returns a Promise that resolves to the snapshot object, or null on failure.
+ */
+async function cloudSyncPull() {
+  if (!CLOUD_SYNC_ENABLED) return null;
+
+  try {
+    const https = await import('node:https');
+
+    return new Promise((resolve) => {
+      const options = {
+        hostname: 'api.jsonbin.io',
+        port: 443,
+        path: `/v3/b/${CLOUD_BACKUP_BIN}/latest`,
+        method: 'GET',
+        headers: {
+          'X-Master-Key': CLOUD_BACKUP_KEY,
+        },
+      };
+
+      const req = https.request(options, (res) => {
+        let body = '';
+        res.on('data', d => body += d);
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            try {
+              const parsed = JSON.parse(body);
+              // JSONBin wraps data in { record: ... }
+              const snapshot = parsed.record || parsed;
+              if (snapshot?._meta?.type === 'CLOUD_SYNC_SNAPSHOT') {
+                const tables = Object.keys(snapshot._meta.tableManifest || {}).length;
+                const records = Object.values(snapshot._meta.tableManifest || {}).reduce((a, b) => a + b, 0);
+                console.log(`[CLOUD-SYNC] ✅ PULL OK — Snapshot from ${snapshot._meta.timestamp}, ${tables} tables, ${records} records`);
+                resolve(snapshot);
+              } else {
+                console.warn('[CLOUD-SYNC] ⚠️ PULL: Bin exists but not a valid sync snapshot');
+                resolve(null);
+              }
+            } catch (e) {
+              console.error(`[CLOUD-SYNC] ❌ PULL PARSE ERROR: ${e.message}`);
+              resolve(null);
+            }
+          } else {
+            console.error(`[CLOUD-SYNC] ❌ PULL FAILED: HTTP ${res.statusCode}`);
+            resolve(null);
+          }
+        });
+      });
+
+      req.on('error', (err) => {
+        console.error(`[CLOUD-SYNC] ❌ PULL ERROR: ${err.message}`);
+        resolve(null);
+      });
+
+      req.setTimeout(30000, () => {
+        req.destroy();
+        console.error('[CLOUD-SYNC] ❌ PULL TIMEOUT (30s)');
+        resolve(null);
+      });
+
+      req.end();
+    });
+  } catch (err) {
+    console.error(`[CLOUD-SYNC] ❌ PULL EXCEPTION: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Restore investor data from a cloud snapshot.
+ * ONLY restores tables that are currently empty in local DB.
+ * Never overwrites existing local data — local always wins.
+ * Returns { restored, skipped, tables }.
+ */
+function restoreFromCloudSnapshot(snapshot) {
+  if (!snapshot?.data) return { restored: 0, skipped: 0, tables: [] };
+
+  let restoredRecords = 0;
+  let skippedTables = 0;
+  const restoredTables = [];
+
+  for (const [table, rows] of Object.entries(snapshot.data)) {
+    if (table.startsWith('_')) continue;
+    if (!DB_TABLES.includes(table)) continue;
+    if (!Array.isArray(rows) || rows.length === 0) continue;
+
+    // SAFETY: Only restore into EMPTY local tables — never overwrite existing data
+    if (db.tables[table] && db.tables[table].length > 0) {
+      skippedTables++;
+      continue;
+    }
+
+    // Restore rows with a cloud-restore marker
+    db.tables[table] = rows.map(r => ({ ...r, _cloud_restored: true }));
+    db._save(table);
+    restoredTables.push(`${table}:${rows.length}`);
+    restoredRecords += rows.length;
+  }
+
+  return { restored: restoredRecords, skipped: skippedTables, tables: restoredTables };
+}
+
+/**
+ * Boot-time cloud restore: If local DB is empty but cloud has data,
+ * pull and hydrate all tables automatically.
+ */
+async function bootCloudRestore() {
+  if (!CLOUD_SYNC_ENABLED) {
+    console.log('[CLOUD-SYNC] ⚠️ Cloud sync NOT configured — set CLOUD_BACKUP_KEY and CLOUD_BACKUP_BIN on Render');
+    console.log('[CLOUD-SYNC]    Investor data will NOT survive redeployments without cloud sync.');
+    return { restored: false, reason: 'Not configured' };
+  }
+
+  // Check if local DB has meaningful user data
+  const localUsers = db.count('users');
+  const localWallets = db.count('wallets');
+  const localTrades = db.count('trades');
+
+  if (localUsers > 0 && localWallets > 0) {
+    console.log(`[CLOUD-SYNC] Local DB has data (${localUsers} users, ${localWallets} wallets, ${localTrades} trades) — skipping cloud restore`);
+    return { restored: false, reason: 'Local data exists' };
+  }
+
+  console.log('[CLOUD-SYNC] 🔄 Local DB is empty — attempting cloud restore...');
+
+  const snapshot = await cloudSyncPull();
+  if (!snapshot) {
+    console.log('[CLOUD-SYNC] ⚠️ No cloud snapshot available — starting fresh');
+    return { restored: false, reason: 'No cloud snapshot' };
+  }
+
+  const result = restoreFromCloudSnapshot(snapshot);
+
+  if (result.restored > 0) {
+    console.log(`[CLOUD-SYNC] 🎉 CLOUD RESTORE COMPLETE — ${result.restored} records across ${result.tables.length} tables`);
+    console.log(`[CLOUD-SYNC]    Tables: ${result.tables.join(', ')}`);
+
+    // Re-seed agent stats if needed after restore
+    const agents = db.findMany('agent_stats');
+    if (agents.length === 0) {
+      ['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Phoenix', 'Titan'].forEach(name => {
+        db.tables.agent_stats.push({
+          id: randomUUID(), agent_name: name,
+          total_trades: 0, wins: 0, losses: 0, total_pnl: 0,
+          best_trade: 0, worst_trade: 0, avg_return: 0,
+        });
+      });
+      db._save('agent_stats');
+    }
+
+    // Reload agent intelligence from restored system_config
+    try { loadAgentIntelligence(); } catch {}
+
+    return { restored: true, records: result.restored, tables: result.tables };
+  } else {
+    console.log('[CLOUD-SYNC] ⚠️ Cloud snapshot was empty or all tables already populated');
+    return { restored: false, reason: 'Nothing to restore' };
+  }
+}
+
+// ─── Cloud sync periodic interval ───
+let cloudSyncInterval = null;
+if (CLOUD_SYNC_ENABLED) {
+  cloudSyncInterval = setInterval(async () => {
+    try {
+      await cloudSyncPush();
+    } catch (err) {
+      console.error(`[CLOUD-SYNC] Periodic push error: ${err.message}`);
+    }
+  }, CLOUD_SYNC_INTERVAL_MS);
+}
+
+// ─── ADMIN: Cloud Sync Status ───
+api.get('/api/admin/cloud-sync/status', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const snapshot = buildCloudSnapshot();
+  const payloadSize = Buffer.byteLength(JSON.stringify(snapshot));
+
+  json(res, 200, {
+    enabled: CLOUD_SYNC_ENABLED,
+    configured: !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN),
+    lastSyncTime: lastCloudSyncTime,
+    syncIntervalMs: CLOUD_SYNC_INTERVAL_MS,
+    syncInProgress: cloudSyncInProgress,
+    snapshotSizeKB: (payloadSize / 1024).toFixed(1),
+    tablesTracked: CLOUD_SYNC_TABLES.length,
+    tableManifest: snapshot._meta.tableManifest,
+    instructions: !CLOUD_SYNC_ENABLED ? {
+      step1: 'Create free account at https://jsonbin.io',
+      step2: 'Copy your X-Master-Key from account settings',
+      step3: 'Create a new bin (POST empty JSON {})',
+      step4: 'Set CLOUD_BACKUP_KEY and CLOUD_BACKUP_BIN on Render env vars',
+    } : undefined,
+  });
+});
+
+// ─── ADMIN: Force Cloud Push ───
+api.post('/api/admin/cloud-sync/push', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  if (!CLOUD_SYNC_ENABLED) {
+    return json(res, 400, { error: 'Cloud sync not configured. Set CLOUD_BACKUP_KEY and CLOUD_BACKUP_BIN.' });
+  }
+
+  const result = await cloudSyncPush();
+  json(res, result.success ? 200 : 500, result);
+});
+
+// ─── ADMIN: Force Cloud Pull (preview — does NOT auto-restore) ───
+api.post('/api/admin/cloud-sync/pull', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  if (!CLOUD_SYNC_ENABLED) {
+    return json(res, 400, { error: 'Cloud sync not configured. Set CLOUD_BACKUP_KEY and CLOUD_BACKUP_BIN.' });
+  }
+
+  const snapshot = await cloudSyncPull();
+  if (!snapshot) {
+    return json(res, 404, { error: 'No cloud snapshot found' });
+  }
+
+  json(res, 200, {
+    success: true,
+    snapshotTimestamp: snapshot._meta?.timestamp,
+    tableManifest: snapshot._meta?.tableManifest || {},
+    message: 'Cloud snapshot retrieved. Use /api/admin/cloud-sync/restore to apply.',
+  });
+});
+
+// ─── ADMIN: Force Cloud Restore (pulls + applies to empty tables) ───
+api.post('/api/admin/cloud-sync/restore', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  if (!CLOUD_SYNC_ENABLED) {
+    return json(res, 400, { error: 'Cloud sync not configured.' });
+  }
+
+  const body = await readBody(req);
+  const forceOverwrite = body?.force === true;
+
+  const snapshot = await cloudSyncPull();
+  if (!snapshot) {
+    return json(res, 404, { error: 'No cloud snapshot found' });
+  }
+
+  // If force mode, clear local tables before restore
+  if (forceOverwrite) {
+    for (const table of CLOUD_SYNC_TABLES) {
+      if (snapshot.data?.[table]?.length > 0) {
+        db.tables[table] = [];
+      }
+    }
+  }
+
+  const result = restoreFromCloudSnapshot(snapshot);
+
+  // Ensure auto-trading stays active after restore
+  try { ensureAutoTradingActive(); } catch {}
+  // Reload agent intelligence
+  try { loadAgentIntelligence(); } catch {}
+
+  json(res, 200, {
+    success: true,
+    message: `Restored ${result.restored} records across ${result.tables.length} tables`,
+    forceOverwrite,
+    ...result,
+  });
+});
 
 // ─── TRADE FLAGS API — Admin visibility into flag & review pipeline ───
 
@@ -9212,7 +9712,18 @@ function backfillZeroPnlTrades() {
 }
 
 // Start
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
+  // ═══ STEP 0: CLOUD PERSISTENCE — Ensure cloud storage exists, then restore ═══
+  // Auto-create JSONBin if API key is set but no bin exists yet
+  try { await ensureCloudBin(); } catch (err) { console.error(`[BOOT] Cloud bin setup: ${err.message}`); }
+
+  let cloudRestoreResult = { restored: false };
+  try {
+    cloudRestoreResult = await bootCloudRestore();
+  } catch (err) {
+    console.error(`[BOOT] Cloud restore failed: ${err.message}`);
+  }
+
   // Activate auto-trading for all investors on server boot
   const activated = ensureAutoTradingActive();
   const totalTraders = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading).length;
@@ -9241,16 +9752,32 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   Traders:   ${totalTraders} active${activated > 0 ? ` (${activated} re-activated on boot)` : ''}`);
   console.log(`   Agents:    ${AI_AGENTS.map(a => a.name).join(', ')}`);
   console.log(`   TaxEngine: ${taxBackfill.backfilled} lots backfilled, ${taxBackfill.ledgerBackfilled} ledger entries recovered`);
+  console.log(`   CloudSync: ${CLOUD_SYNC_ENABLED ? '✅ ACTIVE (10min interval)' : '⚠️  NOT CONFIGURED — data will NOT survive redeployments'}`);
+  if (cloudRestoreResult.restored) {
+    console.log(`   Restored:  ${cloudRestoreResult.records} records from cloud snapshot`);
+  }
   console.log(`   KeepAlive: ${SELF_URL ? 'ON (4min ping)' : 'OFF (set RENDER_EXTERNAL_URL)'}`);
   console.log('');
   console.log('   All investors trading 24/7/365.');
   console.log('   Awaiting connections.');
   console.log('');
   console.log('═══════════════════════════════════════════');
+
+  // ── Initial cloud push after boot stabilization (2 min) ──
+  if (CLOUD_SYNC_ENABLED) {
+    setTimeout(async () => {
+      try {
+        const result = await cloudSyncPush();
+        if (result.success) console.log('[BOOT] Initial cloud sync push complete');
+      } catch (err) {
+        console.error(`[BOOT] Initial cloud push failed: ${err.message}`);
+      }
+    }, 120000);
+  }
 });
 
 // Graceful shutdown — FLUSH ALL DATA before exit
-function shutdown(sig) {
+async function shutdown(sig) {
   console.log(`\n${sig} — initiating graceful shutdown...`);
 
   // Step 1: Stop ALL intervals — prevents data corruption during flush
@@ -9264,6 +9791,7 @@ function shutdown(sig) {
   clearInterval(rateLimitCleanupInterval);
   clearInterval(macroIntelInterval);
   clearInterval(profileBackupInterval);
+  if (cloudSyncInterval) clearInterval(cloudSyncInterval);
   if (typeof marketRefreshInterval !== 'undefined') clearInterval(marketRefreshInterval);
   if (keepAliveInterval) clearInterval(keepAliveInterval);
 
@@ -9278,6 +9806,21 @@ function shutdown(sig) {
     console.error('[SHUTDOWN] Database flush error:', err.message);
   }
 
+  // Step 2.5: CLOUD SYNC — Push final snapshot to cloud before exit
+  if (CLOUD_SYNC_ENABLED) {
+    try {
+      console.log('[SHUTDOWN] Pushing final cloud snapshot...');
+      const result = await cloudSyncPush();
+      if (result.success) {
+        console.log(`[SHUTDOWN] ✅ Cloud sync complete — ${result.records} records preserved`);
+      } else {
+        console.error(`[SHUTDOWN] ⚠️ Cloud sync failed: ${result.reason}`);
+      }
+    } catch (err) {
+      console.error(`[SHUTDOWN] Cloud sync error: ${err.message}`);
+    }
+  }
+
   // Step 3: Close WebSocket connections
   wsClients.forEach(c => { try { c.socket.end(); } catch {} });
 
@@ -9287,11 +9830,11 @@ function shutdown(sig) {
     process.exit(0);
   });
 
-  // Force exit after 15 seconds (give flush time for large DBs)
+  // Force exit after 25 seconds (give cloud sync + flush time)
   setTimeout(() => {
-    console.error('[SHUTDOWN] Forced exit after 15s timeout');
+    console.error('[SHUTDOWN] Forced exit after 25s timeout');
     process.exit(1);
-  }, 15000);
+  }, 25000);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
