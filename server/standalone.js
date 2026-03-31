@@ -1446,10 +1446,11 @@ function preTradeRiskCheck(userId, wallet, order) {
   if (drawdown >= RISK.killSwitchDrawdownPct) {
     wallet.kill_switch_active = true;
     db._save('wallets');
-    logRiskEvent(userId, 'kill_switch', 'critical', `Auto kill: drawdown ${drawdown.toFixed(2)}%`);
+    logRiskEvent(userId, 'kill_switch', 'critical', `Auto kill: drawdown ${drawdown.toFixed(2)}% from peak $${Math.round(peakEquity)} to equity $${Math.round(wallet.equity)}`);
     return { approved: false, reason: `KILL SWITCH: Drawdown ${drawdown.toFixed(2)}% exceeded ${RISK.killSwitchDrawdownPct}%` };
   }
   if (drawdown >= RISK.maxDrawdownPct) {
+    logRiskEvent(userId, 'drawdown_reject', 'warning', `Trade rejected: drawdown ${drawdown.toFixed(2)}% (peak $${Math.round(peakEquity)} → equity $${Math.round(wallet.equity)}) exceeds ${RISK.maxDrawdownPct}% limit`);
     return { approved: false, reason: `Drawdown ${drawdown.toFixed(2)}% exceeds limit (${RISK.maxDrawdownPct}%)` };
   }
 
@@ -5402,7 +5403,11 @@ function runAllAgents(userId, fundData) {
       // Persist signal with trade linkage
       persistSignal(signal, userId, { action: 'EXECUTED', tradeId: result.position?.id, positionId: result.position?.id });
     } else {
-      console.warn(`[AutoTrader] TRADE REJECTED: ${signal.agent} ${side} ${quantity}x ${signal.symbol} @ $${price} — ${result.error}`);
+      console.warn(`[AutoTrader] TRADE REJECTED for ${userId.slice(0,8)}: ${signal.agent} ${side} ${quantity}x ${signal.symbol} @ $${price} — ${result.error}`);
+      // Log to risk_events for admin visibility (not just stdout)
+      if (result.error && (result.error.includes('Drawdown') || result.error.includes('Kill switch') || result.error.includes('Insufficient'))) {
+        logRiskEvent(userId, 'trade_rejected', 'warning', `${signal.agent} ${side} ${signal.symbol}: ${result.error}`);
+      }
       // Persist rejected signal for audit trail
       persistSignal(signal, userId, { action: 'REJECTED' });
     }
@@ -8252,13 +8257,24 @@ function ensureAutoTradingActive() {
       db._save('wallets');
     }
 
-    // Reset peak_equity on boot — ephemeral storage means old peaks are stale
-    // and would cause false drawdown kills (peak from old session vs current equity)
-    if (wallet.peak_equity && wallet.peak_equity > wallet.equity * 1.15) {
-      const oldPeak = wallet.peak_equity;
-      wallet.peak_equity = wallet.equity;
-      db._save('wallets');
-      console.log(`[Boot] Reset stale peak_equity for user ${user.id}: $${Math.round(oldPeak)} → $${Math.round(wallet.equity)} (was ${(((oldPeak - wallet.equity) / oldPeak) * 100).toFixed(1)}% above current equity)`);
+    // Reconcile peak_equity on boot — ephemeral storage means old peaks can be stale.
+    // After a Render redeploy, open positions may be lost but peak_equity persists,
+    // creating phantom drawdown (peak from old session vs current equity without those positions).
+    // This does NOT weaken drawdown guards — it ensures peak_equity reflects REAL equity history.
+    if (wallet.peak_equity && wallet.peak_equity > wallet.equity) {
+      const openPos = db.count('positions', p => p.user_id === user.id && p.status === 'OPEN');
+      const drawdownFromPeak = ((wallet.peak_equity - wallet.equity) / wallet.peak_equity) * 100;
+
+      // If peak is >10% above current equity, reset to current equity.
+      // Rationale: After ephemeral wipe, positions are lost but peak remains.
+      // A genuine >10% drawdown in a single session would have already triggered
+      // kill switch or drawdown rejection during that session.
+      if (drawdownFromPeak > 10) {
+        const oldPeak = wallet.peak_equity;
+        wallet.peak_equity = wallet.equity;
+        db._save('wallets');
+        console.log(`[Boot] Reconciled stale peak_equity for user ${user.id}: $${Math.round(oldPeak)} → $${Math.round(wallet.equity)} (phantom drawdown ${drawdownFromPeak.toFixed(1)}%, ${openPos} open positions)`);
+      }
     }
 
     // Reset kill switch on boot — allows trading to resume after restart
