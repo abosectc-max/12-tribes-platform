@@ -324,10 +324,12 @@ class JsonDB {
   }
 
   findOne(table, predicate) {
+    if (!this.tables[table]) return null;
     return this.tables[table].find(predicate) || null;
   }
 
   findMany(table, predicate) {
+    if (!this.tables[table]) return [];
     return predicate ? this.tables[table].filter(predicate) : [...this.tables[table]];
   }
 
@@ -351,6 +353,7 @@ class JsonDB {
   }
 
   count(table, predicate) {
+    if (!this.tables[table]) return 0;
     return predicate ? this.tables[table].filter(predicate).length : this.tables[table].length;
   }
 
