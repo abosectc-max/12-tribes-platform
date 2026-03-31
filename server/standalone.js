@@ -6974,6 +6974,7 @@ function backfillZeroPnlTrades() {
         const newProceeds = roundTo(trade.close_price * entry.quantity, 2);
         entry.proceeds = newProceeds;
         entry.gain_loss = roundTo((newProceeds - entry.cost_basis) * dir, 2);
+        entry.adjusted_gain_loss = roundTo(entry.gain_loss + (entry.wash_sale_disallowed || 0), 2);
         ledgerFixed++;
       }
     }
