@@ -4014,10 +4014,8 @@ async function cloudSyncPull() {
               if (snapshot?._compressed && snapshot?._gz) {
                 try {
                   const zlib = require('node:zlib');
-                  const { promisify } = require('node:util');
-                  const gunzip = promisify(zlib.gunzip);
                   const compressed = Buffer.from(snapshot._gz, 'base64');
-                  const decompressed = await gunzip(compressed);
+                  const decompressed = zlib.gunzipSync(compressed);
                   snapshot = JSON.parse(decompressed.toString('utf8'));
                   console.log(`[CLOUD-SYNC] Decompressed snapshot from gzip+base64`);
                 } catch (decErr) {
