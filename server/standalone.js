@@ -3668,11 +3668,13 @@ setTimeout(() => {
 // ═══════════════════════════════════════════════════════════════════════
 //   CLOUD PERSISTENCE ENGINE — Survives Render Ephemeral Wipes
 //   Syncs ALL investor data to cloud storage via Node.js built-in HTTPS
-//   Zero external dependencies — uses JSONBin.io free tier (or custom endpoint)
+//   Zero external dependencies — zero account setup required
 //
-//   Config (set in Render Environment Variables):
-//     CLOUD_BACKUP_KEY  — JSONBin.io X-Master-Key (from account settings)
-//     CLOUD_BACKUP_BIN  — JSONBin.io Bin ID (created once)
+//   Supports TWO backends:
+//     1. npoint.io  (DEFAULT — zero auth, zero setup, auto-bootstraps)
+//        Config: CLOUD_BACKUP_ID env var (auto-created on first boot)
+//     2. JSONBin.io (OPTIONAL — requires free account for private bins)
+//        Config: CLOUD_BACKUP_KEY + CLOUD_BACKUP_BIN env vars
 //
 //   Flow:
 //     STARTUP  → Pull latest cloud snapshot → Hydrate empty local tables
@@ -3680,16 +3682,45 @@ setTimeout(() => {
 //     SHUTDOWN → Final push before exit
 // ═══════════════════════════════════════════════════════════════════════
 
+// JSONBin.io config (optional — private, needs account)
 const CLOUD_BACKUP_KEY = process.env.CLOUD_BACKUP_KEY || '';
 let CLOUD_BACKUP_BIN = process.env.CLOUD_BACKUP_BIN || '';
+
+// npoint.io config (default — public, zero setup)
+let NPOINT_ID = process.env.CLOUD_BACKUP_ID || '';
+
 const CLOUD_SYNC_INTERVAL_MS = 600000; // 10 minutes
-let CLOUD_SYNC_ENABLED = !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN);
+const CLOUD_BACKEND = (CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) ? 'jsonbin' : 'npoint';
+let CLOUD_SYNC_ENABLED = !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) || !!NPOINT_ID;
 
-// Auto-create JSONBin if only API key is set (self-bootstrapping)
+/**
+ * Auto-create npoint.io document on first boot (zero-config bootstrap).
+ * The document ID is logged for the admin to save as CLOUD_BACKUP_ID env var.
+ */
 async function ensureCloudBin() {
-  if (!CLOUD_BACKUP_KEY || CLOUD_BACKUP_BIN) return; // Already configured or no key
+  // If JSONBin is fully configured, use that
+  if (CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) {
+    console.log(`[CLOUD-SYNC] Using JSONBin.io backend (bin: ${CLOUD_BACKUP_BIN})`);
+    return true;
+  }
 
-  console.log('[CLOUD-SYNC] API key found but no bin ID — auto-creating JSONBin...');
+  // If npoint ID is set, use that
+  if (NPOINT_ID) {
+    console.log(`[CLOUD-SYNC] Using npoint.io backend (doc: ${NPOINT_ID})`);
+    return true;
+  }
+
+  // Check system_config for a previously auto-created npoint ID
+  const savedId = db.findOne('system_config', s => s.key === 'cloud_npoint_id');
+  if (savedId?.value) {
+    NPOINT_ID = savedId.value;
+    CLOUD_SYNC_ENABLED = true;
+    console.log(`[CLOUD-SYNC] Loaded npoint ID from system_config: ${NPOINT_ID}`);
+    return true;
+  }
+
+  // Auto-create a new npoint.io document (zero auth required)
+  console.log('[CLOUD-SYNC] No cloud storage configured — auto-creating npoint.io document...');
   try {
     const https = await import('node:https');
     const initData = JSON.stringify({
@@ -3699,15 +3730,12 @@ async function ensureCloudBin() {
 
     return new Promise((resolve) => {
       const req = https.request({
-        hostname: 'api.jsonbin.io',
+        hostname: 'api.npoint.io',
         port: 443,
-        path: '/v3/b',
+        path: '/',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Master-Key': CLOUD_BACKUP_KEY,
-          'X-Bin-Name': '12-tribes-cloud-sync',
-          'X-Bin-Private': 'true',
           'Content-Length': Buffer.byteLength(initData),
         },
       }, (res) => {
@@ -3715,20 +3743,58 @@ async function ensureCloudBin() {
         res.on('data', d => body += d);
         res.on('end', () => {
           try {
-            const parsed = JSON.parse(body);
-            if (parsed?.metadata?.id) {
-              CLOUD_BACKUP_BIN = parsed.metadata.id;
-              CLOUD_SYNC_ENABLED = true;
-              console.log(`[CLOUD-SYNC] ✅ Auto-created JSONBin: ${CLOUD_BACKUP_BIN}`);
-              console.log(`[CLOUD-SYNC] ⚠️  IMPORTANT: Set this Render env var to make it permanent:`);
-              console.log(`[CLOUD-SYNC]    CLOUD_BACKUP_BIN=${CLOUD_BACKUP_BIN}`);
-              // Persist the bin ID in system_config so it survives within this runtime
-              db.upsert('system_config', s => s.key === 'cloud_backup_bin', {
-                key: 'cloud_backup_bin', value: CLOUD_BACKUP_BIN,
-              });
-              resolve(true);
+            // npoint returns the document with its ID in the URL
+            // The response redirects or returns the URL path
+            if (res.statusCode >= 200 && res.statusCode < 400) {
+              // Try to extract ID from Location header or response body
+              const location = res.headers.location || '';
+              let docId = '';
+
+              if (location) {
+                docId = location.split('/').filter(Boolean).pop();
+              } else {
+                // Try parsing response for the ID
+                try {
+                  const parsed = JSON.parse(body);
+                  // npoint returns the data as-is; the ID is in the URL we were redirected to
+                  // We need to check if there's an ID field
+                  docId = parsed.id || '';
+                } catch {}
+              }
+
+              if (!docId && res.headers['x-id']) {
+                docId = res.headers['x-id'];
+              }
+
+              // If we still don't have an ID, construct from the URL pattern
+              if (!docId && body) {
+                // Try one more parse - sometimes the full URL is returned
+                const urlMatch = body.match(/npoint\.io\/([a-zA-Z0-9]+)/);
+                if (urlMatch) docId = urlMatch[1];
+              }
+
+              if (docId) {
+                NPOINT_ID = docId;
+                CLOUD_SYNC_ENABLED = true;
+                console.log(`[CLOUD-SYNC] ═══════════════════════════════════════════`);
+                console.log(`[CLOUD-SYNC] ✅ Auto-created npoint.io document: ${NPOINT_ID}`);
+                console.log(`[CLOUD-SYNC]`);
+                console.log(`[CLOUD-SYNC] ⚠️  TO MAKE THIS PERMANENT, add this Render env var:`);
+                console.log(`[CLOUD-SYNC]    CLOUD_BACKUP_ID=${NPOINT_ID}`);
+                console.log(`[CLOUD-SYNC]`);
+                console.log(`[CLOUD-SYNC]    Without this env var, a NEW document is created`);
+                console.log(`[CLOUD-SYNC]    on each deploy and previous data is lost.`);
+                console.log(`[CLOUD-SYNC] ═══════════════════════════════════════════`);
+                db.upsert('system_config', s => s.key === 'cloud_npoint_id', {
+                  key: 'cloud_npoint_id', value: NPOINT_ID,
+                });
+                resolve(true);
+              } else {
+                console.error(`[CLOUD-SYNC] ❌ Auto-create: couldn't extract document ID. Status: ${res.statusCode}, Body: ${body.substring(0, 300)}`);
+                resolve(false);
+              }
             } else {
-              console.error(`[CLOUD-SYNC] ❌ Auto-create failed: ${body.substring(0, 200)}`);
+              console.error(`[CLOUD-SYNC] ❌ Auto-create failed: HTTP ${res.statusCode} — ${body.substring(0, 200)}`);
               resolve(false);
             }
           } catch (e) {
@@ -3750,16 +3816,6 @@ async function ensureCloudBin() {
   } catch (err) {
     console.error(`[CLOUD-SYNC] ❌ Auto-create exception: ${err.message}`);
     return false;
-  }
-}
-
-// Also check system_config for a previously auto-created bin ID
-if (CLOUD_BACKUP_KEY && !CLOUD_BACKUP_BIN) {
-  const savedBin = db.findOne('system_config', s => s.key === 'cloud_backup_bin');
-  if (savedBin?.value) {
-    CLOUD_BACKUP_BIN = savedBin.value;
-    CLOUD_SYNC_ENABLED = true;
-    console.log(`[CLOUD-SYNC] Loaded bin ID from system_config: ${CLOUD_BACKUP_BIN}`);
   }
 }
 
@@ -3805,7 +3861,60 @@ function buildCloudSnapshot() {
 }
 
 /**
- * Push snapshot to JSONBin.io via HTTPS PUT.
+ * Build HTTPS request options for the active backend.
+ * Returns { pushOptions, pullOptions, parseResponse } for the current backend.
+ */
+function getCloudBackendConfig(payload) {
+  if (CLOUD_BACKEND === 'jsonbin' && CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) {
+    return {
+      push: {
+        hostname: 'api.jsonbin.io', port: 443,
+        path: `/v3/b/${CLOUD_BACKUP_BIN}`,
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Master-Key': CLOUD_BACKUP_KEY,
+          ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+        },
+      },
+      pull: {
+        hostname: 'api.jsonbin.io', port: 443,
+        path: `/v3/b/${CLOUD_BACKUP_BIN}/latest`,
+        method: 'GET',
+        headers: { 'X-Master-Key': CLOUD_BACKUP_KEY },
+      },
+      parseResponse: (body) => {
+        const parsed = JSON.parse(body);
+        return parsed.record || parsed; // JSONBin wraps in { record: ... }
+      },
+      name: 'JSONBin.io',
+    };
+  }
+
+  // Default: npoint.io
+  return {
+    push: {
+      hostname: 'api.npoint.io', port: 443,
+      path: `/${NPOINT_ID}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+      },
+    },
+    pull: {
+      hostname: 'api.npoint.io', port: 443,
+      path: `/${NPOINT_ID}`,
+      method: 'GET',
+      headers: {},
+    },
+    parseResponse: (body) => JSON.parse(body), // npoint returns raw data
+    name: 'npoint.io',
+  };
+}
+
+/**
+ * Push snapshot to cloud via HTTPS.
  * Returns a Promise that resolves to { success, sizeKB, timestamp }.
  */
 async function cloudSyncPush() {
@@ -3819,21 +3928,10 @@ async function cloudSyncPush() {
     const snapshot = buildCloudSnapshot();
     const payload = JSON.stringify(snapshot);
     const sizeKB = (Buffer.byteLength(payload) / 1024).toFixed(1);
+    const backend = getCloudBackendConfig(payload);
 
     return new Promise((resolve) => {
-      const options = {
-        hostname: 'api.jsonbin.io',
-        port: 443,
-        path: `/v3/b/${CLOUD_BACKUP_BIN}`,
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Master-Key': CLOUD_BACKUP_KEY,
-          'Content-Length': Buffer.byteLength(payload),
-        },
-      };
-
-      const req = https.request(options, (res) => {
+      const req = https.request(backend.push, (res) => {
         let body = '';
         res.on('data', d => body += d);
         res.on('end', () => {
@@ -3842,10 +3940,10 @@ async function cloudSyncPush() {
             lastCloudSyncTime = new Date().toISOString();
             const tables = Object.keys(snapshot._meta.tableManifest).length;
             const records = Object.values(snapshot._meta.tableManifest).reduce((a, b) => a + b, 0);
-            console.log(`[CLOUD-SYNC] ✅ PUSH OK — ${sizeKB}KB, ${tables} tables, ${records} records synced to cloud`);
-            resolve({ success: true, sizeKB: parseFloat(sizeKB), tables, records, timestamp: lastCloudSyncTime });
+            console.log(`[CLOUD-SYNC] ✅ PUSH OK (${backend.name}) — ${sizeKB}KB, ${tables} tables, ${records} records`);
+            resolve({ success: true, sizeKB: parseFloat(sizeKB), tables, records, timestamp: lastCloudSyncTime, backend: backend.name });
           } else {
-            console.error(`[CLOUD-SYNC] ❌ PUSH FAILED: HTTP ${res.statusCode} — ${body.substring(0, 200)}`);
+            console.error(`[CLOUD-SYNC] ❌ PUSH FAILED (${backend.name}): HTTP ${res.statusCode} — ${body.substring(0, 200)}`);
             resolve({ success: false, reason: `HTTP ${res.statusCode}`, sizeKB: parseFloat(sizeKB) });
           }
         });
@@ -3875,7 +3973,7 @@ async function cloudSyncPush() {
 }
 
 /**
- * Pull latest snapshot from JSONBin.io via HTTPS GET.
+ * Pull latest snapshot from cloud via HTTPS.
  * Returns a Promise that resolves to the snapshot object, or null on failure.
  */
 async function cloudSyncPull() {
@@ -3883,34 +3981,23 @@ async function cloudSyncPull() {
 
   try {
     const https = await import('node:https');
+    const backend = getCloudBackendConfig();
 
     return new Promise((resolve) => {
-      const options = {
-        hostname: 'api.jsonbin.io',
-        port: 443,
-        path: `/v3/b/${CLOUD_BACKUP_BIN}/latest`,
-        method: 'GET',
-        headers: {
-          'X-Master-Key': CLOUD_BACKUP_KEY,
-        },
-      };
-
-      const req = https.request(options, (res) => {
+      const req = https.request(backend.pull, (res) => {
         let body = '';
         res.on('data', d => body += d);
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
-              const parsed = JSON.parse(body);
-              // JSONBin wraps data in { record: ... }
-              const snapshot = parsed.record || parsed;
+              const snapshot = backend.parseResponse(body);
               if (snapshot?._meta?.type === 'CLOUD_SYNC_SNAPSHOT') {
                 const tables = Object.keys(snapshot._meta.tableManifest || {}).length;
                 const records = Object.values(snapshot._meta.tableManifest || {}).reduce((a, b) => a + b, 0);
-                console.log(`[CLOUD-SYNC] ✅ PULL OK — Snapshot from ${snapshot._meta.timestamp}, ${tables} tables, ${records} records`);
+                console.log(`[CLOUD-SYNC] ✅ PULL OK (${backend.name}) — Snapshot from ${snapshot._meta.timestamp}, ${tables} tables, ${records} records`);
                 resolve(snapshot);
               } else {
-                console.warn('[CLOUD-SYNC] ⚠️ PULL: Bin exists but not a valid sync snapshot');
+                console.warn(`[CLOUD-SYNC] ⚠️ PULL (${backend.name}): Document exists but not a valid sync snapshot`);
                 resolve(null);
               }
             } catch (e) {
@@ -3918,7 +4005,7 @@ async function cloudSyncPull() {
               resolve(null);
             }
           } else {
-            console.error(`[CLOUD-SYNC] ❌ PULL FAILED: HTTP ${res.statusCode}`);
+            console.error(`[CLOUD-SYNC] ❌ PULL FAILED (${backend.name}): HTTP ${res.statusCode}`);
             resolve(null);
           }
         });
@@ -4057,7 +4144,9 @@ api.get('/api/admin/cloud-sync/status', auth, (req, res) => {
 
   json(res, 200, {
     enabled: CLOUD_SYNC_ENABLED,
-    configured: !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN),
+    backend: CLOUD_BACKEND,
+    npointId: NPOINT_ID || null,
+    jsonbinConfigured: !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN),
     lastSyncTime: lastCloudSyncTime,
     syncIntervalMs: CLOUD_SYNC_INTERVAL_MS,
     syncInProgress: cloudSyncInProgress,
@@ -4065,10 +4154,8 @@ api.get('/api/admin/cloud-sync/status', auth, (req, res) => {
     tablesTracked: CLOUD_SYNC_TABLES.length,
     tableManifest: snapshot._meta.tableManifest,
     instructions: !CLOUD_SYNC_ENABLED ? {
-      step1: 'Create free account at https://jsonbin.io',
-      step2: 'Copy your X-Master-Key from account settings',
-      step3: 'Create a new bin (POST empty JSON {})',
-      step4: 'Set CLOUD_BACKUP_KEY and CLOUD_BACKUP_BIN on Render env vars',
+      option1: 'AUTOMATIC: Server auto-creates npoint.io storage on boot. Copy the CLOUD_BACKUP_ID from logs to Render env vars.',
+      option2: 'MANUAL: Create free JSONBin.io account → Set CLOUD_BACKUP_KEY + CLOUD_BACKUP_BIN on Render.',
     } : undefined,
   });
 });
