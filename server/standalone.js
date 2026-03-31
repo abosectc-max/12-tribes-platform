@@ -8902,7 +8902,7 @@ api.get('/api/trading/health', (req, res) => {
   // Per-user blocker summary — use SESSION start (matches actual trading engine logic)
   const allSettings = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading);
   const healthTodayStart = new Date(); healthTodayStart.setHours(0, 0, 0, 0);
-  const healthSessionStart = new Date(Math.max(healthTodayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime()));
+  const healthSessionStart = new Date(Math.max(healthTodayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime(), globalSessionResetTime ? new Date(globalSessionResetTime).getTime() : 0));
   const userBlockers = { healthy: 0, no_wallet: 0, kill_switch: 0, daily_limit: 0, no_signals: 0 };
   for (const s of allSettings) {
     const w = db.findOne('wallets', ww => ww.user_id === s.user_id);
@@ -9281,15 +9281,19 @@ api.get('/api/trading/debug', (req, res) => {
     const isActive = data?.autoTrading?.isAutoTrading;
     if (!isActive) continue;
 
+    const userRecord = db.findOne('users', u => u.id === userId);
+    const userEmail = userRecord?.email || 'unknown';
+    const userName = userRecord ? `${userRecord.first_name || ''} ${userRecord.last_name || ''}`.trim() : 'unknown';
+
     const wallet = db.findOne('wallets', w => w.user_id === userId);
-    if (!wallet) { results.push({ userId, blocked: 'NO_WALLET' }); continue; }
-    if (wallet.kill_switch_active) { results.push({ userId, blocked: 'KILL_SWITCH' }); continue; }
+    if (!wallet) { results.push({ userId, email: userEmail, name: userName, blocked: 'NO_WALLET' }); continue; }
+    if (wallet.kill_switch_active) { results.push({ userId, email: userEmail, name: userName, blocked: 'KILL_SWITCH' }); continue; }
 
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
     const sessionStart = new Date(Math.max(todayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime(), globalSessionResetTime ? new Date(globalSessionResetTime).getTime() : 0));
     const sessionOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= sessionStart);
     if (sessionOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
-      results.push({ userId, blocked: 'DAILY_LIMIT', sessionOpens, max: AUTO_TRADE_CONFIG.maxDailyTrades, sessionStart: sessionStart.toISOString() });
+      results.push({ userId, email: userEmail, name: userName, blocked: 'DAILY_LIMIT', sessionOpens, max: AUTO_TRADE_CONFIG.maxDailyTrades, sessionStart: sessionStart.toISOString() });
       continue;
     }
 
@@ -9333,12 +9337,19 @@ api.get('/api/trading/debug', (req, res) => {
     }
 
     results.push({
-      userId, balance: wallet.balance, equity: wallet.equity, openCount: openPositions.length,
+      userId, email: userEmail, name: userName, balance: wallet.balance, equity: wallet.equity, openCount: openPositions.length,
       heldSymbols, todayOpens, signals,
     });
   }
 
-  json(res, 200, { tickCount: autoTradeTickCount, debugResults: results });
+  // Include ALL registered users for account existence checks
+  const allUsers = db.findMany('users').map(u => ({
+    id: u.id, email: u.email, name: `${u.first_name || ''} ${u.last_name || ''}`.trim(),
+    role: u.role, status: u.status, hasAutoTrading: !!db.findOne('fund_settings', s => s.user_id === u.id && s.data?.autoTrading?.isAutoTrading),
+    hasWallet: !!db.findOne('wallets', w => w.user_id === u.id),
+  }));
+
+  json(res, 200, { tickCount: autoTradeTickCount, debugResults: results, allUsers });
 });
 
 // Get auto-trading status
