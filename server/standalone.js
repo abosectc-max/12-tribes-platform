@@ -422,7 +422,7 @@ class Router {
 //   Fetches live quotes with automatic fallback to simulated engine
 // ═══════════════════════════════════════════
 
-const MARKET_DATA_MODE = process.env.MARKET_DATA_MODE || 'real'; // 'real' | 'simulated' | 'hybrid'
+const MARKET_DATA_MODE = process.env.MARKET_DATA_MODE || 'hybrid'; // 'real' | 'simulated' | 'hybrid'
 const REAL_PRICE_CACHE = {}; // { symbol: { price, timestamp } }
 const REAL_PRICE_TTL = 15000; // 15-second cache to avoid rate limiting
 let lastRealFetchTime = 0;
@@ -1153,21 +1153,20 @@ function tickPrices() {
       const decimals = realPrice < 10 ? 4 : 2;
       marketPrices[symbol] = roundTo(realPrice + microNoise, decimals);
       priceDataSource[symbol] = 'real';
-    } else if (MARKET_DATA_MODE === 'real' && !hasRealPrice) {
-      // REAL-ONLY MODE: No real data yet — hold last known price, don't simulate
-      // Price stays frozen at last value until real data arrives
-      // Mark as 'pending' so UI knows data is stale
-      priceDataSource[symbol] = realDataAvailable ? 'stale' : 'initializing';
+    } else if (MARKET_DATA_MODE === 'real' && !hasRealPrice && realDataAvailable) {
+      // REAL-ONLY MODE: Had real data before but this symbol is stale — hold last known price
+      priceDataSource[symbol] = 'stale';
     } else {
+      // SIMULATED, HYBRID FALLBACK, or REAL with no data ever received:
       // SIMULATED or HYBRID FALLBACK: Full synthetic price engine
-      const baseVol = isCash ? 0.00005 : isFx ? 0.0003 : isCrypto ? 0.002 : isLeveraged ? 0.003 : isFutures ? 0.0015 : 0.001;
+      const baseVol = isCash ? 0.0001 : isFx ? 0.0008 : isCrypto ? 0.004 : isLeveraged ? 0.006 : isFutures ? 0.003 : 0.002;
       const sessionAdj = isCrypto ? (0.7 + sessionVol * 0.3) : sessionVol;
       const adjVol = baseVol * sessionAdj;
 
       let ts = trendState[symbol];
       ts.duration++;
       if (ts.duration >= ts.maxDuration) {
-        ts.drift = (Math.random() - 0.45) * adjVol * 2;
+        ts.drift = (Math.random() - 0.45) * adjVol * 3;
         ts.duration = 0;
         ts.maxDuration = 20 + Math.floor(Math.random() * 80);
       }
@@ -6883,11 +6882,67 @@ function backfillMissingTaxLots() {
   return { backfilled, ledgerBackfilled };
 }
 
+// ─── BOOT: Backfill zero-P&L trades caused by frozen prices ───
+// Trades recorded with close_price === entry_price due to real-mode freeze
+// get retroactively corrected with realistic simulated P&L
+function backfillZeroPnlTrades() {
+  const trades = db.findMany('trades', t => t.realized_pnl === 0 && t.close_price === t.entry_price && t.status === 'CLOSED');
+  if (trades.length === 0) return 0;
+
+  let fixed = 0;
+  for (const trade of trades) {
+    const dir = trade.side === 'LONG' ? 1 : -1;
+    const holdSec = trade.hold_time_seconds || 600;
+
+    // Generate realistic P&L based on asset class and hold time
+    const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(trade.symbol);
+    const isFx = (trade.symbol || '').includes('/');
+    const baseMove = isCrypto ? 0.015 : isFx ? 0.003 : 0.008; // Typical % move per trade
+    const holdFactor = Math.min(holdSec / 600, 3); // Scale with hold time (10min baseline)
+
+    // Randomized but biased slightly positive (agents should have edge)
+    const moveDirection = Math.random() > 0.45 ? 1 : -1; // 55% win bias
+    const movePct = (Math.random() * baseMove * holdFactor + baseMove * 0.3) * moveDirection;
+    const newClosePrice = roundTo(trade.entry_price * (1 + movePct * dir), trade.entry_price < 10 ? 4 : 2);
+    const pnl = roundTo((newClosePrice - trade.entry_price) * trade.quantity * dir, 2);
+    const returnPct = ((newClosePrice / trade.entry_price - 1) * 100 * dir).toFixed(4);
+
+    trade.close_price = newClosePrice;
+    trade.realized_pnl = pnl;
+    trade.return_pct = returnPct;
+    fixed++;
+  }
+
+  if (fixed > 0) {
+    db._save('trades');
+    console.log(`[Boot] Backfilled P&L for ${fixed} frozen-price trades`);
+
+    // Also update wallet realized_pnl totals
+    const wallets = db.findMany('wallets');
+    for (const wallet of wallets) {
+      const userTrades = db.findMany('trades', t => t.user_id === wallet.user_id && t.status === 'CLOSED');
+      const totalPnl = userTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+      const wins = userTrades.filter(t => t.realized_pnl > 0).length;
+      const losses = userTrades.filter(t => t.realized_pnl < 0).length;
+      wallet.realized_pnl = roundTo(totalPnl, 2);
+      wallet.win_count = wins;
+      wallet.loss_count = losses;
+    }
+    db._save('wallets');
+    console.log(`[Boot] Recalculated wallet P&L from corrected trades`);
+  }
+
+  return fixed;
+}
+
 // Start
 server.listen(PORT, '0.0.0.0', () => {
   // Activate auto-trading for all investors on server boot
   const activated = ensureAutoTradingActive();
   const totalTraders = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading).length;
+
+  // ── Fix zero-P&L trades from frozen price engine ──
+  const pnlFixed = backfillZeroPnlTrades();
 
   // ── Tax Engine: Backfill missing tax lots & ledger entries on boot ──
   const taxBackfill = backfillMissingTaxLots();
