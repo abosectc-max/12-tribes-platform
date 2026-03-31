@@ -55,26 +55,77 @@ export function createImmutableAuditEntry(category, action, details, userId = nu
 }
 
 /**
- * Verify audit chain integrity — detects any tampering
+ * Initialize audit chain hash from existing DB entries on server startup.
+ * This ensures the chain continues across server restarts without breaking.
+ * Must be called AFTER restoring data from cloud persistence.
+ */
+export function initAuditChainFromEntries(entries) {
+  if (!entries || entries.length === 0) {
+    _auditChainHash = 'GENESIS';
+    return { initialized: true, entriesProcessed: 0, lastHash: 'GENESIS' };
+  }
+  // Sort by timestamp_ms to ensure correct order
+  const sorted = [...entries].sort((a, b) => (a.timestamp_ms || 0) - (b.timestamp_ms || 0));
+  const lastEntry = sorted[sorted.length - 1];
+  if (lastEntry.entry_hash) {
+    _auditChainHash = lastEntry.entry_hash;
+    return { initialized: true, entriesProcessed: sorted.length, lastHash: _auditChainHash };
+  }
+  // If last entry has no hash, recompute from scratch
+  let currentHash = 'GENESIS';
+  for (const entry of sorted) {
+    if (entry.entry_hash) currentHash = entry.entry_hash;
+  }
+  _auditChainHash = currentHash;
+  return { initialized: true, entriesProcessed: sorted.length, lastHash: _auditChainHash };
+}
+
+/**
+ * Verify audit chain integrity — detects any tampering.
+ *
+ * The chain is segmented: each server lifecycle starts a new segment from GENESIS.
+ * A GENESIS prev_hash in the middle of the chain is a valid segment boundary
+ * (server restart), NOT a violation. Only actual hash mismatches (tampering)
+ * are flagged as violations.
  */
 export function verifyAuditChain(entries) {
+  if (!entries || entries.length === 0) {
+    return { valid: true, violations: [], entriesChecked: 0, segments: 0 };
+  }
+
+  // Sort by timestamp_ms to ensure correct order
+  const sorted = [...entries].sort((a, b) => (a.timestamp_ms || 0) - (b.timestamp_ms || 0));
+
   let expectedPrevHash = 'GENESIS';
   const violations = [];
+  let segments = 1; // At least one segment
 
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (entry.prev_hash !== expectedPrevHash) {
-      violations.push({ index: i, id: entry.id, expected: expectedPrevHash, found: entry.prev_hash });
+  for (let i = 0; i < sorted.length; i++) {
+    const entry = sorted[i];
+
+    // Check if this is a chain segment boundary (server restart)
+    if (entry.prev_hash === 'GENESIS' && i > 0) {
+      // New segment — server restarted here. This is expected, not a violation.
+      segments++;
+      expectedPrevHash = 'GENESIS';
     }
+
+    // Validate prev_hash linkage within the segment
+    if (entry.prev_hash !== expectedPrevHash) {
+      violations.push({ index: i, id: entry.id, type: 'CHAIN_BREAK', expected: expectedPrevHash, found: entry.prev_hash });
+    }
+
+    // Validate entry's own hash integrity (detects actual tampering)
     const hashInput = `${entry.id}|${entry.timestamp_ms}|${entry.category}|${entry.action}|${entry.prev_hash}|${JSON.stringify(entry.details)}`;
     const computed = createHash('sha256').update(hashInput).digest('hex');
     if (entry.entry_hash !== computed) {
       violations.push({ index: i, id: entry.id, type: 'HASH_MISMATCH', expected: computed, found: entry.entry_hash });
     }
+
     expectedPrevHash = entry.entry_hash;
   }
 
-  return { valid: violations.length === 0, violations, entriesChecked: entries.length };
+  return { valid: violations.length === 0, violations, entriesChecked: sorted.length, segments };
 }
 
 
@@ -900,6 +951,7 @@ export function runComplianceHealthCheck(config = {}) {
 export default {
   // Audit
   createImmutableAuditEntry,
+  initAuditChainFromEntries,
   verifyAuditChain,
   createTradeAuditRecord,
   // Best Execution

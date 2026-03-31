@@ -2303,10 +2303,11 @@ function closePosition(userId, positionId) {
 
   // ── Compliance: Close audit trail + PDT check ──
   try {
-    compliance.createImmutableAuditEntry('TRADE', 'POSITION_CLOSED', {
+    const closeAuditEntry = compliance.createImmutableAuditEntry('TRADE', 'POSITION_CLOSED', {
       position_id: pos.id, symbol: pos.symbol, side: pos.side,
       entry_price: pos.entry_price, close_price: closePrice, pnl, hold_time_seconds: holdTime,
     }, userId);
+    db.insert('audit_log', closeAuditEntry);
 
     // PDT check after closing (day trade detection)
     const allTrades = db.findMany('trades', t => t.user_id === userId);
@@ -11028,6 +11029,18 @@ server.listen(PORT, '0.0.0.0', async () => {
     console.error(`[BOOT] Cloud restore failed: ${err.message}`);
   }
 
+  // ── Compliance: Restore audit chain hash from DB so chain stays intact across restarts ──
+  let auditChainInit = { initialized: false };
+  try {
+    const existingAuditEntries = db.findMany('audit_log', () => true) || [];
+    auditChainInit = compliance.initAuditChainFromEntries(existingAuditEntries);
+    if (auditChainInit.entriesProcessed > 0) {
+      console.log(`[BOOT] Audit chain restored: ${auditChainInit.entriesProcessed} entries, last hash: ${auditChainInit.lastHash.slice(0, 12)}...`);
+    }
+  } catch (err) {
+    console.error(`[BOOT] Audit chain init failed: ${err.message}`);
+  }
+
   // Activate auto-trading for all investors on server boot
   const activated = ensureAutoTradingActive();
   const totalTraders = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading).length;
@@ -11056,6 +11069,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`   Traders:   ${totalTraders} active${activated > 0 ? ` (${activated} re-activated on boot)` : ''}`);
   console.log(`   Agents:    ${AI_AGENTS.map(a => a.name).join(', ')}`);
   console.log(`   TaxEngine: ${taxBackfill.backfilled} lots backfilled, ${taxBackfill.ledgerBackfilled} ledger entries recovered`);
+  console.log(`   AuditLog:  ${auditChainInit.entriesProcessed || 0} entries, chain ${auditChainInit.initialized ? 'RESTORED' : 'GENESIS'}`);
   console.log(`   CloudSync: ${CLOUD_SYNC_ENABLED ? '✅ ACTIVE (10min interval)' : '⚠️  NOT CONFIGURED — data will NOT survive redeployments'}`);
   if (cloudRestoreResult.restored) {
     console.log(`   Restored:  ${cloudRestoreResult.records} records from cloud snapshot`);
