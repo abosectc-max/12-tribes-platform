@@ -1739,6 +1739,128 @@ function qaInvestigateFlag(flag) {
       return { decision: 'REJECT', reason: `Insufficient balance: $${Math.round(wallet.balance)} available, $${Math.round(marginRequired)} required. No unrealized profits to cover.`, action: 'confirmed_insufficient' };
     }
 
+    case 'win_rate': {
+      // Guardian investigation: Is the agent's poor win rate from real or simulated conditions?
+      const agentName = flag.context?.agent || flag.order?.agent;
+      const perf = agentName ? getAgentPerf(agentName) : null;
+      const totalTrades = perf ? perf.wins + perf.losses : 0;
+      const winRate = totalTrades > 0 ? perf.wins / totalTrades : 0;
+      const isSimulated = Object.keys(REAL_PRICE_CACHE).length === 0;
+
+      if (isSimulated) {
+        // All data is simulated — win rate stats are meaningless. Allow trading.
+        return {
+          decision: 'OVERRIDE',
+          reason: `Agent ${agentName} win rate ${(winRate*100).toFixed(0)}% based on simulated data (0 real prices). Stats unreliable — allowing trading.`,
+          action: 'simulated_data_override'
+        };
+      }
+
+      if (totalTrades < 30) {
+        // Insufficient sample — allow with reduced confidence
+        return {
+          decision: 'OVERRIDE',
+          reason: `Agent ${agentName} has only ${totalTrades} trades — insufficient sample for benching. Allowing with reduced confidence.`,
+          action: 'insufficient_sample_override'
+        };
+      }
+
+      if (winRate < 0.20) {
+        // Genuinely poor performer on real data — block this agent
+        return {
+          decision: 'REJECT',
+          reason: `Agent ${agentName} win rate ${(winRate*100).toFixed(0)}% over ${totalTrades} real trades. Performance critically poor — benching confirmed.`,
+          action: 'confirmed_bench'
+        };
+      }
+
+      // Marginal — allow with reduced sizing
+      return {
+        decision: 'OVERRIDE',
+        reason: `Agent ${agentName} win rate ${(winRate*100).toFixed(0)}% is below threshold but not critical. Allowing with monitoring.`,
+        action: 'marginal_override'
+      };
+    }
+
+    case 'circuit_breaker': {
+      // Guardian investigation: Is the circuit breaker justified?
+      const agentName = flag.context?.agent || flag.order?.agent;
+      const cb = agentName ? getCircuitBreaker(agentName) : null;
+      const isSimulated = Object.keys(REAL_PRICE_CACHE).length === 0;
+
+      if (isSimulated) {
+        // Simulated data — consecutive losses are artificial. Reset and allow.
+        if (cb) {
+          cb.tripped = false;
+          cb.consecutiveLosses = 0;
+          cb.healActions.push({ action: 'GUARDIAN_OVERRIDE', at: new Date().toISOString(), reason: 'Simulated data — CB reset by Guardian' });
+        }
+        return {
+          decision: 'OVERRIDE',
+          reason: `Agent ${agentName} circuit breaker based on simulated data. Reset — allowing trading.`,
+          action: 'simulated_cb_reset'
+        };
+      }
+
+      if (cb && cb.consecutiveLosses >= 6) {
+        // 6+ real consecutive losses — confirm the halt
+        return {
+          decision: 'REJECT',
+          reason: `Agent ${agentName}: ${cb.consecutiveLosses} consecutive real losses, drawdown $${cb.drawdownFromPeak.toFixed(0)}. Circuit breaker justified.`,
+          action: 'confirmed_circuit_break'
+        };
+      }
+
+      // Moderate streak — allow with monitoring
+      if (cb) {
+        cb.tripped = false;
+        cb.healActions.push({ action: 'GUARDIAN_OVERRIDE', at: new Date().toISOString(), reason: 'Guardian cleared — moderate loss streak' });
+      }
+      return {
+        decision: 'OVERRIDE',
+        reason: `Agent ${agentName}: ${cb?.consecutiveLosses || 0} consecutive losses — moderate. Guardian cleared for trading.`,
+        action: 'guardian_cb_clear'
+      };
+    }
+
+    case 'daily_limit': {
+      // Guardian investigation: Is the daily limit appropriate given conditions?
+      const sessionOpens = flag.context?.sessionOpens || 0;
+      const maxDaily = flag.context?.maxDailyTrades || AUTO_TRADE_CONFIG.maxDailyTrades;
+
+      // Check recent performance — if trades are profitable, allow continued trading
+      const recentTrades = db.findMany('positions', p => p.user_id === userId && p.status === 'CLOSED')
+        .sort((a, b) => new Date(b.closed_at) - new Date(a.closed_at))
+        .slice(0, 10);
+      const recentWins = recentTrades.filter(t => (t.pnl || 0) > 0).length;
+      const recentWinRate = recentTrades.length > 0 ? recentWins / recentTrades.length : 0;
+
+      if (recentWinRate >= 0.5 && sessionOpens < maxDaily * 1.5) {
+        // Winning streak and only moderately over limit — allow
+        return {
+          decision: 'OVERRIDE',
+          reason: `Daily limit ${sessionOpens}/${maxDaily} but win rate ${(recentWinRate*100).toFixed(0)}% is strong. Extending limit by 50%.`,
+          action: 'daily_limit_extended'
+        };
+      }
+
+      if (sessionOpens >= maxDaily * 2) {
+        // Way over limit — hard stop
+        return {
+          decision: 'REJECT',
+          reason: `Session trades ${sessionOpens} is 2x daily limit ${maxDaily}. Hard stop for capital preservation.`,
+          action: 'confirmed_daily_limit'
+        };
+      }
+
+      // At limit with mediocre performance — hold
+      return {
+        decision: 'REJECT',
+        reason: `Daily limit reached (${sessionOpens}/${maxDaily}), recent win rate ${(recentWinRate*100).toFixed(0)}%. Holding until next session.`,
+        action: 'daily_limit_hold'
+      };
+    }
+
     default:
       return { decision: 'REJECT', reason: `Unknown guard type: ${flag.guard_type}`, action: 'unknown_guard' };
   }
@@ -6413,15 +6535,17 @@ function runAllAgents(userId, fundData) {
     });
     console.log(`[AutoTrader] Auto-created wallet for user ${userId} with $${INITIAL_BALANCE}`);
   }
-  // Kill switch — flag for QA review instead of hard-blocking
+  // Kill switch — flag for Guardian review, don't hard-block
   if (wallet.kill_switch_active) {
-    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE — flagging for QA review`);
-    createTradeFlag(userId, { symbol: 'ALL', side: 'N/A', quantity: 0 }, 'kill_switch',
-      'Kill switch active — blocking all trades. QA to investigate.', {
-      equity: wallet.equity, peak_equity: wallet.peak_equity,
-      initial_balance: wallet.initial_balance, kill_switch_active: true,
-    });
-    return; // Still return — but QA will process the flag and can deactivate
+    if (autoTradeTickCount <= 10 || autoTradeTickCount % 30 === 1) {
+      console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE — flagged for Guardian review (trading continues)`);
+      createTradeFlag(userId, { symbol: 'ALL', side: 'N/A', quantity: 0 }, 'kill_switch',
+        'Kill switch active — flagged for Guardian review. Trading NOT blocked pending decision.', {
+        equity: wallet.equity, peak_equity: wallet.peak_equity,
+        initial_balance: wallet.initial_balance, kill_switch_active: true,
+      });
+    }
+    // DON'T return — let trading continue, Guardian will review the flag and decide
   }
 
   // Daily trade limit — count positions opened since LATER of (today midnight, server boot, QA reset)
@@ -6430,9 +6554,17 @@ function runAllAgents(userId, fundData) {
   const resetTime = globalSessionResetTime ? new Date(globalSessionResetTime).getTime() : 0;
   const sessionStart = new Date(Math.max(todayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime(), resetTime));
   const sessionOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= sessionStart);
+  // Daily limit — flag for Guardian review, don't hard-block
   if (sessionOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
-    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: DAILY LIMIT (${sessionOpens} opens >= ${AUTO_TRADE_CONFIG.maxDailyTrades})`);
-    return;
+    if (autoTradeTickCount <= 10 || autoTradeTickCount % 30 === 1) {
+      console.warn(`[AutoTrader] User ${userId}: DAILY LIMIT (${sessionOpens} opens >= ${AUTO_TRADE_CONFIG.maxDailyTrades}) — flagged for Guardian review`);
+      createTradeFlag(userId, { symbol: 'ALL', side: 'N/A', quantity: 0 }, 'daily_limit',
+        `Session trade count ${sessionOpens} >= daily limit ${AUTO_TRADE_CONFIG.maxDailyTrades}`, {
+        sessionOpens, maxDailyTrades: AUTO_TRADE_CONFIG.maxDailyTrades,
+        sessionStart: sessionStart.toISOString(),
+      });
+    }
+    // DON'T return — let trading continue, Guardian reviews the flag
   }
 
   let openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
@@ -6457,14 +6589,21 @@ function runAllAgents(userId, fundData) {
   for (const agent of signalAgents) {
     const agentPerf = getAgentPerf(agent.name);
 
-    // ─── WIN-RATE GATE: Block agents with poor recent performance ───
-    // Require 20+ trades (not 6) before enforcing — small samples are noise, especially on simulated data
+    // ─── WIN-RATE GATE: Flag agents with poor performance for Guardian review ───
+    // Never auto-block — flag it, let Guardian decide
     const totalAgentTrades = agentPerf.wins + agentPerf.losses;
     if (totalAgentTrades >= 20) {
       const agentWinRate = agentPerf.wins / totalAgentTrades;
       if (agentWinRate < (AUTO_TRADE_CONFIG.minWinRateForTrading || 0.35)) {
-        if (autoTradeTickCount % 30 === 1) console.log(`[AutoTrader] Agent ${agent.name} benched — win rate ${(agentWinRate*100).toFixed(0)}% < ${((AUTO_TRADE_CONFIG.minWinRateForTrading||0.35)*100).toFixed(0)}% minimum (${totalAgentTrades} trades)`);
-        continue; // Skip this agent entirely until win rate recovers
+        if (autoTradeTickCount % 30 === 1) {
+          console.log(`[AutoTrader] Agent ${agent.name} flagged — win rate ${(agentWinRate*100).toFixed(0)}% < ${((AUTO_TRADE_CONFIG.minWinRateForTrading||0.35)*100).toFixed(0)}% minimum (${totalAgentTrades} trades) — Guardian will review`);
+          createTradeFlag(userId, { symbol: 'ALL', side: 'N/A', quantity: 0, agent: agent.name }, 'win_rate',
+            `Agent ${agent.name} win rate ${(agentWinRate*100).toFixed(0)}% (${agentPerf.wins}W/${agentPerf.losses}L over ${totalAgentTrades} trades) below ${((AUTO_TRADE_CONFIG.minWinRateForTrading||0.35)*100).toFixed(0)}% threshold`, {
+            agent: agent.name, winRate: agentWinRate, wins: agentPerf.wins, losses: agentPerf.losses,
+            totalTrades: totalAgentTrades, adaptiveConfidence: agentPerf.adaptiveConfidence,
+          });
+        }
+        // DON'T continue — let the agent generate signals, Guardian will review the flag
       }
     }
 
@@ -6475,8 +6614,18 @@ function runAllAgents(userId, fundData) {
     const scored = [];
     for (const symbol of tradable) {
       const signal = computeSignal(symbol, agent.role, agent.name);
-      // Check circuit breaker before scoring
-      if (checkCircuitBreaker(agent.name)) continue;
+      // Circuit breaker — flag for Guardian review, don't auto-block
+      if (checkCircuitBreaker(agent.name)) {
+        const cb = getCircuitBreaker(agent.name);
+        if (autoTradeTickCount % 30 === 1) {
+          createTradeFlag(userId, { symbol, side: signal.score > 0 ? 'LONG' : 'SHORT', quantity: 0, agent: agent.name }, 'circuit_breaker',
+            `Agent ${agent.name} circuit breaker tripped: ${cb.tripReason}`, {
+            agent: agent.name, consecutiveLosses: cb.consecutiveLosses, drawdownFromPeak: cb.drawdownFromPeak,
+            tripCount: cb.tripCount, totalPnl: cb.totalPnl,
+          });
+        }
+        // DON'T continue — let signal proceed, Guardian reviews the flag
+      }
       const adjustedScore = signal.score * agentPerf.adaptiveConfidence;
       scored.push({ symbol, ...signal, adjustedScore, agent: agent.name, isHeld: heldSymbols.has(symbol) });
     }
@@ -6549,15 +6698,17 @@ function runAllAgents(userId, fundData) {
     const drawdownPct = peakEq > 0 ? ((peakEq - equity) / peakEq) * 100 : 0;
     const drawdownMultiplier = drawdownPct > 10 ? 0.5 : drawdownPct > 5 ? 0.75 : 1.0;
 
-    // Drawdown threshold — flag for QA review instead of auto-activating kill switch
+    // Drawdown threshold — flag for Guardian review, don't stop trading
     if (drawdownPct > AUTO_TRADE_CONFIG.maxDrawdownPct) {
-      createTradeFlag(userId, { symbol: signal.symbol, side: signal.adjustedScore > 0 ? 'LONG' : 'SHORT', quantity: 0 },
-        'drawdown', `AutoTrader drawdown ${drawdownPct.toFixed(1)}% exceeds ${AUTO_TRADE_CONFIG.maxDrawdownPct}% limit`, {
-        equity, peak_equity: peakEq, initial_balance: wallet.initial_balance,
-        drawdown_pct: drawdownPct, agent: signal.agent,
-      });
-      console.log(`[AutoTrader] 🚩 Drawdown flag for user ${userId.slice(0,8)} — ${drawdownPct.toFixed(1)}% (flagged, not killed)`);
-      break; // Stop trying more trades this tick — QA will review
+      if (autoTradeTickCount % 30 === 1) {
+        createTradeFlag(userId, { symbol: signal.symbol, side: signal.adjustedScore > 0 ? 'LONG' : 'SHORT', quantity: 0 },
+          'drawdown', `AutoTrader drawdown ${drawdownPct.toFixed(1)}% exceeds ${AUTO_TRADE_CONFIG.maxDrawdownPct}% limit`, {
+          equity, peak_equity: peakEq, initial_balance: wallet.initial_balance,
+          drawdown_pct: drawdownPct, agent: signal.agent,
+        });
+        console.log(`[AutoTrader] 🚩 Drawdown flag for user ${userId.slice(0,8)} — ${drawdownPct.toFixed(1)}% (flagged for Guardian review)`);
+      }
+      // DON'T break — continue trading, Guardian will review and decide
     }
 
     // Confluence-based sizing: elite > winner > base (TIGHTENED thresholds)
