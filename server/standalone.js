@@ -6052,7 +6052,7 @@ const AUTO_TRADE_CONFIG = {
 
 let autoTradeTickCount = 0;
 const SERVER_BOOT_TIME = new Date().toISOString(); // Track deploy time for daily limit scoping
-let globalSessionResetTime = null; // Set by QA agent when daily limit cooldown expires — resets trade counter
+let globalSessionResetTime = SERVER_BOOT_TIME; // Initialize to boot time — prevents cloud-synced pre-boot positions from counting toward daily limit
 
 // ═══════════════════════════════════════════
 //   SELF-HEALING ADAPTIVE FEEDBACK SYSTEM
