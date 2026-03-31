@@ -421,21 +421,11 @@ export async function registerUser({ firstName, lastName, email, phone, password
   return { success: true, user, verificationCode };
 }
 
-// ═══════ PASSKEY (WebAuthn) ═══════
+// ═══════ PASSKEY (WebAuthn) — Server-Verified ═══════
 
 export function isPasskeySupported() {
   return !!(window.PublicKeyCredential &&
     typeof window.PublicKeyCredential === 'function');
-}
-
-function generateChallenge() {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  return array;
-}
-
-function strToBuffer(str) {
-  return new TextEncoder().encode(str);
 }
 
 function bufferToBase64url(buffer) {
@@ -445,92 +435,226 @@ function bufferToBase64url(buffer) {
   return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-export async function registerPasskey(email) {
-  const emailKey = email.toLowerCase().trim();
-  const user = userDB.get(emailKey);
-  if (!user) return { success: false, error: 'User not found' };
+function base64urlToBuffer(base64url) {
+  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 
+// Check if user has passkey on server
+export async function getPasskeyStatus() {
+  const res = await apiFetch('/auth/passkey/status');
+  if (res.ok) return res.data;
+  return { hasPasskey: false, count: 0, credentials: [] };
+}
+
+export async function registerPasskey(email, deviceName) {
   if (!isPasskeySupported()) {
     return { success: false, error: 'Passkeys are not supported on this device/browser' };
   }
 
   try {
-    const challenge = generateChallenge();
+    // 1. Get registration options from server
+    const optionsRes = await apiFetch('/auth/passkey/register/options', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
 
+    if (!optionsRes.ok) {
+      return { success: false, error: optionsRes.data?.error || 'Failed to get registration options' };
+    }
+
+    const options = optionsRes.data;
+
+    // 2. Convert server challenge and user.id from base64url to ArrayBuffer
     const publicKeyOptions = {
-      challenge,
+      challenge: base64urlToBuffer(options.challenge),
       rp: {
-        name: '12 Tribes Investments',
+        name: options.rp.name,
         id: window.location.hostname,
       },
       user: {
-        id: strToBuffer(user.id),
-        name: user.email,
-        displayName: user.name,
+        id: base64urlToBuffer(options.user.id),
+        name: options.user.name,
+        displayName: options.user.displayName,
       },
-      pubKeyCredParams: [
-        { alg: -7, type: 'public-key' },
-        { alg: -257, type: 'public-key' },
-      ],
-      authenticatorSelection: {
-        authenticatorAttachment: 'platform',
-        residentKey: 'preferred',
-        userVerification: 'preferred',
-      },
-      timeout: 60000,
-      attestation: 'none',
+      pubKeyCredParams: options.pubKeyCredParams,
+      authenticatorSelection: options.authenticatorSelection,
+      timeout: options.timeout,
+      attestation: options.attestation,
+      excludeCredentials: (options.excludeCredentials || []).map(c => ({
+        ...c,
+        id: base64urlToBuffer(c.id),
+      })),
     };
 
+    // 3. Create credential via browser WebAuthn API
     const credential = await navigator.credentials.create({
       publicKey: publicKeyOptions,
     });
 
     const credentialId = bufferToBase64url(credential.rawId);
-    user.hasPasskey = true;
-    user.passkeyCredentialId = credentialId;
-    userDB.set(emailKey, user);
-    persistUsers();
+    const attestationObject = bufferToBase64url(credential.response.attestationObject);
+    const clientDataJSON = bufferToBase64url(credential.response.clientDataJSON);
 
-    return { success: true, credentialId };
+    // Extract public key if available
+    let publicKey = null;
+    if (credential.response.getPublicKey) {
+      const pkBytes = credential.response.getPublicKey();
+      if (pkBytes) publicKey = bufferToBase64url(pkBytes);
+    }
+
+    // 4. Send credential to server for storage
+    const verifyRes = await apiFetch('/auth/passkey/register/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        challenge: options.challenge,
+        credentialId,
+        publicKey,
+        clientDataJSON,
+        attestationObject,
+        deviceName: deviceName || detectDeviceName(),
+      }),
+    });
+
+    if (!verifyRes.ok) {
+      return { success: false, error: verifyRes.data?.error || 'Failed to register passkey on server' };
+    }
+
+    // 5. Update local user state
+    const emailKey = email.toLowerCase().trim();
+    const user = userDB.get(emailKey);
+    if (user) {
+      user.hasPasskey = true;
+      userDB.set(emailKey, user);
+      persistUsers();
+    }
+    if (currentSession) {
+      currentSession.hasPasskey = true;
+      saveToStorage(STORAGE_KEY_SESSION, currentSession);
+    }
+
+    return { success: true, credentialId, credential: verifyRes.data.credential };
   } catch (err) {
     if (err.name === 'NotAllowedError') {
       return { success: false, error: 'Passkey creation was cancelled' };
+    }
+    if (err.name === 'InvalidStateError') {
+      return { success: false, error: 'A passkey for this device is already registered' };
     }
     return { success: false, error: `Passkey error: ${err.message}` };
   }
 }
 
-export async function authenticateWithPasskey(email) {
-  const emailKey = email.toLowerCase().trim();
-  const user = userDB.get(emailKey);
+function detectDeviceName() {
+  const ua = navigator.userAgent || '';
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua)) return 'iPad';
+  if (/Macintosh/.test(ua)) return 'Mac';
+  if (/Windows/.test(ua)) return 'Windows PC';
+  if (/Android/.test(ua)) return 'Android Device';
+  if (/Linux/.test(ua)) return 'Linux Device';
+  return 'Unknown Device';
+}
 
-  if (!user) return { success: false, error: 'No account found with this email' };
-  if (!user.hasPasskey) return { success: false, error: 'No passkey registered for this account' };
+export async function authenticateWithPasskey(email) {
   if (!isPasskeySupported()) return { success: false, error: 'Passkeys not supported' };
 
-  try {
-    const challenge = generateChallenge();
+  const emailKey = email.toLowerCase().trim();
 
+  try {
+    // 1. Get authentication options from server (no auth required)
+    const optionsRes = await apiFetch('/auth/passkey/authenticate/options', {
+      method: 'POST',
+      body: JSON.stringify({ email: emailKey }),
+    });
+
+    if (!optionsRes.ok) {
+      return { success: false, error: optionsRes.data?.error || 'No passkey found for this account' };
+    }
+
+    const options = optionsRes.data;
+
+    // 2. Convert server data to WebAuthn format
     const publicKeyOptions = {
-      challenge,
+      challenge: base64urlToBuffer(options.challenge),
       rpId: window.location.hostname,
-      allowCredentials: [{
-        id: Uint8Array.from(atob(user.passkeyCredentialId.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)),
-        type: 'public-key',
-        transports: ['internal'],
-      }],
-      userVerification: 'preferred',
-      timeout: 60000,
+      allowCredentials: (options.allowCredentials || []).map(c => ({
+        id: base64urlToBuffer(c.id),
+        type: c.type,
+        transports: c.transports,
+      })),
+      userVerification: options.userVerification,
+      timeout: options.timeout,
     };
 
-    await navigator.credentials.get({
+    // 3. Get assertion from browser
+    const assertion = await navigator.credentials.get({
       publicKey: publicKeyOptions,
     });
 
-    // Record login with timestamp
-    recordLogin({ ...user, method: 'passkey' });
+    const credentialId = bufferToBase64url(assertion.rawId);
+    const authenticatorData = bufferToBase64url(assertion.response.authenticatorData);
+    const clientDataJSON = bufferToBase64url(assertion.response.clientDataJSON);
+    const signature = bufferToBase64url(assertion.response.signature);
 
-    currentSession = { ...user, isNewUser: false };
+    // 4. Send assertion to server for verification — returns JWT
+    const verifyRes = await apiFetch('/auth/passkey/authenticate/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        challenge: options.challenge,
+        credentialId,
+        authenticatorData,
+        clientDataJSON,
+        signature,
+      }),
+    });
+
+    if (!verifyRes.ok) {
+      return { success: false, error: verifyRes.data?.error || 'Passkey verification failed' };
+    }
+
+    // 5. Store JWT token and hydrate session (same as email login)
+    const { accessToken, user: serverUser } = verifyRes.data;
+    saveToken(accessToken);
+
+    // Hydrate local user
+    let localUser = userDB.get(emailKey);
+    if (!localUser) {
+      localUser = {
+        id: serverUser.id,
+        firstName: serverUser.firstName,
+        lastName: serverUser.lastName,
+        name: serverUser.name || `${serverUser.firstName} ${serverUser.lastName}`,
+        email: emailKey,
+        phone: serverUser.phone || '',
+        avatar: serverUser.avatar || `${serverUser.firstName?.[0] || ''}${serverUser.lastName?.[0] || ''}`.toUpperCase(),
+        virtualBalance: 100_000,
+        initialDeposit: 100_000,
+        registeredAt: serverUser.created_at || new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+        loginCount: serverUser.loginCount || 1,
+        hasPasskey: true,
+        isNewUser: false,
+        emailVerified: true,
+        serverId: serverUser.id,
+        role: serverUser.role || 'investor',
+      };
+      userDB.set(emailKey, localUser);
+      persistUsers();
+    } else {
+      localUser.hasPasskey = true;
+      if (serverUser.role) localUser.role = serverUser.role;
+      userDB.set(emailKey, localUser);
+      persistUsers();
+    }
+
+    recordLogin({ ...localUser, method: 'passkey' });
+
+    currentSession = { ...localUser, role: serverUser.role || localUser.role || 'investor', isNewUser: false };
     saveToStorage(STORAGE_KEY_SESSION, currentSession);
     return { success: true, user: currentSession };
   } catch (err) {
@@ -539,6 +663,29 @@ export async function authenticateWithPasskey(email) {
     }
     return { success: false, error: `Auth error: ${err.message}` };
   }
+}
+
+export async function removePasskey(credentialId) {
+  const res = await apiFetch('/auth/passkey/remove', {
+    method: 'POST',
+    body: JSON.stringify({ credentialId: credentialId || null }),
+  });
+  if (res.ok) {
+    // Update local state if no passkeys remain
+    if (res.data.remaining === 0 && currentSession) {
+      currentSession.hasPasskey = false;
+      saveToStorage(STORAGE_KEY_SESSION, currentSession);
+      const emailKey = currentSession.email?.toLowerCase().trim();
+      const user = userDB.get(emailKey);
+      if (user) {
+        user.hasPasskey = false;
+        userDB.set(emailKey, user);
+        persistUsers();
+      }
+    }
+    return { success: true, remaining: res.data.remaining };
+  }
+  return { success: false, error: res.data?.error || 'Failed to remove passkey' };
 }
 
 // ═══════ EMAIL/PASSWORD LOGIN ═══════

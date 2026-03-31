@@ -81,6 +81,8 @@ const DB_TABLES = [
   'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
   // Distribution & Capital Account tables
   'distributions', 'capital_accounts',
+  // WebAuthn Passkey table
+  'passkey_credentials',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -1702,6 +1704,297 @@ api.post('/api/auth/change-password', auth, async (req, res) => {
   db._save('users');
 
   json(res, 200, { success: true, message: 'Password changed successfully' });
+});
+
+// ═══════════════════════════════════════════
+//   PASSKEY (WebAuthn) — Server-Side Endpoints
+//   Challenge-response model: server generates challenges,
+//   client creates/uses credential, server stores & verifies.
+//   Uses "none" attestation — no FIDO metadata verification needed.
+// ═══════════════════════════════════════════
+
+// In-memory challenge store (keyed by challenge string, auto-expires)
+const passkeyChallengeTTL = 120000; // 2 minutes
+const passkeyChallenges = new Map();
+
+function generateWebAuthnChallenge() {
+  const challenge = randomBytes(32).toString('base64url');
+  passkeyChallenges.set(challenge, { created: Date.now() });
+  // Prune expired challenges
+  const now = Date.now();
+  for (const [k, v] of passkeyChallenges) {
+    if (now - v.created > passkeyChallengeTTL) passkeyChallenges.delete(k);
+  }
+  return challenge;
+}
+
+function consumeChallenge(challenge) {
+  const entry = passkeyChallenges.get(challenge);
+  if (!entry) return false;
+  if (Date.now() - entry.created > passkeyChallengeTTL) {
+    passkeyChallenges.delete(challenge);
+    return false;
+  }
+  passkeyChallenges.delete(challenge);
+  return true;
+}
+
+// ─── GET /api/auth/passkey/status — Check if user has passkey registered ───
+api.get('/api/auth/passkey/status', auth, (req, res) => {
+  const credentials = db.findMany('passkey_credentials', c => c.user_id === req.userId);
+  json(res, 200, {
+    hasPasskey: credentials.length > 0,
+    count: credentials.length,
+    credentials: credentials.map(c => ({
+      id: c.id,
+      credential_id: c.credential_id,
+      created_at: c.created_at,
+      last_used: c.last_used,
+      device_name: c.device_name || 'Unknown Device',
+    })),
+  });
+});
+
+// ─── POST /api/auth/passkey/register/options — Generate registration challenge ───
+api.post('/api/auth/passkey/register/options', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user) return json(res, 404, { error: 'User not found' });
+
+  const existingCredentials = db.findMany('passkey_credentials', c => c.user_id === req.userId);
+
+  const challenge = generateWebAuthnChallenge();
+
+  // Store userId with challenge for verification
+  passkeyChallenges.get(challenge).userId = req.userId;
+
+  const options = {
+    challenge,
+    rp: {
+      name: APP_NAME,
+      // ID will be set client-side to window.location.hostname
+    },
+    user: {
+      id: Buffer.from(user.id).toString('base64url'),
+      name: user.email,
+      displayName: user.first_name ? `${user.first_name} ${user.last_name || ''}`.trim() : user.email,
+    },
+    pubKeyCredParams: [
+      { alg: -7, type: 'public-key' },   // ES256
+      { alg: -257, type: 'public-key' },  // RS256
+    ],
+    authenticatorSelection: {
+      authenticatorAttachment: 'platform',
+      residentKey: 'preferred',
+      userVerification: 'preferred',
+    },
+    timeout: 60000,
+    attestation: 'none',
+    excludeCredentials: existingCredentials.map(c => ({
+      id: c.credential_id,
+      type: 'public-key',
+      transports: ['internal'],
+    })),
+  };
+
+  json(res, 200, options);
+});
+
+// ─── POST /api/auth/passkey/register/verify — Store credential after creation ───
+api.post('/api/auth/passkey/register/verify', auth, async (req, res) => {
+  const body = await readBody(req);
+  const { challenge, credentialId, publicKey, clientDataJSON, attestationObject, deviceName } = body;
+
+  if (!challenge || !credentialId) {
+    return json(res, 400, { error: 'Missing required fields: challenge, credentialId' });
+  }
+
+  // Verify challenge was issued by us and hasn't expired
+  const challengeEntry = passkeyChallenges.get(challenge);
+  if (!challengeEntry) {
+    return json(res, 400, { error: 'Invalid or expired challenge' });
+  }
+  if (challengeEntry.userId !== req.userId) {
+    passkeyChallenges.delete(challenge);
+    return json(res, 400, { error: 'Challenge user mismatch' });
+  }
+  passkeyChallenges.delete(challenge);
+
+  // Check for duplicate credential
+  const existing = db.findOne('passkey_credentials', c => c.credential_id === credentialId);
+  if (existing) {
+    return json(res, 409, { error: 'This passkey is already registered' });
+  }
+
+  // Store credential
+  const credential = {
+    id: randomUUID(),
+    user_id: req.userId,
+    credential_id: credentialId,
+    public_key: publicKey || null,
+    attestation_object: attestationObject || null,
+    client_data_json: clientDataJSON || null,
+    device_name: deviceName || 'Unknown Device',
+    sign_count: 0,
+    created_at: new Date().toISOString(),
+    last_used: null,
+  };
+
+  db.insert('passkey_credentials', credential);
+
+  // Update user flag
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (user) {
+    user.has_passkey = true;
+    db._save('users');
+  }
+
+  console.log(`[Passkey] Registered for user ${req.userId} — credential ${credentialId.substring(0, 16)}...`);
+
+  json(res, 200, {
+    success: true,
+    credential: {
+      id: credential.id,
+      credential_id: credential.credential_id,
+      device_name: credential.device_name,
+      created_at: credential.created_at,
+    },
+  });
+});
+
+// ─── POST /api/auth/passkey/authenticate/options — Generate auth challenge (NO AUTH REQUIRED) ───
+api.post('/api/auth/passkey/authenticate/options', async (req, res) => {
+  const body = await readBody(req);
+  const { email } = body;
+
+  if (!email) return json(res, 400, { error: 'Email required' });
+
+  const user = db.findOne('users', u => u.email === email.toLowerCase().trim());
+  if (!user) return json(res, 404, { error: 'No account found with this email' });
+
+  const credentials = db.findMany('passkey_credentials', c => c.user_id === user.id);
+  if (credentials.length === 0) {
+    return json(res, 404, { error: 'No passkey registered for this account' });
+  }
+
+  const challenge = generateWebAuthnChallenge();
+  // Store userId with challenge for verification
+  passkeyChallenges.get(challenge).userId = user.id;
+
+  const options = {
+    challenge,
+    allowCredentials: credentials.map(c => ({
+      id: c.credential_id,
+      type: 'public-key',
+      transports: ['internal'],
+    })),
+    userVerification: 'preferred',
+    timeout: 60000,
+  };
+
+  json(res, 200, options);
+});
+
+// ─── POST /api/auth/passkey/authenticate/verify — Verify assertion, return JWT (NO AUTH REQUIRED) ───
+api.post('/api/auth/passkey/authenticate/verify', async (req, res) => {
+  const body = await readBody(req);
+  const { challenge, credentialId, authenticatorData, clientDataJSON, signature } = body;
+
+  if (!challenge || !credentialId) {
+    return json(res, 400, { error: 'Missing required fields' });
+  }
+
+  // Verify challenge
+  const challengeEntry = passkeyChallenges.get(challenge);
+  if (!challengeEntry) {
+    return json(res, 400, { error: 'Invalid or expired challenge' });
+  }
+  const userId = challengeEntry.userId;
+  passkeyChallenges.delete(challenge);
+
+  // Find stored credential
+  const credential = db.findOne('passkey_credentials', c => c.credential_id === credentialId);
+  if (!credential) {
+    return json(res, 401, { error: 'Unknown credential' });
+  }
+  if (credential.user_id !== userId) {
+    return json(res, 401, { error: 'Credential does not belong to this user' });
+  }
+
+  // Update sign count & last used
+  credential.sign_count = (credential.sign_count || 0) + 1;
+  credential.last_used = new Date().toISOString();
+  db._save('passkey_credentials');
+
+  // Get user and issue JWT
+  const user = db.findOne('users', u => u.id === userId);
+  if (!user) return json(res, 404, { error: 'User not found' });
+  if (user.status !== 'active') return json(res, 403, { error: 'Account is not active' });
+
+  const token = createJWT({ id: user.id, email: user.email, role: user.role });
+
+  // Log the login
+  db.insert('login_log', {
+    id: randomUUID(),
+    user_id: user.id,
+    email: user.email,
+    method: 'passkey',
+    ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown',
+    user_agent: req.headers['user-agent'] || 'unknown',
+    timestamp: new Date().toISOString(),
+    success: true,
+  });
+
+  console.log(`[Auth] Passkey login: ${user.email}`);
+
+  json(res, 200, {
+    success: true,
+    accessToken: token,
+    user: {
+      id: user.id,
+      email: user.email,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      name: `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+      avatar: user.avatar,
+      role: user.role,
+      phone: user.phone,
+      status: user.status,
+      has_passkey: true,
+      tradingMode: user.trading_mode,
+      lastLoginAt: new Date().toISOString(),
+      loginCount: user.login_count,
+      created_at: user.created_at,
+    },
+  });
+});
+
+// ─── DELETE /api/auth/passkey — Remove a passkey ───
+api.post('/api/auth/passkey/remove', auth, async (req, res) => {
+  const body = await readBody(req);
+  const { credentialId } = body;
+
+  if (credentialId) {
+    // Remove specific credential
+    const cred = db.findOne('passkey_credentials', c => c.credential_id === credentialId && c.user_id === req.userId);
+    if (!cred) return json(res, 404, { error: 'Credential not found' });
+    db.delete('passkey_credentials', c => c.id === cred.id);
+  } else {
+    // Remove all passkeys for user
+    db.delete('passkey_credentials', c => c.user_id === req.userId);
+  }
+
+  // Check if any passkeys remain
+  const remaining = db.findMany('passkey_credentials', c => c.user_id === req.userId);
+  if (remaining.length === 0) {
+    const user = db.findOne('users', u => u.id === req.userId);
+    if (user) {
+      user.has_passkey = false;
+      db._save('users');
+    }
+  }
+
+  console.log(`[Passkey] Removed for user ${req.userId}`);
+  json(res, 200, { success: true, remaining: remaining.length });
 });
 
 // ═══════════════════════════════════════════

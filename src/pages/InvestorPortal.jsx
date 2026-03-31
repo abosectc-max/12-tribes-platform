@@ -6,7 +6,7 @@ import {
   isPasskeySupported, getUserByEmail, setSession, getSession, logout as authLogout,
   changePassword, getVerificationCode, verifyEmail, isEmailVerified, resendVerificationCode,
   generate2FASecret, verify2FASetup, verify2FACode, is2FAEnabled, disable2FA,
-  requestPasswordReset, resetPassword,
+  requestPasswordReset, resetPassword, getPasskeyStatus, removePasskey,
 } from '../store/authStore.js';
 import { createWallet, ensureWallet, getWallet, getPositions, getTradeHistory, tickPrices, getMarketPrices, syncFromServer } from '../store/walletStore.js';
 import { recordSnapshot, getPerformanceMetrics, getEquityHistoryByPeriod, getPositionPerformance } from '../store/performanceTracker.js';
@@ -4412,6 +4412,53 @@ function SettingsView({ investor, isMobile }) {
   const [backupCodes, setBackupCodes] = useState(null);
   const [twoFAEnabled, setTwoFAEnabled] = useState(is2FAEnabled(investor.email));
 
+  // Passkey Management
+  const [passkeyCredentials, setPasskeyCredentials] = useState([]);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
+  const [passkeyMsg, setPasskeyMsg] = useState(null);
+  const [passkeyHasKey, setPasskeyHasKey] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPasskeyStatus().then(data => {
+      if (cancelled) return;
+      setPasskeyHasKey(data.hasPasskey);
+      setPasskeyCredentials(data.credentials || []);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleRegisterPasskey = async () => {
+    setPasskeyMsg(null);
+    setPasskeyLoading(true);
+    const result = await registerPasskey(investor.email);
+    setPasskeyLoading(false);
+    if (result.success) {
+      setPasskeyMsg({ type: "success", text: "Passkey created successfully! You can now sign in with biometrics." });
+      setPasskeyHasKey(true);
+      // Refresh credential list
+      const status = await getPasskeyStatus();
+      setPasskeyCredentials(status.credentials || []);
+    } else {
+      setPasskeyMsg({ type: "error", text: result.error });
+    }
+  };
+
+  const handleRemovePasskey = async (credentialId) => {
+    setPasskeyMsg(null);
+    setPasskeyLoading(true);
+    const result = await removePasskey(credentialId);
+    setPasskeyLoading(false);
+    if (result.success) {
+      setPasskeyMsg({ type: "success", text: "Passkey removed." });
+      const status = await getPasskeyStatus();
+      setPasskeyHasKey(status.hasPasskey);
+      setPasskeyCredentials(status.credentials || []);
+    } else {
+      setPasskeyMsg({ type: "error", text: result.error });
+    }
+  };
+
   const sectionStyle = {
     ...glass, padding: isMobile ? 24 : 32, maxWidth: 600, marginBottom: 20,
   };
@@ -4490,7 +4537,7 @@ function SettingsView({ investor, isMobile }) {
             { label: "Email", value: investor.email, badge: emailVerified ? "Verified" : "Unverified", badgeColor: emailVerified ? "#10B981" : "#F59E0B" },
             { label: "Phone", value: investor.phone || "Not set" },
             { label: "Investor ID", value: investor.id },
-            { label: "Passkey", value: investor.hasPasskey ? "Enabled" : "Not set up" },
+            { label: "Passkey", value: passkeyHasKey ? "Enabled" : "Not set up", badge: passkeyHasKey ? "Active" : null, badgeColor: "#10B981" },
             { label: "2FA", value: twoFAEnabled ? "Enabled" : "Disabled", badge: twoFAEnabled ? "Active" : null, badgeColor: "#10B981" },
             { label: "Ownership", value: `${(investor.ownershipPct || 0).toFixed(2)}%` },
             { label: "Account Type", value: investor.accountType || "Member — LLC" },
@@ -4637,6 +4684,60 @@ function SettingsView({ investor, isMobile }) {
           <button onClick={handleStart2FA} style={btnPrimary}>
             Set Up 2FA
           </button>
+        )}
+      </div>
+
+      {/* Passkey Management */}
+      <div style={sectionStyle}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 20 }}>🔐</span> Passkey Authentication
+        </div>
+        <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", marginBottom: 20, lineHeight: 1.6 }}>
+          Sign in instantly with Face ID, Touch ID, or your device PIN. No password needed — fast, phishing-resistant, and secure.
+        </p>
+
+        {passkeyMsg && (
+          <div style={{ fontSize: 13, color: passkeyMsg.type === "success" ? "#10B981" : "#EF4444", padding: "10px 14px", borderRadius: 10, background: passkeyMsg.type === "success" ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)", marginBottom: 16 }}>
+            {passkeyMsg.text}
+          </div>
+        )}
+
+        {passkeyCredentials.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>Registered Passkeys</div>
+            {passkeyCredentials.map((cred, i) => (
+              <div key={cred.id || i} style={{
+                padding: "14px 16px", borderRadius: 14, marginBottom: 8,
+                background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.85)" }}>
+                    {cred.device_name || "Unknown Device"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 4 }}>
+                    Added {cred.created_at ? new Date(cred.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown'}
+                    {cred.last_used ? ` · Last used ${new Date(cred.last_used).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ' · Never used'}
+                  </div>
+                </div>
+                <button onClick={() => handleRemovePasskey(cred.credential_id)} disabled={passkeyLoading}
+                  style={{ ...btnSecondary, padding: "6px 14px", fontSize: 12, color: "#EF4444", borderColor: "rgba(239,68,68,0.3)" }}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {isPasskeySupported() ? (
+          <button onClick={handleRegisterPasskey} disabled={passkeyLoading}
+            style={{ ...btnPrimary, opacity: passkeyLoading ? 0.6 : 1 }}>
+            {passkeyLoading ? "Setting up..." : passkeyHasKey ? "Add Another Passkey" : "Create Passkey"}
+          </button>
+        ) : (
+          <div style={{ padding: 16, borderRadius: 14, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", fontSize: 13, color: "#F59E0B" }}>
+            Passkeys aren't supported on this browser. Try using Chrome, Safari, or Edge on a device with biometric authentication.
+          </div>
         )}
       </div>
     </div>
