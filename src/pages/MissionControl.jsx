@@ -31,14 +31,16 @@ const ASSET_CLASSES = [
   { name: "Cash", pct: 15, notional: 9000, leverage: 1.0, effective: 9000, color: "#6B7280", strategy: "Margin Buffer + Opportunity", dailyReturn: 0.0, volatility: 0.0 },
 ];
 
-const AI_AGENTS = [
-  { id: "SENTINEL", name: "Sentinel", role: "Risk Monitor", status: "active", accuracy: 94.2, trades: 1247, icon: "🛡️" },
-  { id: "VIPER", name: "Viper", role: "Momentum Scanner", status: "active", accuracy: 87.6, trades: 892, icon: "⚡" },
-  { id: "ORACLE", name: "Oracle", role: "Macro Analyst", status: "active", accuracy: 91.3, trades: 456, icon: "🔮" },
-  { id: "PHOENIX", name: "Phoenix", role: "Self-Healing Engine", status: "active", accuracy: 96.1, trades: 2103, icon: "🔥" },
-  { id: "SPECTRE", name: "Spectre", role: "Options Strategist", status: "idle", accuracy: 89.8, trades: 634, icon: "👻" },
-  { id: "TITAN", name: "Titan", role: "Position Sizer", status: "active", accuracy: 92.7, trades: 1891, icon: "🏛️" },
-];
+// Agent icons mapped by name — real agent data fetched from API
+const AGENT_ICONS = {
+  Sentinel: "🛡️", Viper: "⚡", Oracle: "🔮", Phoenix: "🔥",
+  Spectre: "👻", Titan: "🏛️", Debugger: "🔍",
+};
+const AGENT_ROLE_LABELS = {
+  Sentinel: "Risk Monitor", Viper: "Momentum Scanner", Oracle: "Macro Analyst",
+  Phoenix: "Self-Healing Engine", Spectre: "Volatility Trader", Titan: "Position Sizer",
+  Debugger: "Platform Diagnostics",
+};
 
 // Generate Monte Carlo paths
 function generateMonteCarloPaths(initial, days, numPaths, meanReturn, stdReturn) {
@@ -90,29 +92,7 @@ function generateDailyPnL(days) {
   return data;
 }
 
-// Generate trade log
-function generateTrades() {
-  const assets = ["AAPL", "BTC/USD", "EUR/USD", "SPY 450C", "MES", "TSLA", "ETH/USD", "GBP/JPY", "QQQ 380P", "MNQ"];
-  const types = ["LONG", "SHORT"];
-  const statuses = ["FILLED", "FILLED", "FILLED", "PARTIAL", "PENDING"];
-  const trades = [];
-  for (let i = 0; i < 25; i++) {
-    const asset = assets[Math.floor(Math.random() * assets.length)];
-    const type = types[Math.floor(Math.random() * types.length)];
-    const pnl = (Math.random() - 0.4) * 500;
-    trades.push({
-      id: `TRD_${String(i + 1).padStart(4, "0")}`,
-      time: `${String(9 + Math.floor(Math.random() * 8)).padStart(2, "0")}:${String(Math.floor(Math.random() * 60)).padStart(2, "0")}`,
-      asset, type,
-      qty: Math.floor(Math.random() * 100) + 1,
-      entry: (Math.random() * 500 + 10).toFixed(2),
-      pnl: pnl.toFixed(2),
-      status: statuses[Math.floor(Math.random() * statuses.length)],
-      agent: AI_AGENTS[Math.floor(Math.random() * AI_AGENTS.length)].name,
-    });
-  }
-  return trades.sort((a, b) => b.time.localeCompare(a.time));
-}
+// No static trade generator — real trades fetched from API
 
 // === STYLES ===
 const glassStyle = {
@@ -173,28 +153,38 @@ function MetricCard({ label, value, change, prefix = "", suffix = "", color = "#
 }
 
 function AgentCard({ agent, isMobile = false }) {
-  const statusColors = { active: "#10B981", idle: "#F59E0B", error: "#EF4444" };
+  const statusColors = { active: "#10B981", idle: "#F59E0B", quarantined: "#EF4444", monitoring: "#00D4FF", error: "#EF4444" };
+  const icon = AGENT_ICONS[agent.name] || "🤖";
+  const roleLabel = AGENT_ROLE_LABELS[agent.name] || agent.role;
+  const statusColor = statusColors[agent.status] || "#6B7280";
   return (
     <GlassCard style={{ padding: isMobile ? 12 : 16, display: "flex", alignItems: "center", gap: isMobile ? 12 : 16, flexDirection: isMobile ? "column" : "row", textAlign: isMobile ? "center" : "left" }}>
-      <div style={{ fontSize: isMobile ? 28 : 32, width: isMobile ? 40 : 48, textAlign: "center", flexShrink: 0 }}>{agent.icon}</div>
+      <div style={{ fontSize: isMobile ? 28 : 32, width: isMobile ? 40 : 48, textAlign: "center", flexShrink: 0 }}>{icon}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, justifyContent: isMobile ? "center" : "flex-start", flexWrap: "wrap" }}>
           <span style={{ fontSize: isMobile ? 13 : 15, fontWeight: 600, color: "#fff" }}>{agent.name}</span>
           <span style={{
             width: 8, height: 8, borderRadius: "50%",
-            background: statusColors[agent.status],
-            boxShadow: `0 0 8px ${statusColors[agent.status]}`,
+            background: statusColor,
+            boxShadow: `0 0 8px ${statusColor}`,
           }} />
         </div>
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{agent.role}</div>
-        <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
-          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Accuracy: <span style={{ color: "#00D4FF" }}>{agent.accuracy}%</span></span>
-          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Trades: <span style={{ color: "#A855F7" }}>{agent.trades.toLocaleString()}</span></span>
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{roleLabel}</div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Win Rate: <span style={{ color: "#00D4FF" }}>{agent.winRate || 0}%</span></span>
+          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Trades: <span style={{ color: "#A855F7" }}>{(agent.trades || 0).toLocaleString()}</span></span>
+          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>P&L: <span style={{ color: (agent.totalPnl || 0) >= 0 ? "#10B981" : "#EF4444" }}>{(agent.totalPnl || 0) >= 0 ? '+' : ''}${(agent.totalPnl || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></span>
         </div>
+        {agent.strategy && agent.strategy !== 'default' && (
+          <div style={{ fontSize: 10, color: "#A855F7", marginTop: 4 }}>Strategy: {agent.strategy}</div>
+        )}
+        {agent.circuitBreaker && (
+          <div style={{ fontSize: 10, color: "#EF4444", marginTop: 4 }}>Circuit breaker: {agent.circuitBreaker.reason}</div>
+        )}
       </div>
       <div style={{
         padding: "4px 10px", borderRadius: 12, fontSize: 11, fontWeight: 600,
-        background: `${statusColors[agent.status]}22`, color: statusColors[agent.status],
+        background: `${statusColor}22`, color: statusColor,
         textTransform: "uppercase",
       }}>
         {agent.status}
@@ -307,47 +297,52 @@ function DailyPnLChart({ data, isMobile = false }) {
 function TradeLog({ trades, isMobile = false }) {
   return (
     <GlassCard style={{ overflow: "hidden" }}>
-      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Live Trade Feed</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Live Trade Feed</div>
+        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{trades.length} recent trades · auto-refresh 15s</div>
+      </div>
+      {trades.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>No trades recorded yet — agents are generating signals...</div>
+      ) : (
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-              {["Time", "ID", "Asset", "Side", "Qty", "Entry", "P&L", "Agent", "Status"].map(h => (
+              {["Time", "Asset", "Side", "Qty", "Entry", "Close", "P&L", "Agent", "Investor"].map(h => (
                 <th key={h} style={{ padding: "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 500, textTransform: "uppercase", letterSpacing: 1, fontSize: 10 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {trades.slice(0, 12).map((t, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>{t.time}</td>
-                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.4)", fontFamily: "monospace", fontSize: 10 }}>{t.id}</td>
-                <td style={{ padding: "10px 12px", color: "#fff", fontWeight: 600 }}>{t.asset}</td>
-                <td style={{ padding: "10px 12px" }}>
-                  <span style={{
-                    padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700,
-                    background: t.type === "LONG" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
-                    color: t.type === "LONG" ? "#10B981" : "#EF4444",
-                  }}>{t.type}</span>
-                </td>
-                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>{t.qty}</td>
-                <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>${t.entry}</td>
-                <td style={{ padding: "10px 12px", fontFamily: "monospace", fontWeight: 600, color: parseFloat(t.pnl) >= 0 ? "#10B981" : "#EF4444" }}>
-                  {parseFloat(t.pnl) >= 0 ? "+" : ""}${t.pnl}
-                </td>
-                <td style={{ padding: "10px 12px", color: "#A855F7", fontSize: 11 }}>{t.agent}</td>
-                <td style={{ padding: "10px 12px" }}>
-                  <span style={{
-                    padding: "2px 8px", borderRadius: 6, fontSize: 10,
-                    background: t.status === "FILLED" ? "rgba(16,185,129,0.1)" : t.status === "PENDING" ? "rgba(245,158,11,0.1)" : "rgba(0,212,255,0.1)",
-                    color: t.status === "FILLED" ? "#10B981" : t.status === "PENDING" ? "#F59E0B" : "#00D4FF",
-                  }}>{t.status}</span>
-                </td>
-              </tr>
-            ))}
+            {trades.slice(0, 15).map((t, i) => {
+              const pnl = t.realized_pnl || 0;
+              const timeStr = t.time ? new Date(t.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--';
+              return (
+                <tr key={t.id || i} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: 11 }}>{timeStr}</td>
+                  <td style={{ padding: "10px 12px", color: "#fff", fontWeight: 600 }}>{t.symbol}</td>
+                  <td style={{ padding: "10px 12px" }}>
+                    <span style={{
+                      padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                      background: t.side === "LONG" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                      color: t.side === "LONG" ? "#10B981" : "#EF4444",
+                    }}>{t.side}</span>
+                  </td>
+                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>{t.quantity}</td>
+                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>${(t.entry_price || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>${(t.close_price || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                  <td style={{ padding: "10px 12px", fontFamily: "monospace", fontWeight: 600, color: pnl >= 0 ? "#10B981" : "#EF4444" }}>
+                    {pnl >= 0 ? "+" : ""}${pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </td>
+                  <td style={{ padding: "10px 12px", color: "#A855F7", fontSize: 11 }}>{t.agent || '—'}</td>
+                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.5)", fontSize: 11, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.investor || '—'}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+      )}
     </GlassCard>
   );
 }
@@ -477,13 +472,13 @@ function SelfHealingPanel({ isMobile = false }) {
   );
 }
 
-function GrowthTable({ isMobile = false }) {
+function GrowthTable({ isMobile = false, totalAUM = 0 }) {
   const rates = [0.008, 0.010, 0.012, 0.015, 0.020];
   const days = [30, 60, 90, 120, 180, 252];
-  const initial = 60000;
+  const initial = totalAUM > 0 ? totalAUM : 60000;
   return (
     <GlassCard>
-      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Capital Growth Matrix ($60,000 Initial)</div>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Capital Growth Matrix (${initial.toLocaleString()} Current AUM)</div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
           <thead>
@@ -590,30 +585,35 @@ function OverviewView({ growthData, pnlData, trades, groupData, isMobile, isTabl
   );
 }
 
-function AgentsView({ isMobile, isTablet }) {
+function AgentsView({ isMobile, isTablet, liveAgents = [] }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+      {liveAgents.length === 0 ? (
+        <GlassCard><div style={{ padding: 24, textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>Loading agent data...</div></GlassCard>
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(320px, 1fr))", gap: isMobile ? 12 : 16 }}>
-        {AI_AGENTS.map(a => <AgentCard key={a.id} agent={a} isMobile={isMobile} />)}
+        {liveAgents.map(a => <AgentCard key={a.id} agent={a} isMobile={isMobile} />)}
       </div>
+      )}
       <SelfHealingPanel isMobile={isMobile} />
     </div>
   );
 }
 
-function CapitalView({ growthData, isMobile, isTablet }) {
+function CapitalView({ growthData, isMobile, isTablet, totalAUM = 0 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
       <AssetStrategyCards isMobile={isMobile} isTablet={isTablet} />
       <GrowthProjection data={growthData} isMobile={isMobile} />
-      <GrowthTable isMobile={isMobile} />
+      <GrowthTable isMobile={isMobile} totalAUM={totalAUM} />
     </div>
   );
 }
 
 function InvestorsView({ groupData, serverUsers, isMobile, isTablet }) {
   const totalAUM = groupData.totalEquity || 0;
-  const memberCount = serverUsers.length || groupData.investorCount || 0;
+  const investors = serverUsers.filter(u => u.role !== 'admin');
+  const memberCount = investors.length || groupData.investorCount || 0;
   const perInvestor = memberCount > 0 ? totalAUM / memberCount : 0;
   const avgGain = groupData.returnPct || 0;
 
@@ -625,7 +625,7 @@ function InvestorsView({ groupData, serverUsers, isMobile, isTablet }) {
         <MetricCard label="Avg Return" value={avgGain.toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
         <MetricCard label="Members" value={memberCount} color="#F59E0B" isMobile={isMobile} />
       </div>
-      <InvestorTable serverUsers={serverUsers} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />
+      <InvestorTable serverUsers={investors} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />
     </div>
   );
 }
@@ -638,13 +638,15 @@ export default function TwelveTribes_MissionControl() {
   const [clock, setClock] = useState(new Date());
   const [groupData, setGroupData] = useState({});
   const [serverUsers, setServerUsers] = useState([]);
+  const [liveTrades, setLiveTrades] = useState([]);
+  const [liveAgents, setLiveAgents] = useState([]);
 
   useEffect(() => {
     const timer = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch real data from server
+  // Fetch real data from server — 15s refresh for live feel
   useEffect(() => {
     const token = getToken();
     const headers = { "Content-Type": "application/json" };
@@ -652,9 +654,11 @@ export default function TwelveTribes_MissionControl() {
 
     const fetchData = async () => {
       try {
-        const [groupRes, usersRes] = await Promise.all([
+        const [groupRes, usersRes, tradesRes, agentsRes] = await Promise.all([
           fetch(`${API_BASE}/wallet/group`, { headers }),
           fetch(`${API_BASE}/admin/users`, { headers }),
+          fetch(`${API_BASE}/admin/trades/recent?limit=25`, { headers }).catch(() => null),
+          fetch(`${API_BASE}/admin/agents/status`, { headers }).catch(() => null),
         ]);
         if (groupRes.ok) {
           const gd = await groupRes.json();
@@ -664,19 +668,27 @@ export default function TwelveTribes_MissionControl() {
           const ud = await usersRes.json();
           setServerUsers(Array.isArray(ud) ? ud : ud.users || []);
         }
+        if (tradesRes?.ok) {
+          const td = await tradesRes.json();
+          setLiveTrades(td.trades || []);
+        }
+        if (agentsRes?.ok) {
+          const ad = await agentsRes.json();
+          setLiveAgents(ad.agents || []);
+        }
       } catch (err) {
         console.error("MissionControl fetch error:", err);
       }
     };
 
     fetchData();
-    const poller = setInterval(fetchData, 30000);
+    const poller = setInterval(fetchData, 15000);
     return () => clearInterval(poller);
   }, []);
 
-  const growthData = useMemo(() => generateGrowthData(60000, 252, 0.012), []);
+  const totalAUM = groupData.totalEquity || 0;
+  const growthData = useMemo(() => generateGrowthData(totalAUM > 0 ? totalAUM : 60000, 252, 0.012), [totalAUM]);
   const pnlData = useMemo(() => generateDailyPnL(90), []);
-  const trades = useMemo(() => generateTrades(), []);
 
   const navItems = [
     { id: "overview", label: "Overview", icon: "◉" },
@@ -757,9 +769,9 @@ export default function TwelveTribes_MissionControl() {
 
       {/* Content */}
       <div style={{ padding: isMobile ? "16px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto" }}>
-        {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={trades} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
-        {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} />}
-        {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={liveTrades} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} totalAUM={totalAUM} />}
+        {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} liveAgents={liveAgents} />}
         {activeView === "investors" && <InvestorsView groupData={groupData} serverUsers={serverUsers} isMobile={isMobile} isTablet={isTablet} />}
       </div>
 

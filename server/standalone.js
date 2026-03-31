@@ -2440,7 +2440,7 @@ api.get('/api/admin/health', auth, (req, res) => {
       active: true,
       tradesLastHour: recentTrades.length,
       tradesLast24h: last24hTrades.length,
-      agentCount: 6,
+      agentCount: AI_AGENTS.length + 1, // +1 for Debugger virtual agent
     },
     websocket: {
       connections: wsConnectionCount,
@@ -2927,6 +2927,10 @@ api.get('/api/wallet/group', auth, (req, res) => {
     }
   }
 
+  // Exclude admin wallets from investor count
+  const adminIds = new Set(db.findMany('users', u => u.role === 'admin').map(u => u.id));
+  const investorWallets = wallets.filter(w => !adminIds.has(w.user_id));
+
   const totalEquity = wallets.reduce((s, w) => s + (w.equity || 0), 0);
   const totalInitial = wallets.reduce((s, w) => s + (w.initial_balance || 100000), 0);
   const totalPeakEquity = wallets.reduce((s, w) => s + (w.peak_equity || w.initial_balance || 100000), 0);
@@ -2948,7 +2952,7 @@ api.get('/api/wallet/group', auth, (req, res) => {
   const fundMaxDrawdown = totalPeakEquity > 0 ? ((totalPeakEquity - totalEquity) / totalPeakEquity * 100) : 0;
 
   json(res, 200, {
-    investorCount: wallets.length, totalEquity, totalInitial, totalPeakEquity,
+    investorCount: investorWallets.length, totalEquity, totalInitial, totalPeakEquity,
     totalRealizedPnL: totalRealized, totalUnrealizedPnL: totalUnrealized,
     totalPnL: totalRealized + totalUnrealized,
     returnPct: totalInitial > 0 ? ((totalEquity / totalInitial - 1) * 100) : 0,
@@ -5568,6 +5572,103 @@ api.get('/api/agents/learning', auth, (req, res) => {
   } catch (e) {
     json(res, 500, { error: 'Learning report generation failed', message: e.message });
   }
+});
+
+// ─── ADMIN: Recent trades across all users (for Mission Control live feed) ───
+api.get('/api/admin/trades/recent', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const limit = Math.min(parseInt(new URL(req.url, `http://${req.headers.host}`).searchParams.get('limit')) || 25, 100);
+  const allTrades = db.findMany('trades')
+    .sort((a, b) => (b.closed_at || b.opened_at || '').localeCompare(a.closed_at || a.opened_at || ''))
+    .slice(0, limit);
+
+  // Enrich with user info
+  const trades = allTrades.map(t => {
+    const u = db.findOne('users', usr => usr.id === t.user_id);
+    return {
+      id: t.id,
+      time: t.closed_at || t.opened_at,
+      symbol: t.symbol,
+      side: t.side,
+      quantity: t.quantity,
+      entry_price: t.entry_price,
+      close_price: t.close_price,
+      realized_pnl: t.realized_pnl || 0,
+      agent: t.agent,
+      status: t.status || 'CLOSED',
+      investor: u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email : 'Unknown',
+    };
+  });
+
+  json(res, 200, { trades, count: trades.length });
+});
+
+// ─── ADMIN: Agent status with live metrics (for Mission Control) ───
+api.get('/api/admin/agents/status', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const allTrades = db.findMany('trades');
+  const allSignals = db.findMany('signals');
+  const now = Date.now();
+
+  const agentStatus = AI_AGENTS.map(a => {
+    const agentTrades = allTrades.filter(t => t.agent === a.name);
+    const agentSignals = allSignals.filter(s => s.agent === a.name);
+    const wins = agentTrades.filter(t => (t.realized_pnl || 0) > 0).length;
+    const losses = agentTrades.filter(t => (t.realized_pnl || 0) < 0).length;
+    const totalPnl = agentTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+    const recentSignals = agentSignals.filter(s => now - new Date(s.timestamp || s.created_at).getTime() < 3600000);
+
+    // Check circuit breaker status
+    const cb = typeof getCircuitBreaker === 'function' ? getCircuitBreaker(a.name) : null;
+    const isQuarantined = cb?.isOpen || false;
+
+    // Check strategy state
+    const ss = typeof getStrategyState === 'function' ? getStrategyState(a.name) : null;
+
+    return {
+      id: a.name.toUpperCase(),
+      name: a.name,
+      role: a.description || a.role,
+      status: isQuarantined ? 'quarantined' : recentSignals.length > 0 ? 'active' : 'idle',
+      trades: agentTrades.length,
+      wins,
+      losses,
+      winRate: (wins + losses) > 0 ? roundTo(wins / (wins + losses) * 100, 1) : 0,
+      totalPnl: roundTo(totalPnl, 2),
+      signalsLastHour: recentSignals.length,
+      strategy: ss?.currentStrategy || 'default',
+      symbols: a.symbols || [],
+      circuitBreaker: isQuarantined ? {
+        reason: cb?.reason || 'threshold exceeded',
+        cooldownEnds: cb?.cooldownUntil || null,
+      } : null,
+    };
+  });
+
+  // Add Debugger as virtual agent (platform health monitor)
+  const recentErrors = db.findMany('risk_events', e => now - new Date(e.timestamp || e.created_at).getTime() < 3600000);
+  agentStatus.push({
+    id: 'DEBUGGER',
+    name: 'Debugger',
+    role: 'Platform health monitor & error detection',
+    status: recentErrors.length > 0 ? 'active' : 'monitoring',
+    trades: 0,
+    wins: 0,
+    losses: 0,
+    winRate: 0,
+    totalPnl: 0,
+    signalsLastHour: recentErrors.length,
+    strategy: 'diagnostic',
+    symbols: [],
+    circuitBreaker: null,
+    errorsDetected: recentErrors.length,
+  });
+
+  json(res, 200, { agents: agentStatus, count: agentStatus.length });
 });
 
 // Trading debug — dry-run one tick for a sample user, expose full decision chain
