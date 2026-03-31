@@ -13,6 +13,7 @@ import { getAllUsers } from '../store/authStore.js'
 import { startAutoFetch, getDataStatus } from '../store/marketDataService.js'
 import { useResponsive } from '../hooks/useResponsive.js'
 import BrandLogo from '../components/BrandLogo.jsx'
+import { haptics } from '../hooks/useHaptics.js'
 
 // ═══════════════════════════════════════════
 //   12 TRIBES — PAPER TRADING TERMINAL v1.0
@@ -120,9 +121,9 @@ function OrderEntry({ prices, onTrade, isMobile }) {
       {/* Asset Category Tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
         {Object.keys(ASSET_CLASSES).map(cat => (
-          <button key={cat} onClick={() => { setCategory(cat); setSymbol(ASSET_CLASSES[cat][0]) }}
+          <button key={cat} onClick={() => { haptics.select(); setCategory(cat); setSymbol(ASSET_CLASSES[cat][0]) }}
             style={{
-              padding: '6px 14px', borderRadius: 10, border: 'none', cursor: 'pointer',
+              padding: '8px 14px', borderRadius: 10, border: 'none', cursor: 'pointer', minHeight: 36,
               fontSize: 12, fontWeight: 600,
               background: category === cat ? 'rgba(0,212,255,0.2)' : 'rgba(255,255,255,0.06)',
               color: category === cat ? '#00D4FF' : 'rgba(255,255,255,0.5)',
@@ -168,9 +169,9 @@ function OrderEntry({ prices, onTrade, isMobile }) {
       {/* Side Toggle */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {['LONG', 'SHORT'].map(s => (
-          <button key={s} onClick={() => setSide(s)}
+          <button key={s} onClick={() => { haptics.medium(); setSide(s); }}
             style={{
-              flex: 1, padding: '10px 0', borderRadius: 12, border: 'none', cursor: 'pointer',
+              flex: 1, padding: '10px 0', borderRadius: 12, border: 'none', cursor: 'pointer', minHeight: 44,
               fontSize: 13, fontWeight: 700, letterSpacing: 1,
               background: side === s
                 ? s === 'LONG' ? 'rgba(0,230,118,0.2)' : 'rgba(255,107,107,0.2)'
@@ -239,9 +240,9 @@ function OrderEntry({ prices, onTrade, isMobile }) {
       </div>
 
       {/* Execute Button */}
-      <button onClick={handleSubmit}
+      <button onClick={() => { haptics.heavy(); handleSubmit(); }}
         style={{
-          width: '100%', padding: '14px 0', borderRadius: 14, border: 'none', cursor: 'pointer',
+          width: '100%', padding: '14px 0', borderRadius: 14, border: 'none', cursor: 'pointer', minHeight: 48,
           fontSize: 14, fontWeight: 700, letterSpacing: 1,
           background: side === 'LONG'
             ? 'linear-gradient(135deg, #00E676, #00C853)'
@@ -327,9 +328,9 @@ function PositionsPanel({ positions, onClose, isMobile }) {
                 }}>{pos.returnPct >= 0 ? '+' : ''}{pos.returnPct}%</td>
                 <td style={{ padding: '10px', color: '#7B61FF' }}>{pos.agent}</td>
                 <td style={{ padding: '10px' }}>
-                  <button onClick={() => onClose(pos.id)}
+                  <button onClick={() => { haptics.heavy(); onClose(pos.id); }}
                     style={{
-                      padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                      padding: '8px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', minHeight: 36,
                       fontSize: 11, fontWeight: 600,
                       background: 'rgba(255,107,107,0.15)', color: '#FF6B6B',
                     }}>
@@ -412,9 +413,9 @@ function MarketWatch({ prices, priceHistory, isMobile }) {
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
         {['All', ...Object.keys(ASSET_CLASSES)].map(cat => (
-          <button key={cat} onClick={() => setSelectedCat(cat)}
+          <button key={cat} onClick={() => { haptics.select(); setSelectedCat(cat); }}
             style={{
-              padding: '5px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+              padding: '8px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', minHeight: 36,
               fontSize: 11, fontWeight: 600,
               background: selectedCat === cat ? 'rgba(0,212,255,0.2)' : 'rgba(255,255,255,0.04)',
               color: selectedCat === cat ? '#00D4FF' : 'rgba(255,255,255,0.4)',
@@ -675,9 +676,9 @@ export default function PaperTrading() {
         display: 'flex', gap: 4, overflowX: 'auto',
       }}>
         {VIEWS.map(v => (
-          <button key={v.id} onClick={() => setView(v.id)}
+          <button key={v.id} onClick={() => { haptics.light(); setView(v.id); }}
             style={{
-              padding: isMobile ? '8px 12px' : '10px 20px', borderRadius: 10, border: 'none',
+              padding: isMobile ? '10px 14px' : '10px 20px', borderRadius: 10, border: 'none', minHeight: 44,
               cursor: 'pointer', whiteSpace: 'nowrap',
               fontSize: 13, fontWeight: 600,
               background: view === v.id ? 'rgba(0,212,255,0.15)' : 'transparent',

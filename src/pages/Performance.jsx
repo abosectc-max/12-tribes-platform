@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import * as recharts from "recharts";
 import { useResponsive } from '../hooks/useResponsive.js';
 import BrandLogo from '../components/BrandLogo.jsx';
+import { haptics } from '../hooks/useHaptics.js';
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ComposedChart, Legend
@@ -111,12 +112,12 @@ function generateEquityCurve(days) {
 
 // === COMPONENTS ===
 
-function BenchmarkChart({ data }) {
+function BenchmarkChart({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Performance vs Benchmarks (Normalized)</div>
-        <div style={{ display: "flex", gap: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 16, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 8 : 0 }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Performance vs Benchmarks (Normalized)</div>
+        <div style={{ display: "flex", gap: isMobile ? 8 : 14, flexWrap: "wrap" }}>
           {[{ label: "12 Tribes", color: "#00D4FF" }, { label: "S&P 500", color: "#F59E0B" }, { label: "BTC", color: "#A855F7" }, { label: "Bonds", color: "#6B7280" }].map(l => (
             <span key={l.label} style={{ fontSize: 10, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 10, height: 2, background: l.color, display: "inline-block" }} />{l.label}
@@ -124,7 +125,7 @@ function BenchmarkChart({ data }) {
           ))}
         </div>
       </div>
-      <div style={{ height: 300 }}>
+      <div style={{ height: isMobile ? 220 : 300 }}>
         <ResponsiveContainer>
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
@@ -142,10 +143,10 @@ function BenchmarkChart({ data }) {
   );
 }
 
-function AttributionChart({ data }) {
+function AttributionChart({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Return Attribution by Asset Class</div>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Return Attribution by Asset Class</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {data.map(a => (
           <div key={a.asset}>
@@ -174,11 +175,11 @@ function AttributionChart({ data }) {
   );
 }
 
-function MonthlyReturnsTable({ data }) {
+function MonthlyReturnsTable({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Monthly Returns</div>
-      <div style={{ height: 220 }}>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Monthly Returns</div>
+      <div style={{ height: isMobile ? 180 : 220 }}>
         <ResponsiveContainer>
           <BarChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
@@ -194,36 +195,37 @@ function MonthlyReturnsTable({ data }) {
   );
 }
 
-function AgentLeaderboard({ agents }) {
+function AgentLeaderboard({ agents, isMobile = false }) {
   const sorted = [...agents].sort((a, b) => b.totalPnL - a.totalPnL);
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>AI Agent Performance Leaderboard</div>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>AI Agent Performance Leaderboard</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {sorted.map((a, rank) => (
           <div key={a.agent} style={{
             ...inner(),
-            display: "flex", alignItems: "center", gap: 14,
+            display: "flex", alignItems: isMobile ? "flex-start" : "center", gap: isMobile ? 10 : 14,
             borderLeft: `3px solid ${rank === 0 ? "#F59E0B" : rank === 1 ? "#C0C0C0" : rank === 2 ? "#CD7F32" : "rgba(255,255,255,0.1)"}`,
+            flexWrap: isMobile ? "wrap" : "nowrap",
           }}>
             <div style={{ width: 28, textAlign: "center", fontSize: 14, fontWeight: 800, color: rank < 3 ? ["#F59E0B", "#C0C0C0", "#CD7F32"][rank] : "rgba(255,255,255,0.3)" }}>
               #{rank + 1}
             </div>
-            <span style={{ fontSize: 24 }}>{a.icon}</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}>{a.agent}</div>
-              <div style={{ display: "flex", gap: 16, marginTop: 4 }}>
-                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Trades: <span style={{ color: "#00D4FF" }}>{a.trades.toLocaleString()}</span></span>
-                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Win Rate: <span style={{ color: "#10B981" }}>{a.winRate}%</span></span>
-                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Avg Return: <span style={{ color: "#A855F7" }}>{a.avgReturn}%</span></span>
+            <span style={{ fontSize: isMobile ? 20 : 24 }}>{a.icon}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 700, color: "#fff" }}>{a.agent}</div>
+              <div style={{ display: "flex", gap: isMobile ? 8 : 16, marginTop: 4, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Trades: <span style={{ color: "#00D4FF" }}>{(a.trades || 0).toLocaleString()}</span></span>
+                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Win Rate: <span style={{ color: "#10B981" }}>{a.winRate || 0}%</span></span>
+                {!isMobile && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Avg Return: <span style={{ color: "#A855F7" }}>{a.avgReturn || 0}%</span></span>}
               </div>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 20, fontWeight: 800, color: "#10B981" }}>+${a.totalPnL.toLocaleString()}</div>
-              <div style={{ display: "flex", gap: 10, marginTop: 4, justifyContent: "flex-end" }}>
+            <div style={{ textAlign: isMobile ? "left" : "right", width: isMobile ? "100%" : "auto", marginLeft: isMobile ? 38 : 0 }}>
+              <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 800, color: "#10B981" }}>+${(a.totalPnL || 0).toLocaleString()}</div>
+              {!isMobile && <div style={{ display: "flex", gap: 10, marginTop: 4, justifyContent: "flex-end" }}>
                 <span style={{ fontSize: 10, color: "#10B981" }}>Best: +${a.bestTrade}</span>
                 <span style={{ fontSize: 10, color: "#EF4444" }}>Worst: -${Math.abs(a.worstTrade)}</span>
-              </div>
+              </div>}
             </div>
           </div>
         ))}
@@ -232,11 +234,11 @@ function AgentLeaderboard({ agents }) {
   );
 }
 
-function WinLossChart({ data }) {
+function WinLossChart({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Trade Return Distribution</div>
-      <div style={{ height: 220 }}>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Trade Return Distribution</div>
+      <div style={{ height: isMobile ? 180 : 220 }}>
         <ResponsiveContainer>
           <BarChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
@@ -253,11 +255,11 @@ function WinLossChart({ data }) {
   );
 }
 
-function EquityCurve({ data }) {
+function EquityCurve({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Equity Curve</div>
-      <div style={{ height: 260 }}>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Equity Curve</div>
+      <div style={{ height: isMobile ? 200 : 260 }}>
         <ResponsiveContainer>
           <AreaChart data={data}>
             <defs>
@@ -278,7 +280,7 @@ function EquityCurve({ data }) {
   );
 }
 
-function KeyMetricsGrid() {
+function KeyMetricsGrid({ isMobile = false }) {
   const metrics = [
     { label: "Total Return", value: "+10.68%", sub: "$6,410 profit", color: "#10B981" },
     { label: "Annualized Return", value: "+52.4%", sub: "vs S&P 12.3%", color: "#10B981" },
@@ -294,11 +296,11 @@ function KeyMetricsGrid() {
     { label: "Alpha", value: "+38.1%", sub: "vs S&P 500 ann.", color: "#F59E0B" },
   ];
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 12 }}>
+    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(170px, 1fr))", gap: isMobile ? 8 : 12 }}>
       {metrics.map(m => (
-        <div key={m.label} style={glass({ padding: 16 })}>
+        <div key={m.label} style={glass({ padding: isMobile ? 12 : 16 })}>
           <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{m.label}</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: m.color }}>{m.value}</div>
+          <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: m.color }}>{m.value}</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 4 }}>{m.sub}</div>
         </div>
       ))}
@@ -352,8 +354,8 @@ export default function TwelveTribes_Performance() {
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: isMobile ? "auto" : "visible" }}>
           {views.map(v => (
-            <button key={v.id} onClick={() => setView(v.id)} style={{
-              padding: "8px 18px", borderRadius: 12, border: "none", cursor: "pointer",
+            <button key={v.id} onClick={() => { haptics.light(); setView(v.id); }} style={{
+              padding: isMobile ? "10px 14px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer", minHeight: 44,
               fontSize: isMobile ? 11 : 13, fontWeight: 500, transition: "all 0.2s",
               background: view === v.id ? "rgba(0,212,255,0.12)" : "transparent",
               color: view === v.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
@@ -368,18 +370,18 @@ export default function TwelveTribes_Performance() {
 
       <div style={{ padding: `20px ${isMobile ? '16px' : '32px'}`, maxWidth: 1600, margin: "0 auto" }}>
         {view === "overview" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-            <KeyMetricsGrid />
-            <BenchmarkChart data={benchmarkData} />
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 20 }}>
-              <EquityCurve data={equityCurve} />
-              <MonthlyReturnsTable data={monthlyReturns} />
+          <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+            <KeyMetricsGrid isMobile={isMobile} />
+            <BenchmarkChart data={benchmarkData} isMobile={isMobile} />
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 16 : 20 }}>
+              <EquityCurve data={equityCurve} isMobile={isMobile} />
+              <MonthlyReturnsTable data={monthlyReturns} isMobile={isMobile} />
             </div>
           </div>
         )}
-        {view === "attribution" && <AttributionChart data={attribution} />}
-        {view === "agents" && <AgentLeaderboard agents={agentPerf} />}
-        {view === "trades" && <WinLossChart data={winLoss} />}
+        {view === "attribution" && <AttributionChart data={attribution} isMobile={isMobile} />}
+        {view === "agents" && <AgentLeaderboard agents={agentPerf} isMobile={isMobile} />}
+        {view === "trades" && <WinLossChart data={winLoss} isMobile={isMobile} />}
       </div>
 
       <div style={{ padding: `16px ${isMobile ? '16px' : '32px'}`, textAlign: "center", fontSize: 10, color: "rgba(255,255,255,0.15)" }}>

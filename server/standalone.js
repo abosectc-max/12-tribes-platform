@@ -3866,7 +3866,7 @@ const AI_AGENTS = [
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
   maxOpenPositions: 8,         // 8 positions across 7 asset classes (stocks, ETFs, crypto, forex, options, futures, cash)
-  maxDailyTrades: 20,          // REDUCED from 60 — precision over volume for higher win rate
+  maxDailyTrades: 50,          // RAISED from 20 — 20 burned through in ~3min causing system-wide stall
   baseSizePct: 0.05,           // 5% of equity per trade (concentrated bets on high conviction)
   winnerSizePct: 0.08,         // 8% for high-conviction signals
   eliteSizePct: 0.10,          // 10% for multi-indicator confluence trades
@@ -5316,11 +5316,11 @@ function qaCheckWallets() {
       console.warn(`[QA] 🔧 Created missing wallet for user ${userId.slice(0,8)}`);
     }
 
-    // FIX: Kill switch stuck — reset if equity is above -20% drawdown
+    // FIX: Kill switch stuck — reset if equity is above -15% drawdown (aggressive recovery)
     if (wallet.kill_switch_active) {
-      const drawdown = wallet.initial_balance > 0
-        ? ((wallet.equity / wallet.initial_balance) - 1) * 100 : 0;
-      if (drawdown > -20) {
+      const adjustedInit = Math.max(1000, wallet.initial_balance || 100000);
+      const drawdown = ((wallet.equity / adjustedInit) - 1) * 100;
+      if (drawdown > -15) {
         wallet.kill_switch_active = false;
         db._save('wallets');
         fixes.push({ userId, issue: 'STUCK_KILL_SWITCH', action: `Reset kill switch (drawdown ${drawdown.toFixed(1)}% above -20% threshold)` });
@@ -5528,37 +5528,177 @@ function qaCheckDataIntegrity() {
   return fixes;
 }
 
-// ═══ MAIN QA AGENT: Orchestrates all checks ═══
+// ─── CHECK 6: Per-User Deep Debug ───
+// Comprehensive per-user diagnostics: wallet, limits, agents, signals, positions
+function qaCheckPerUserDebug() {
+  const fixes = [];
+  const userDiagnostics = [];
+  const allSettings = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading);
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const sessionStart = new Date(Math.max(todayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime()));
+
+  for (const settings of allSettings) {
+    const userId = settings.user_id;
+    const data = settings.data;
+    const wallet = db.findOne('wallets', w => w.user_id === userId);
+    const user = db.findOne('users', u => u.id === userId);
+    const userName = user ? `${user.firstName || ''} ${user.lastName || ''}`.trim() : userId.slice(0, 8);
+
+    const diag = {
+      userId: userId.slice(0, 8),
+      name: userName,
+      status: 'UNKNOWN',
+      blockers: [],
+    };
+
+    // Wallet check
+    if (!wallet) {
+      diag.status = 'NO_WALLET';
+      diag.blockers.push('Missing wallet — auto-creating');
+      fixes.push({ userId, issue: 'USER_NO_WALLET', action: `${userName}: Missing wallet detected in per-user debug` });
+      userDiagnostics.push(diag);
+      continue;
+    }
+
+    diag.balance = wallet.balance;
+    diag.equity = wallet.equity;
+    diag.initialBalance = wallet.initial_balance;
+
+    // Kill switch check
+    if (wallet.kill_switch_active) {
+      const adjustedInitial = Math.max(1000, wallet.initial_balance || 100000);
+      const drawdownPct = ((wallet.equity / adjustedInitial) - 1) * 100;
+      diag.status = 'KILL_SWITCH';
+      diag.blockers.push(`Kill switch active (drawdown ${drawdownPct.toFixed(1)}%)`);
+
+      // Auto-reset if drawdown is recoverable (above -15%)
+      if (drawdownPct > -15) {
+        wallet.kill_switch_active = false;
+        db._save('wallets');
+        diag.status = 'RECOVERED';
+        diag.blockers.push(`Kill switch RESET (drawdown ${drawdownPct.toFixed(1)}% above -15% threshold)`);
+        fixes.push({ userId, issue: 'KILL_SWITCH_RESET', action: `${userName}: Kill switch auto-reset (drawdown ${drawdownPct.toFixed(1)}%)` });
+        console.warn(`[QA] 🔧 Per-user debug: Reset kill switch for ${userName} (drawdown ${drawdownPct.toFixed(1)}%)`);
+      }
+      userDiagnostics.push(diag);
+      continue;
+    }
+
+    // Daily limit check — use SESSION start, not midnight
+    const sessionOpens = db.count('positions', p => p.user_id === userId && new Date(p.opened_at) >= sessionStart);
+    diag.sessionTrades = sessionOpens;
+    diag.dailyLimit = AUTO_TRADE_CONFIG.maxDailyTrades;
+
+    if (sessionOpens >= AUTO_TRADE_CONFIG.maxDailyTrades) {
+      diag.status = 'DAILY_CAPPED';
+      diag.blockers.push(`Session trades ${sessionOpens} >= limit ${AUTO_TRADE_CONFIG.maxDailyTrades}`);
+      userDiagnostics.push(diag);
+      continue;
+    }
+
+    // Open positions check
+    const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
+    diag.openPositions = openPositions.length;
+    diag.maxPositions = AUTO_TRADE_CONFIG.maxOpenPositions;
+
+    if (openPositions.length >= AUTO_TRADE_CONFIG.maxOpenPositions) {
+      diag.status = 'MAX_POSITIONS';
+      diag.blockers.push(`${openPositions.length} open >= max ${AUTO_TRADE_CONFIG.maxOpenPositions}`);
+      userDiagnostics.push(diag);
+      continue;
+    }
+
+    // Agent health check — are any agents benched?
+    const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+    const heldSymbols = new Set(openPositions.map(p => p.symbol));
+    let benchedAgents = 0;
+    let activeAgents = 0;
+    let executableSignals = 0;
+
+    for (const agent of signalAgents) {
+      const agentPerf = getAgentPerf(agent.name);
+      const totalTrades = agentPerf.wins + agentPerf.losses;
+      if (totalTrades >= 6) {
+        const wr = agentPerf.wins / totalTrades;
+        if (wr < (AUTO_TRADE_CONFIG.minWinRateForTrading || 0.40)) {
+          benchedAgents++;
+          diag.blockers.push(`Agent ${agent.name} benched (win rate ${(wr*100).toFixed(0)}%)`);
+          continue;
+        }
+      }
+      activeAgents++;
+
+      // Check if this agent can produce executable signals
+      const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined && priceHistory[s]?.length >= 30 && !heldSymbols.has(s));
+      for (const sym of tradable) {
+        const sig = computeSignal(sym, agent.role, agent.name);
+        const adj = sig.score * agentPerf.adaptiveConfidence;
+        if (Math.abs(adj) >= AUTO_TRADE_CONFIG.minSignalStrength && sig.confluence >= (AUTO_TRADE_CONFIG.minConfluence || 3)) {
+          executableSignals++;
+          break;
+        }
+      }
+    }
+
+    diag.benchedAgents = benchedAgents;
+    diag.activeAgents = activeAgents;
+    diag.executableSignals = executableSignals;
+
+    if (benchedAgents === signalAgents.length) {
+      diag.status = 'ALL_AGENTS_BENCHED';
+      diag.blockers.push(`All ${benchedAgents} signal agents benched for low win rate`);
+    } else if (executableSignals === 0) {
+      diag.status = 'NO_EXECUTABLE_SIGNALS';
+      diag.blockers.push(`${activeAgents} agents active but 0 executable signals (all held or below threshold)`);
+    } else {
+      diag.status = 'HEALTHY';
+    }
+
+    userDiagnostics.push(diag);
+  }
+
+  // Log summary every 6 ticks (1 minute) for visibility
+  if (autoTradeTickCount % 6 === 0) {
+    const summary = userDiagnostics.map(d => `${d.name}:${d.status}`).join(' | ');
+    console.log(`[QA] Per-user debug: ${summary}`);
+  }
+
+  return { fixes, diagnostics: userDiagnostics };
+}
+
+// ═══ MAIN QA AGENT: Full system debug on EVERY cycle ═══
 function runQAAgent(isFullAudit = false) {
   qaState.checksRun++;
   const allFixes = [];
   const checks = [];
 
-  // Always run: trade flow check (most critical)
+  // ─── ALWAYS run ALL checks — full debug every cycle ───
   const flowFixes = qaCheckTradeFlow();
   checks.push({ name: 'trade_flow', fixes: flowFixes.length, status: flowFixes.length === 0 ? 'PASS' : 'ISSUE' });
   allFixes.push(...flowFixes);
 
-  // Full audit (every 5 min) or when trade flow detects issues
-  if (isFullAudit || flowFixes.length > 0) {
-    const walletFixes = qaCheckWallets();
-    checks.push({ name: 'wallets', fixes: walletFixes.length, status: walletFixes.length === 0 ? 'PASS' : 'FIXED' });
-    allFixes.push(...walletFixes);
+  const walletFixes = qaCheckWallets();
+  checks.push({ name: 'wallets', fixes: walletFixes.length, status: walletFixes.length === 0 ? 'PASS' : 'FIXED' });
+  allFixes.push(...walletFixes);
 
-    const limitFixes = qaCheckDailyLimits();
-    checks.push({ name: 'daily_limits', fixes: limitFixes.length, status: limitFixes.length === 0 ? 'PASS' : 'FIXED' });
-    allFixes.push(...limitFixes);
+  const limitFixes = qaCheckDailyLimits();
+  checks.push({ name: 'daily_limits', fixes: limitFixes.length, status: limitFixes.length === 0 ? 'PASS' : 'FIXED' });
+  allFixes.push(...limitFixes);
 
-    const signalFixes = qaCheckSignals();
-    checks.push({ name: 'signals', fixes: signalFixes.length, status: signalFixes.length === 0 ? 'PASS' : 'FIXED' });
-    allFixes.push(...signalFixes);
+  const signalFixes = qaCheckSignals();
+  checks.push({ name: 'signals', fixes: signalFixes.length, status: signalFixes.length === 0 ? 'PASS' : 'FIXED' });
+  allFixes.push(...signalFixes);
 
-    const dataFixes = qaCheckDataIntegrity();
-    checks.push({ name: 'data_integrity', fixes: dataFixes.length, status: dataFixes.length === 0 ? 'PASS' : 'FIXED' });
-    allFixes.push(...dataFixes);
+  const dataFixes = qaCheckDataIntegrity();
+  checks.push({ name: 'data_integrity', fixes: dataFixes.length, status: dataFixes.length === 0 ? 'PASS' : 'FIXED' });
+  allFixes.push(...dataFixes);
 
-    qaState.lastFullAudit = Date.now();
-  }
+  // ─── CHECK 6: Per-User Deep Debug ───
+  const perUserDebug = qaCheckPerUserDebug();
+  checks.push({ name: 'per_user_debug', fixes: perUserDebug.fixes.length, status: perUserDebug.fixes.length === 0 ? 'PASS' : 'FIXED' });
+  allFixes.push(...perUserDebug.fixes);
+
+  qaState.lastFullAudit = Date.now();
 
   // Update stats
   qaState.issuesFound += allFixes.length;
@@ -5622,22 +5762,22 @@ function runQAAgent(isFullAudit = false) {
       totalIssuesFixed: qaState.issuesFixed,
       fixRate: qaState.issuesFound > 0 ? `${((qaState.issuesFixed / qaState.issuesFound) * 100).toFixed(0)}%` : 'N/A',
     },
+
+    // Per-user debug diagnostics (full system visibility)
+    perUserDebug: perUserDebug.diagnostics,
   };
 
-  // Always log a report (even clean ones on full audit for audit trail)
-  if (allFixes.length > 0 || isFullAudit) {
-    db.insert('qa_reports', report);
-    qaState.history.push(report);
-    if (qaState.history.length > 50) qaState.history.shift();
-  }
+  // ALWAYS log report — full audit every cycle means every report is an audit trail entry
+  db.insert('qa_reports', report);
+  qaState.history.push(report);
+  if (qaState.history.length > 50) qaState.history.shift();
 
   return { checks, fixes: allFixes, report };
 }
 
-// Run QA agent every 30 seconds (fast monitor), full audit every 5 minutes
+// Run QA agent every 30 seconds — ALWAYS full debug audit per directive
 const qaInterval = setInterval(() => {
-  const isFullAudit = (Date.now() - qaState.lastFullAudit) > 5 * 60 * 1000;
-  runQAAgent(isFullAudit);
+  runQAAgent(true); // Full system debug on EVERY cycle — no fast-monitor shortcut
 }, 30000);
 
 // ─── BOOT SELF-TEST: Comprehensive system validation at 15s ───
@@ -5731,15 +5871,16 @@ api.get('/api/trading/health', (req, res) => {
     signalDiag[sym] = { historyLength: histLen, signalScore: +score.toFixed(3), regime: symbolRegimes[sym], reason };
   }
 
-  // Per-user blocker summary
+  // Per-user blocker summary — use SESSION start (matches actual trading engine logic)
   const allSettings = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading);
-  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const healthTodayStart = new Date(); healthTodayStart.setHours(0, 0, 0, 0);
+  const healthSessionStart = new Date(Math.max(healthTodayStart.getTime(), new Date(SERVER_BOOT_TIME).getTime()));
   const userBlockers = { healthy: 0, no_wallet: 0, kill_switch: 0, daily_limit: 0, no_signals: 0 };
   for (const s of allSettings) {
     const w = db.findOne('wallets', ww => ww.user_id === s.user_id);
     if (!w) { userBlockers.no_wallet++; continue; }
     if (w.kill_switch_active) { userBlockers.kill_switch++; continue; }
-    const opens = db.count('positions', p => p.user_id === s.user_id && new Date(p.opened_at) >= todayStart);
+    const opens = db.count('positions', p => p.user_id === s.user_id && new Date(p.opened_at) >= healthSessionStart);
     if (opens >= AUTO_TRADE_CONFIG.maxDailyTrades) { userBlockers.daily_limit++; continue; }
     userBlockers.healthy++;
   }

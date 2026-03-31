@@ -5,6 +5,8 @@
  */
 
 import { useState, useEffect } from 'react';
+import { useResponsive } from '../hooks/useResponsive.js';
+import { haptics } from '../hooks/useHaptics.js';
 
 const STORAGE_KEY = '12tribes_terms_accepted';
 
@@ -44,6 +46,7 @@ function acceptTerms(userId) {
  * @param {string} userId - Current user identifier
  */
 export default function TermsConditions({ onAccept, userId }) {
+  const { isMobile } = useResponsive();
   const [hasAccepted, setHasAccepted] = useState(false);
   const [isScrolledToBottom, setIsScrolledToBottom] = useState(false);
   const [checkedCheckbox, setCheckedCheckbox] = useState(false);
@@ -69,6 +72,7 @@ export default function TermsConditions({ onAccept, userId }) {
   };
 
   const handleAccept = () => {
+    haptics.success();
     if (userId) {
       acceptTerms(userId);
     }
@@ -87,12 +91,12 @@ export default function TermsConditions({ onAccept, userId }) {
     borderRadius: 24,
     boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4)",
   };
-  const sectionStyle = { marginBottom: 24 };
-  const h3Style = { fontSize: 14, fontWeight: 700, color: "#D4AC0D", marginBottom: 8, marginTop: 20 };
-  const pStyle = { fontSize: 13, color: "rgba(255,255,255,0.65)", lineHeight: 1.8, marginBottom: 10 };
+  const sectionStyle = { marginBottom: isMobile ? 18 : 24 };
+  const h3Style = { fontSize: isMobile ? 13 : 14, fontWeight: 700, color: "#D4AC0D", marginBottom: 8, marginTop: isMobile ? 16 : 20 };
+  const pStyle = { fontSize: isMobile ? 12 : 13, color: "rgba(255,255,255,0.65)", lineHeight: 1.8, marginBottom: 10 };
   const strongStyle = { color: "rgba(255,255,255,0.85)", fontWeight: 600 };
-  const ulStyle = { paddingLeft: 24, marginBottom: 12 };
-  const liStyle = { fontSize: 13, color: "rgba(255,255,255,0.6)", lineHeight: 1.8, marginBottom: 6 };
+  const ulStyle = { paddingLeft: isMobile ? 18 : 24, marginBottom: 12 };
+  const liStyle = { fontSize: isMobile ? 12 : 13, color: "rgba(255,255,255,0.6)", lineHeight: 1.8, marginBottom: 6 };
 
   if (!showModal && hasAccepted) {
     return null;
@@ -103,18 +107,18 @@ export default function TermsConditions({ onAccept, userId }) {
       minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
       background: "linear-gradient(160deg, #0a0a1a 0%, #0d1117 30%, #0a0f1e 60%, #111827 100%)",
       fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif",
-      color: "#fff", padding: 16,
+      color: "#fff", padding: isMobile ? 12 : 16,
     }}>
       {showModal && (
         <div style={{ maxWidth: 720, width: "100%" }}>
           <div style={{ ...glass, overflow: "hidden" }}>
-            <div style={{ padding: "28px 32px 16px", textAlign: "center", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-              <h2 style={{ fontSize: 22, fontWeight: 800, margin: "0 0 4px", letterSpacing: 1 }}>Terms & Conditions</h2>
-              <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", margin: 0 }}>Please read and accept to continue</p>
+            <div style={{ padding: isMobile ? "20px 18px 12px" : "28px 32px 16px", textAlign: "center", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+              <h2 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, margin: "0 0 4px", letterSpacing: 1 }}>Terms & Conditions</h2>
+              <p style={{ fontSize: isMobile ? 12 : 13, color: "rgba(255,255,255,0.4)", margin: 0 }}>Please read and accept to continue</p>
             </div>
 
             <div
-              style={{ maxHeight: "55vh", overflowY: "auto", padding: "24px 32px" }}
+              style={{ maxHeight: isMobile ? "50vh" : "55vh", overflowY: "auto", padding: isMobile ? "16px 18px" : "24px 32px", WebkitOverflowScrolling: "touch" }}
               onScroll={handleScroll}
               role="region"
               aria-label="Terms and conditions content"
@@ -533,20 +537,20 @@ export default function TermsConditions({ onAccept, userId }) {
             </div>
 
             {/* Checkbox and Accept Button */}
-            <div style={{ padding: "20px 32px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+            <div style={{ padding: isMobile ? "16px 18px" : "20px 32px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
               <label style={{
-                display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer",
+                display: "flex", alignItems: "flex-start", gap: isMobile ? 10 : 12, cursor: "pointer",
                 opacity: isScrolledToBottom ? 1 : 0.4, pointerEvents: isScrolledToBottom ? "auto" : "none",
                 marginBottom: 16,
               }}>
                 <input
                   type="checkbox"
                   checked={checkedCheckbox}
-                  onChange={(e) => setCheckedCheckbox(e.target.checked)}
+                  onChange={(e) => { haptics.select(); setCheckedCheckbox(e.target.checked); }}
                   disabled={!isScrolledToBottom}
-                  style={{ width: 20, height: 20, marginTop: 2, accentColor: "#D4AC0D", cursor: "pointer" }}
+                  style={{ width: isMobile ? 24 : 20, height: isMobile ? 24 : 20, minWidth: isMobile ? 24 : 20, marginTop: 2, accentColor: "#D4AC0D", cursor: "pointer" }}
                 />
-                <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
+                <span style={{ fontSize: isMobile ? 12 : 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
                   I have read, understood, and agree to the <strong style={{ color: "#D4AC0D" }}>Terms & Conditions</strong> of 12 Tribes AI Investment Group. I acknowledge that all trading on this platform uses virtual currency for simulation purposes only.
                 </span>
               </label>
@@ -555,11 +559,11 @@ export default function TermsConditions({ onAccept, userId }) {
                 onClick={handleAccept}
                 disabled={!checkedCheckbox || !isScrolledToBottom}
                 style={{
-                  width: "100%", padding: "16px", borderRadius: 16, border: "none",
+                  width: "100%", padding: isMobile ? "14px" : "16px", borderRadius: 16, border: "none",
                   cursor: checkedCheckbox && isScrolledToBottom ? "pointer" : "default",
                   background: checkedCheckbox && isScrolledToBottom ? "linear-gradient(135deg, #D4AC0D, #FFD54F)" : "rgba(255,255,255,0.06)",
                   color: checkedCheckbox && isScrolledToBottom ? "#0a0a1a" : "rgba(255,255,255,0.2)",
-                  fontSize: 16, fontWeight: 700, letterSpacing: 0.5,
+                  fontSize: isMobile ? 14 : 16, fontWeight: 700, letterSpacing: 0.5, minHeight: 48,
                   boxShadow: checkedCheckbox && isScrolledToBottom ? "0 4px 20px rgba(212,172,13,0.3)" : "none",
                   transition: "all 0.3s",
                 }}

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import * as recharts from "recharts";
 import { useResponsive } from '../hooks/useResponsive.js';
 import BrandLogo from '../components/BrandLogo.jsx';
+import { haptics } from '../hooks/useHaptics.js';
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, ScatterChart, Scatter,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, ComposedChart, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis
@@ -106,7 +107,7 @@ function generateRollingRisk(days) {
 
 // === COMPONENTS ===
 
-function CorrelationHeatmap({ data }) {
+function CorrelationHeatmap({ data, isMobile = false }) {
   const { assets, corrs } = data;
   const getColor = (v) => {
     if (v >= 0.7) return "#EF4444";
@@ -153,9 +154,9 @@ function CorrelationHeatmap({ data }) {
           </tbody>
         </table>
       </div>
-      <div style={{ display: "flex", justifyContent: "center", gap: 20, marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "center", gap: isMobile ? 10 : 20, marginTop: 16, flexWrap: "wrap" }}>
         {[{ label: "Low (<0.2)", color: "#6B7280" }, { label: "Moderate (0.2-0.4)", color: "#10B981" }, { label: "High (0.4-0.7)", color: "#F59E0B" }, { label: "Critical (>0.7)", color: "#EF4444" }].map(l => (
-          <span key={l.label} style={{ fontSize: 10, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
+          <span key={l.label} style={{ fontSize: isMobile ? 9 : 10, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: l.color }} />{l.label}
           </span>
         ))}
@@ -164,11 +165,11 @@ function CorrelationHeatmap({ data }) {
   );
 }
 
-function DrawdownChart({ data }) {
+function DrawdownChart({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Drawdown Analysis (90 Days)</div>
-      <div style={{ height: 220 }}>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Drawdown Analysis (90 Days)</div>
+      <div style={{ height: isMobile ? 180 : 220 }}>
         <ResponsiveContainer>
           <AreaChart data={data}>
             <defs>
@@ -189,13 +190,13 @@ function DrawdownChart({ data }) {
   );
 }
 
-function VaRChart({ data }) {
+function VaRChart({ data, isMobile = false }) {
   const var95 = -2.5, var99 = -3.8;
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 4 }}>Value at Risk Distribution</div>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 4 }}>Value at Risk Distribution</div>
       <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 16 }}>Daily return distribution with VaR thresholds</div>
-      <div style={{ height: 240 }}>
+      <div style={{ height: isMobile ? 180 : 240 }}>
         <ResponsiveContainer>
           <AreaChart data={data}>
             <defs>
@@ -212,20 +213,20 @@ function VaRChart({ data }) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
-      <div style={{ display: "flex", gap: 20, justifyContent: "center", marginTop: 12 }}>
-        <div style={inner({ padding: "10px 20px", textAlign: "center" })}>
+      <div style={{ display: "flex", gap: isMobile ? 10 : 20, justifyContent: "center", marginTop: 12, flexWrap: "wrap" }}>
+        <div style={inner({ padding: isMobile ? "8px 14px" : "10px 20px", textAlign: "center", flex: isMobile ? "1 1 80px" : "none" })}>
           <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>VaR 95%</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#F59E0B", marginTop: 2 }}>-$1,500</div>
+          <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "#F59E0B", marginTop: 2 }}>-$1,500</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{var95}% daily</div>
         </div>
-        <div style={inner({ padding: "10px 20px", textAlign: "center" })}>
+        <div style={inner({ padding: isMobile ? "8px 14px" : "10px 20px", textAlign: "center", flex: isMobile ? "1 1 80px" : "none" })}>
           <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>VaR 99%</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#EF4444", marginTop: 2 }}>-$2,280</div>
+          <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "#EF4444", marginTop: 2 }}>-$2,280</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{var99}% daily</div>
         </div>
-        <div style={inner({ padding: "10px 20px", textAlign: "center" })}>
+        <div style={inner({ padding: isMobile ? "8px 14px" : "10px 20px", textAlign: "center", flex: isMobile ? "1 1 80px" : "none" })}>
           <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>CVaR 95%</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#EF4444", marginTop: 2 }}>-$2,040</div>
+          <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "#EF4444", marginTop: 2 }}>-$2,040</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>Expected shortfall</div>
         </div>
       </div>
@@ -233,7 +234,7 @@ function VaRChart({ data }) {
   );
 }
 
-function StressTestTable({ scenarios }) {
+function StressTestTable({ scenarios, isMobile = false }) {
   const sevColors = { extreme: "#EF4444", severe: "#F59E0B", moderate: "#10B981" };
   return (
     <div style={glass({ overflow: "hidden" })}>
@@ -271,11 +272,11 @@ function StressTestTable({ scenarios }) {
   );
 }
 
-function RollingRiskChart({ data }) {
+function RollingRiskChart({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Rolling Risk Metrics (90 Days)</div>
-      <div style={{ height: 240 }}>
+      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Rolling Risk Metrics (90 Days)</div>
+      <div style={{ height: isMobile ? 200 : 240 }}>
         <ResponsiveContainer>
           <ComposedChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
@@ -295,7 +296,7 @@ function RollingRiskChart({ data }) {
   );
 }
 
-function RiskRadar() {
+function RiskRadar({ isMobile = false }) {
   const data = [
     { metric: "Market Risk", value: 72 },
     { metric: "Liquidity Risk", value: 45 },
@@ -309,11 +310,11 @@ function RiskRadar() {
   return (
     <div style={glass()}>
       <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Risk Profile Radar</div>
-      <div style={{ height: 300 }}>
+      <div style={{ height: isMobile ? 240 : 300 }}>
         <ResponsiveContainer>
           <RadarChart data={data}>
             <PolarGrid stroke="rgba(255,255,255,0.1)" />
-            <PolarAngleAxis dataKey="metric" tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 10 }} />
+            <PolarAngleAxis dataKey="metric" tick={{ fill: "rgba(255,255,255,0.5)", fontSize: isMobile ? 8 : 10 }} />
             <PolarRadiusAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 9 }} domain={[0, 100]} />
             <Radar name="Risk Score" dataKey="value" stroke="#00D4FF" fill="#00D4FF" fillOpacity={0.15} strokeWidth={2} />
           </RadarChart>
@@ -323,7 +324,7 @@ function RiskRadar() {
   );
 }
 
-function RiskLimitsPanel() {
+function RiskLimitsPanel({ isMobile = false }) {
   const limits = [
     { label: "Daily Loss Limit", current: -680, limit: -1200, pct: 56.7, status: "ok" },
     { label: "Max Drawdown", current: -4.8, limit: -8.0, pct: 60, status: "ok" },
@@ -405,8 +406,8 @@ export default function TwelveTribes_RiskAnalytics() {
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: isMobile ? "auto" : "visible" }}>
           {views.map(v => (
-            <button key={v.id} onClick={() => setView(v.id)} style={{
-              padding: "8px 18px", borderRadius: 12, border: "none", cursor: "pointer",
+            <button key={v.id} onClick={() => { haptics.light(); setView(v.id); }} style={{
+              padding: isMobile ? "10px 14px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer", minHeight: 44,
               fontSize: isMobile ? 11 : 13, fontWeight: 500, transition: "all 0.2s",
               background: view === v.id ? "rgba(0,212,255,0.12)" : "transparent",
               color: view === v.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
@@ -448,25 +449,25 @@ export default function TwelveTribes_RiskAnalytics() {
         </div>
 
         {view === "overview" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 20 }}>
-              <VaRChart data={varData} />
-              <DrawdownChart data={drawdownData} />
+          <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: isMobile ? 16 : 20 }}>
+              <VaRChart data={varData} isMobile={isMobile} />
+              <DrawdownChart data={drawdownData} isMobile={isMobile} />
             </div>
-            <RollingRiskChart data={rollingRisk} />
+            <RollingRiskChart data={rollingRisk} isMobile={isMobile} />
           </div>
         )}
 
-        {view === "stress" && <StressTestTable scenarios={stressScenarios} />}
+        {view === "stress" && <StressTestTable scenarios={stressScenarios} isMobile={isMobile} />}
 
         {view === "correlation" && (
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr', gap: 20 }}>
-            <CorrelationHeatmap data={corrData} />
-            <RiskRadar />
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr', gap: isMobile ? 16 : 20 }}>
+            <CorrelationHeatmap data={corrData} isMobile={isMobile} />
+            <RiskRadar isMobile={isMobile} />
           </div>
         )}
 
-        {view === "limits" && <RiskLimitsPanel />}
+        {view === "limits" && <RiskLimitsPanel isMobile={isMobile} />}
       </div>
 
       <div style={{ padding: `16px ${isMobile ? '16px' : '32px'}`, textAlign: "center", fontSize: 10, color: "rgba(255,255,255,0.15)" }}>

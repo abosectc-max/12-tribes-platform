@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as recharts from "recharts";
 import { useResponsive } from '../hooks/useResponsive';
 import BrandLogo from '../components/BrandLogo.jsx';
+import { haptics } from '../hooks/useHaptics.js';
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Cell, ComposedChart, Scatter
@@ -512,8 +513,8 @@ export default function TwelveTribes_TradingEngine() {
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: "auto", flexBasis: isMobile ? "100%" : "auto", order: isMobile ? 3 : 0 }}>
           {views.map(v => (
-            <button key={v.id} onClick={() => setView(v.id)} style={{
-              padding: isMobile ? "6px 12px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer",
+            <button key={v.id} onClick={() => { haptics.light(); setView(v.id); }} style={{
+              padding: isMobile ? "10px 14px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer", minHeight: 44,
               fontSize: isMobile ? 11 : 13, fontWeight: 500, transition: "all 0.2s",
               background: view === v.id ? "rgba(0,212,255,0.12)" : "transparent",
               color: view === v.id ? "#00D4FF" : "rgba(255,255,255,0.5)",

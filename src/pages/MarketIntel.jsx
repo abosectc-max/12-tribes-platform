@@ -5,6 +5,7 @@ import { startNewsAutoFetch, getNewsStatus, analyzeSentiment } from '../store/ne
 import { detectRegime, getAgentProfiles, generateTradeSignals, getUpcomingRiskEvents, generateIntelBriefing } from '../store/agentIntelligenceEngine.js';
 import { startAutoFetch } from '../store/marketDataService.js';
 import BrandLogo from '../components/BrandLogo.jsx';
+import { haptics } from '../hooks/useHaptics.js';
 
 const {
   AreaChart, Area, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -93,8 +94,8 @@ function LiveNewsFeed({ news, filter, onFilterChange }) {
       {/* Category filters */}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
         {categories.map(cat => (
-          <button key={cat} onClick={() => onFilterChange(cat)} style={{
-            padding: "6px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+          <button key={cat} onClick={() => { haptics.select(); onFilterChange(cat); }} style={{
+            padding: "8px 14px", borderRadius: 10, border: "none", cursor: "pointer", minHeight: 36,
             fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5,
             background: filter === cat ? "rgba(0,212,255,0.15)" : "rgba(255,255,255,0.04)",
             color: filter === cat ? "#00D4FF" : "rgba(255,255,255,0.4)",
@@ -568,8 +569,8 @@ export default function TwelveTribes_MarketIntel() {
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: isMobile ? "auto" : "visible" }}>
           {views.map(v => (
-            <button key={v.id} onClick={() => setView(v.id)} style={{
-              padding: isMobile ? "6px 10px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer",
+            <button key={v.id} onClick={() => { haptics.light(); setView(v.id); }} style={{
+              padding: isMobile ? "10px 14px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer", minHeight: 44,
               fontSize: isMobile ? 10 : 13, fontWeight: 500, transition: "all 0.2s",
               background: view === v.id ? "rgba(0,212,255,0.12)" : "transparent",
               color: view === v.id ? "#00D4FF" : "rgba(255,255,255,0.5)",

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import * as recharts from "recharts";
 import { useResponsive } from "../hooks/useResponsive";
 import BrandLogo from "../components/BrandLogo.jsx";
+import { haptics } from "../hooks/useHaptics.js";
 
 const API_BASE = (() => {
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
@@ -126,7 +127,7 @@ function GlassCard({ children, style, className, onClick }) {
       style={{ ...(hovered ? glassCardHoverStyle : glassCardStyle), ...style }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={onClick}
+      onClick={onClick ? (e) => { haptics.select(); onClick(e); } : undefined}
     >
       {children}
     </div>
@@ -135,16 +136,18 @@ function GlassCard({ children, style, className, onClick }) {
 
 function MetricCard({ label, value, change, prefix = "", suffix = "", color = "#00D4FF", isMobile = false }) {
   const isPositive = typeof change === "number" ? change >= 0 : true;
+  const safeValue = typeof value === "number" ? (isNaN(value) ? 0 : value) : (value || '—');
+  const safeChange = typeof change === "number" ? (isNaN(change) ? 0 : change) : change;
   return (
-    <GlassCard style={{ minWidth: isMobile ? 160 : 200, flex: "1 1 160px" }}>
+    <GlassCard style={{ minWidth: isMobile ? 140 : 200, flex: "1 1 140px" }}>
       <div style={{ fontSize: isMobile ? 10 : 12, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: isMobile ? 24 : 32, fontWeight: 700, color, lineHeight: 1.1 }}>
-        {prefix}{typeof value === "number" ? value.toLocaleString() : value}{suffix}
+      <div style={{ fontSize: isMobile ? 20 : 32, fontWeight: 700, color, lineHeight: 1.1 }}>
+        {prefix}{typeof safeValue === "number" ? safeValue.toLocaleString() : safeValue}{suffix}
       </div>
-      {change !== undefined && (
+      {safeChange !== undefined && (
         <div style={{ fontSize: isMobile ? 11 : 13, color: isPositive ? "#10B981" : "#EF4444", marginTop: 6, display: "flex", alignItems: "center", gap: 4 }}>
           <span>{isPositive ? "▲" : "▼"}</span>
-          <span>{Math.abs(change).toFixed(2)}%</span>
+          <span>{Math.abs(safeChange || 0).toFixed(2)}%</span>
           {!isMobile && <span style={{ color: "rgba(255,255,255,0.3)", marginLeft: 4 }}>today</span>}
         </div>
       )}
@@ -179,7 +182,7 @@ function AgentCard({ agent, isMobile = false }) {
           <div style={{ fontSize: 10, color: "#A855F7", marginTop: 4 }}>Strategy: {agent.strategy}</div>
         )}
         {agent.circuitBreaker && (
-          <div style={{ fontSize: 10, color: "#EF4444", marginTop: 4 }}>Circuit breaker: {agent.circuitBreaker.reason}</div>
+          <div style={{ fontSize: 10, color: "#EF4444", marginTop: 4 }}>Circuit breaker: {agent.circuitBreaker?.reason || 'triggered'}</div>
         )}
       </div>
       <div style={{
@@ -733,9 +736,9 @@ export default function TwelveTribes_MissionControl() {
           {navItems.map(item => (
             <button
               key={item.id}
-              onClick={() => setActiveView(item.id)}
+              onClick={() => { haptics.light(); setActiveView(item.id); }}
               style={{
-                padding: isMobile ? "6px 12px" : "8px 20px", borderRadius: 14, border: "none", cursor: "pointer",
+                padding: isMobile ? "10px 14px" : "8px 20px", borderRadius: 14, border: "none", cursor: "pointer", minHeight: 44,
                 fontSize: isMobile ? 12 : 13, fontWeight: 500, transition: "all 0.2s",
                 background: activeView === item.id ? "rgba(0,212,255,0.15)" : "transparent",
                 color: activeView === item.id ? "#00D4FF" : "rgba(255,255,255,0.5)",

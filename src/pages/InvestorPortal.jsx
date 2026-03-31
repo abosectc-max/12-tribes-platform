@@ -16,6 +16,7 @@ import {
   simulateAgentTrade, getWithdrawalHistory, getCompoundProjection,
 } from '../store/fundManager.js';
 import BrandLogo from '../components/BrandLogo.jsx';
+import { haptics } from '../hooks/useHaptics.js';
 
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -48,20 +49,7 @@ const inputStyle = {
 
 const focusGlow = "0 0 0 3px rgba(0,212,255,0.15)";
 
-// ═══════ HAPTIC FEEDBACK ENGINE ═══════
-// Uses Vibration API (Android/Chrome) with graceful fallback
-const haptics = {
-  _vibrate(pattern) {
-    try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {}
-  },
-  light()   { this._vibrate(10); },                     // Tab switch, minor action
-  medium()  { this._vibrate(20); },                     // Button press, confirm
-  heavy()   { this._vibrate([15, 30, 15]); },           // Important action (trade, submit)
-  success() { this._vibrate([10, 50, 20]); },           // Success feedback
-  error()   { this._vibrate([30, 50, 30, 50, 30]); },   // Error / warning
-  refresh() { this._vibrate([8, 40, 12]); },             // Pull-to-refresh feel
-  select()  { this._vibrate(6); },                       // Selection / toggle
-};
+// Haptics imported from shared module: ../hooks/useHaptics.js
 
 // ═══════ REFRESH BUTTON COMPONENT ═══════
 function RefreshButton({ onRefresh, label = "Refresh", style = {} }) {
@@ -1319,7 +1307,7 @@ function SignalTracker({ investor, isMobile }) {
             { label: "Total Signals", value: stats.total, color: "#00D4FF" },
             { label: "Win Rate", value: `${stats.winRate}%`, color: stats.winRate >= 50 ? "#10B981" : "#EF4444" },
             { label: "Total P&L", value: `${stats.totalPnL >= 0 ? '+' : ''}$${stats.totalPnL.toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: stats.totalPnL >= 0 ? "#10B981" : "#EF4444" },
-            { label: "Avg P&L", value: `$${stats.avgPnL.toFixed(2)}`, color: stats.avgPnL >= 0 ? "#10B981" : "#EF4444" },
+            { label: "Avg P&L", value: `$${(stats.avgPnL || 0).toFixed(2)}`, color: (stats.avgPnL || 0) >= 0 ? "#10B981" : "#EF4444" },
             { label: "Conversion", value: `${stats.conversionRate}%`, color: "#A855F7" },
           ].map(m => (
             <div key={m.label} style={{ ...glass, padding: 16, textAlign: "center" }}>
@@ -1357,7 +1345,7 @@ function SignalTracker({ investor, isMobile }) {
                       <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600,
                         background: Math.abs(sig.adjusted_score) >= 0.7 ? "rgba(16,185,129,0.15)" : Math.abs(sig.adjusted_score) >= 0.5 ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.05)",
                         color: Math.abs(sig.adjusted_score) >= 0.7 ? "#10B981" : Math.abs(sig.adjusted_score) >= 0.5 ? "#F59E0B" : "rgba(255,255,255,0.5)",
-                      }}>{(sig.adjusted_score * 100).toFixed(0)}%</span>
+                      }}>{((sig.adjusted_score || 0) * 100).toFixed(0)}%</span>
                       <span style={{ fontSize: 11 }}>
                         {"●".repeat(Math.min(sig.confluence || 0, 6))}
                         <span style={{ color: "rgba(255,255,255,0.2)" }}>{"○".repeat(Math.max(0, 6 - (sig.confluence || 0)))}</span>
@@ -1396,9 +1384,9 @@ function SignalTracker({ investor, isMobile }) {
                       <td style={{ padding: "8px 10px", color: sig.side === 'LONG' ? "#10B981" : "#EF4444", fontWeight: 600 }}>{sig.side}</td>
                       <td style={{ padding: "8px 10px" }}>
                         <span style={{ padding: "2px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600,
-                          background: Math.abs(sig.adjusted_score) >= 0.7 ? "rgba(16,185,129,0.15)" : Math.abs(sig.adjusted_score) >= 0.5 ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.05)",
-                          color: Math.abs(sig.adjusted_score) >= 0.7 ? "#10B981" : Math.abs(sig.adjusted_score) >= 0.5 ? "#F59E0B" : "rgba(255,255,255,0.5)",
-                        }}>{(sig.adjusted_score * 100).toFixed(0)}%</span>
+                          background: Math.abs(sig.adjusted_score || 0) >= 0.7 ? "rgba(16,185,129,0.15)" : Math.abs(sig.adjusted_score || 0) >= 0.5 ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.05)",
+                          color: Math.abs(sig.adjusted_score || 0) >= 0.7 ? "#10B981" : Math.abs(sig.adjusted_score || 0) >= 0.5 ? "#F59E0B" : "rgba(255,255,255,0.5)",
+                        }}>{((sig.adjusted_score || 0) * 100).toFixed(0)}%</span>
                       </td>
                       <td style={{ padding: "8px 10px" }}>
                         {"●".repeat(Math.min(sig.confluence || 0, 6))}
@@ -1440,7 +1428,7 @@ function SignalTracker({ investor, isMobile }) {
                   <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", marginBottom: 4 }}>{level} indicators</div>
                   <div style={{ fontSize: 20, fontWeight: 700, color: data.winRate >= 55 ? "#10B981" : data.winRate >= 45 ? "#F59E0B" : "#EF4444" }}>{data.winRate}%</div>
                   <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{data.count} signals</div>
-                  <div style={{ fontSize: 10, color: data.totalPnL >= 0 ? "#10B981" : "#EF4444" }}>${data.totalPnL.toFixed(0)}</div>
+                  <div style={{ fontSize: 10, color: (data.totalPnL || 0) >= 0 ? "#10B981" : "#EF4444" }}>${(data.totalPnL || 0).toFixed(0)}</div>
                 </div>
               ))}
             </div>
@@ -1473,12 +1461,12 @@ function SignalTracker({ investor, isMobile }) {
             <div style={{ ...glass, padding: 20 }}>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Signal Performance by Symbol</div>
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 10 }}>
-                {Object.entries(stats.symbolStats).sort((a, b) => b[1].totalPnL - a[1].totalPnL).map(([sym, data]) => (
+                {Object.entries(stats.symbolStats).sort((a, b) => (b[1].totalPnL || 0) - (a[1].totalPnL || 0)).map(([sym, data]) => (
                   <div key={sym} style={{ ...glass, padding: 14, textAlign: "center" }}>
                     <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>{sym}</div>
-                    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)" }}>{data.signals} signals | {data.winRate}% win</div>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: data.totalPnL >= 0 ? "#10B981" : "#EF4444", marginTop: 4 }}>
-                      {data.totalPnL >= 0 ? '+' : ''}${data.totalPnL.toFixed(0)}
+                    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)" }}>{data.signals || 0} signals | {data.winRate || 0}% win</div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: (data.totalPnL || 0) >= 0 ? "#10B981" : "#EF4444", marginTop: 4 }}>
+                      {(data.totalPnL || 0) >= 0 ? '+' : ''}${(data.totalPnL || 0).toFixed(0)}
                     </div>
                     <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>avg {data.avgPnLPct}%</div>
                   </div>
@@ -1544,8 +1532,8 @@ function SignalTracker({ investor, isMobile }) {
               <div key={name} style={{ ...glass, padding: 18 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <span style={{ fontSize: 16, fontWeight: 700, color: "#A855F7" }}>{name}</span>
-                  <span style={{ fontSize: 12, color: data.totalPnL >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>
-                    {data.totalPnL >= 0 ? '+' : ''}${data.totalPnL.toFixed(0)}
+                  <span style={{ fontSize: 12, color: (data.totalPnL || 0) >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>
+                    {(data.totalPnL || 0) >= 0 ? '+' : ''}${(data.totalPnL || 0).toFixed(0)}
                   </span>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
@@ -1703,7 +1691,7 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
       <div style={{ marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
           <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{label}</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color }}>{typeof value === 'number' ? value.toFixed(2) : value}{suffix}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color }}>{typeof value === 'number' ? (isNaN(value) ? '0.00' : value.toFixed(2)) : (value || '—')}{suffix}</span>
         </div>
         <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,0.06)" }}>
           <div style={{ height: "100%", borderRadius: 3, background: color, width: `${pct}%`, transition: "width 0.5s ease" }} />
@@ -1870,7 +1858,7 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
                 {hasGoodHistory ? perf.worstDay.date : `${wallet?.winCount || 0}W / ${wallet?.lossCount || 0}L`}
               </span>
               <span style={{ fontSize: 16, fontWeight: 700, color: hasGoodHistory ? "#EF4444" : "#00D4FF" }}>
-                {hasGoodHistory ? `${perf.worstDay.return.toFixed(2)}%` : `${wallet?.winRate?.toFixed(1) || 0}%`}
+                {hasGoodHistory ? `${(perf.worstDay?.return || 0).toFixed(2)}%` : `${wallet?.winRate?.toFixed(1) || 0}%`}
               </span>
             </div>
           </div>

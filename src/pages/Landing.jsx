@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { useResponsive } from '../hooks/useResponsive.js';
 import BrandLogo from '../components/BrandLogo.jsx';
+import { haptics } from '../hooks/useHaptics.js';
 
 const API_BASE = (() => {
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
@@ -164,15 +165,15 @@ export default function TwelveTribes_Landing() {
           ))}
         </div>}
         <div style={{ display: "flex", gap: isMobile ? 8 : 12 }}>
-          <Link to="/investor-portal" style={{
-            padding: isMobile ? "8px 16px" : "10px 24px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.15)",
+          <Link to="/investor-portal" onClick={() => haptics.medium()} style={{
+            padding: isMobile ? "10px 16px" : "10px 24px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.15)",
             background: "transparent", color: "#fff", fontSize: isMobile ? 11 : 13, fontWeight: 500, cursor: "pointer",
-            display: "inline-flex", alignItems: "center",
+            display: "inline-flex", alignItems: "center", minHeight: 44,
           }}>{isMobile ? 'Sign' : 'Sign In'}</Link>
-          <Link to="/mission-control" style={{
-            padding: isMobile ? "8px 16px" : "10px 24px", borderRadius: 14, border: "none",
+          <Link to="/mission-control" onClick={() => haptics.medium()} style={{
+            padding: isMobile ? "10px 16px" : "10px 24px", borderRadius: 14, border: "none",
             background: "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff",
-            fontSize: isMobile ? 11 : 13, fontWeight: 600, cursor: "pointer",
+            fontSize: isMobile ? 11 : 13, fontWeight: 600, cursor: "pointer", minHeight: 44,
             boxShadow: "0 4px 16px rgba(0,212,255,0.3)",
             display: "inline-flex", alignItems: "center",
           }}>{isMobile ? 'Start' : 'Get Started'}</Link>
@@ -414,8 +415,8 @@ function RequestAccessSection({ isMobile, glass }) {
             <div style={{ color: "#ff6b6b", fontSize: 13, textAlign: "center" }}>{responseMsg}</div>
           )}
 
-          <button type="submit" disabled={formState === "submitting"} style={{
-            padding: "14px 48px", borderRadius: 18, border: "none",
+          <button type="submit" disabled={formState === "submitting"} onClick={() => haptics.heavy()} style={{
+            padding: "14px 48px", borderRadius: 18, border: "none", minHeight: 48,
             background: formState === "submitting" ? "rgba(255,255,255,0.1)" : "linear-gradient(135deg, #00D4FF, #A855F7)",
             color: "#fff", fontSize: 16, fontWeight: 700, cursor: formState === "submitting" ? "wait" : "pointer",
             boxShadow: "0 6px 24px rgba(0,212,255,0.35)", marginTop: 8,
