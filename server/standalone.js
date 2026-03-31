@@ -5359,6 +5359,76 @@ function computeSignal(symbol, agentStyle, agentName) {
     if (rsiVal < 35 && regime === 'ranging') { score += 0.15; reasons.push('Mean reversion setup'); }
     // BB lower band bounce for recovery
     if (bbPercentB < 0.1 && mom10 > 0) { score += 0.2; confluenceBullish++; reasons.push('BB lower band recovery bounce'); }
+    // Stochastic oversold reversal — Phoenix catches momentum flips early
+    if (stoch.k < 20 && stoch.k > stoch.d) { score += 0.25; confluenceBullish++; indicators_used.push('stoch_recovery'); reasons.push('Stochastic oversold reversal'); }
+    // MACD bullish crossover in oversold territory
+    if (rsiVal < 40 && mom10 > 0 && mom < 0) { score += 0.2; confluenceBullish++; reasons.push('Momentum inflection — early recovery'); }
+    // Volume confirmation on recovery bounce
+    if (obvTrend > 0 && rsiVal < 40 && mom10 > 0) { score += 0.15; confluenceBullish++; indicators_used.push('obv_recovery'); reasons.push('OBV confirming recovery accumulation'); }
+    // Regime transition detection — ranging after downtrend = potential bottom
+    if (regime === 'ranging' && adxVal < 20 && rsiVal < 45) { score += 0.15; confluenceBullish++; reasons.push('Low ADX + ranging regime — consolidation/accumulation zone'); }
+  }
+
+  // ─── RISK_MANAGER (Sentinel) — defensive/hedging signals ───
+  if (agentStyle === 'RISK_MANAGER') {
+    // Safe-haven allocation when fear is elevated
+    if (vol > 0.4) { score += 0.35; confluenceBullish++; indicators_used.push('vol_hedge'); reasons.push(`High volatility (${(vol*100).toFixed(0)}%) — defensive allocation`); }
+    // Inverse/hedge signals when market is trending down
+    if (regime === 'trending_down') { score += 0.3; confluenceBullish++; indicators_used.push('regime_hedge'); reasons.push('Bearish regime — hedge allocation'); }
+    // Safe-haven bid on risk-off signals
+    if (rsiVal > 70 && adxVal > 25 && regime === 'trending_up') {
+      // Market overbought in strong trend — pre-position hedges
+      score += 0.2; confluenceBullish++; reasons.push('Market overbought — pre-positioning hedge');
+    }
+    // VIX spike / volatility expansion (for UVXY, SPXS positions)
+    if (vol > 0.3 && mom < -0.2) { score += 0.25; confluenceBullish++; reasons.push('Volatility expansion + negative momentum — hedge entry'); }
+    // Gold/Treasury flight-to-safety
+    if (adxVal > 20 && regime !== 'trending_up' && rsiVal < 50) {
+      score += 0.2; confluenceBullish++; indicators_used.push('flight_safety'); reasons.push('Flight to safety signal');
+    }
+    // Cash instruments (BIL, SHV, SGOV) — always moderate buy in elevated vol
+    const cashSymbols = ['BIL', 'SHV', 'SGOV'];
+    if (cashSymbols.includes(symbol) && vol > 0.2) {
+      score += 0.3; confluenceBullish++; reasons.push('Cash allocation — capital preservation');
+    }
+    // Mean reversion SHORT on inverse ETFs when vol contracts
+    if (['UVXY', 'SPXS', 'SQQQ'].includes(symbol) && vol < 0.15 && regime === 'trending_up') {
+      score -= 0.25; confluenceBearish++; reasons.push('Low vol + bullish regime — inverse ETF short');
+    }
+    // MTF confirms risk-off
+    if (mtf.direction < 0) { score += 0.15; confluenceBullish++; reasons.push('MTF bearish — risk-off confirmation'); }
+  }
+
+  // ─── POSITION_SIZER (Titan) — sector rotation + scaling winners ───
+  if (agentStyle === 'POSITION_SIZER') {
+    // Strong trend + ADX confirmation = scale in
+    if (adxVal > 25 && regime === 'trending_up') { score += 0.35; confluenceBullish++; indicators_used.push('adx_trend'); reasons.push(`Strong uptrend (ADX ${adxVal.toFixed(0)}) — scaling in`); }
+    if (adxVal > 25 && regime === 'trending_down') { score -= 0.35; confluenceBearish++; indicators_used.push('adx_trend'); reasons.push(`Strong downtrend (ADX ${adxVal.toFixed(0)}) — short allocation`); }
+    // Sector rotation — relative strength via RSI + momentum
+    if (rsiVal > 55 && rsiVal < 75 && mom > 0 && mom10 > 0) {
+      score += 0.25; confluenceBullish++; reasons.push('Relative strength — sector rotation long');
+    }
+    if (rsiVal < 45 && rsiVal > 25 && mom < 0 && mom10 < 0) {
+      score -= 0.25; confluenceBearish++; reasons.push('Relative weakness — sector rotation short');
+    }
+    // Breakout from Bollinger squeeze — expansion play
+    if (bbPercentB > 0.9 && vol < 0.2 && adxVal < 20) {
+      score += 0.2; confluenceBullish++; indicators_used.push('bb_squeeze'); reasons.push('BB squeeze breakout — expansion trade');
+    }
+    // VWAP confluence for index/ETF entries
+    if (typeof vwapDev !== 'undefined') {
+      if (vwapDev > 0 && vwapDev < 0.02 && mom > 0) { score += 0.15; confluenceBullish++; reasons.push('Above VWAP with momentum — institutional flow'); }
+      if (vwapDev < 0 && vwapDev > -0.02 && mom < 0) { score -= 0.15; confluenceBearish++; reasons.push('Below VWAP with neg momentum — distribution'); }
+    }
+    // Index futures (ES=F, NQ=F, YM=F) — follow regime with larger conviction
+    const indexFutures = ['ES=F', 'NQ=F', 'YM=F'];
+    if (indexFutures.includes(symbol)) {
+      if (regime === 'trending_up' && mom > 0) { score += 0.2; confluenceBullish++; reasons.push('Index futures + bullish regime — scaling'); }
+      if (regime === 'trending_down' && mom < 0) { score -= 0.2; confluenceBearish++; reasons.push('Index futures + bearish regime — short scale'); }
+    }
+    // OBV trend confirmation for position scaling decisions
+    if (obvTrend > 0 && regime === 'trending_up') { score += 0.15; confluenceBullish++; indicators_used.push('obv_scale'); reasons.push('OBV confirming uptrend — scaling conviction'); }
+    if (obvTrend < 0 && regime === 'trending_down') { score -= 0.15; confluenceBearish++; indicators_used.push('obv_scale'); reasons.push('OBV confirming downtrend — short conviction'); }
   }
 
   // ─── MULTI-TIMEFRAME ALIGNMENT ───
@@ -5711,8 +5781,11 @@ function runAllAgents(userId, fundData) {
     openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
   }
 
-  // ─── PHASE 2: Signal generation from all agents ───
-  const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+  // ─── PHASE 2: Signal generation from ALL agents ───
+  // Sentinel (RISK_MANAGER) and Titan (POSITION_SIZER) now generate signals alongside their management roles.
+  // Previously excluded via isRiskManager/isPositionManager flags — caused 24 symbols to go completely untraded.
+  // Warden (isIntegrityAgent) is the only non-trading agent.
+  const signalAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
   const allSignals = [];
   const heldSymbols = new Set(openPositions.map(p => p.symbol));
 
