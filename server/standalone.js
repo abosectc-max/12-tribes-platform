@@ -3927,9 +3927,25 @@ async function cloudSyncPush() {
 
   try {
     const https = await import('node:https');
+    const zlib = await import('node:zlib');
+    const { promisify } = await import('node:util');
+    const gzip = promisify(zlib.gzip);
+
     const snapshot = buildCloudSnapshot();
-    const payload = JSON.stringify(snapshot);
+    const rawJson = JSON.stringify(snapshot);
+    const rawSizeKB = (Buffer.byteLength(rawJson) / 1024).toFixed(1);
+
+    // Gzip compress + base64 encode to fit within jsonblob 1MB limit
+    const compressed = await gzip(Buffer.from(rawJson, 'utf8'));
+    const b64 = compressed.toString('base64');
+    const envelope = JSON.stringify({
+      _compressed: true,
+      _meta: snapshot._meta,
+      _gz: b64,
+    });
+    const payload = envelope;
     const sizeKB = (Buffer.byteLength(payload) / 1024).toFixed(1);
+    console.log(`[CLOUD-SYNC] Compressed: ${rawSizeKB}KB → ${sizeKB}KB (gzip+base64)`);
     const backend = getCloudBackendConfig(payload);
 
     return new Promise((resolve) => {
@@ -3992,7 +4008,25 @@ async function cloudSyncPull() {
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             try {
-              const snapshot = backend.parseResponse(body);
+              let snapshot = backend.parseResponse(body);
+
+              // Decompress if stored as gzip+base64 envelope
+              if (snapshot?._compressed && snapshot?._gz) {
+                try {
+                  const zlib = require('node:zlib');
+                  const { promisify } = require('node:util');
+                  const gunzip = promisify(zlib.gunzip);
+                  const compressed = Buffer.from(snapshot._gz, 'base64');
+                  const decompressed = await gunzip(compressed);
+                  snapshot = JSON.parse(decompressed.toString('utf8'));
+                  console.log(`[CLOUD-SYNC] Decompressed snapshot from gzip+base64`);
+                } catch (decErr) {
+                  console.error(`[CLOUD-SYNC] ❌ Decompression failed: ${decErr.message}`);
+                  resolve(null);
+                  return;
+                }
+              }
+
               if (snapshot?._meta?.type === 'CLOUD_SYNC_SNAPSHOT') {
                 const tables = Object.keys(snapshot._meta.tableManifest || {}).length;
                 const records = Object.values(snapshot._meta.tableManifest || {}).reduce((a, b) => a + b, 0);
