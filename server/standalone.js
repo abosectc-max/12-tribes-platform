@@ -8252,6 +8252,15 @@ function ensureAutoTradingActive() {
       db._save('wallets');
     }
 
+    // Reset peak_equity on boot — ephemeral storage means old peaks are stale
+    // and would cause false drawdown kills (peak from old session vs current equity)
+    if (wallet.peak_equity && wallet.peak_equity > wallet.equity * 1.15) {
+      const oldPeak = wallet.peak_equity;
+      wallet.peak_equity = wallet.equity;
+      db._save('wallets');
+      console.log(`[Boot] Reset stale peak_equity for user ${user.id}: $${Math.round(oldPeak)} → $${Math.round(wallet.equity)} (was ${(((oldPeak - wallet.equity) / oldPeak) * 100).toFixed(1)}% above current equity)`);
+    }
+
     // Reset kill switch on boot — allows trading to resume after restart
     if (wallet.kill_switch_active) {
       wallet.kill_switch_active = false;
