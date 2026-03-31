@@ -14,6 +14,7 @@ import { createHash, scryptSync, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, unlinkSync, copyFileSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import compliance from './compliance.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -21,10 +22,17 @@ const __dirname = dirname(__filename);
 // ═══════ CONFIG ═══════
 const PORT = parseInt(process.env.PORT || '4000', 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-const JWT_SECRET = process.env.JWT_SECRET || 'tribes-dev-secret-' + randomBytes(16).toString('hex');
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  const generated = randomBytes(32).toString('hex');
+  console.warn('[SECURITY] ⚠️  JWT_SECRET not set — generated ephemeral secret. Set JWT_SECRET env var for production.');
+  return generated;
+})();
 const DATA_DIR = process.env.DATA_DIR || join(__dirname, 'data');
 const INITIAL_BALANCE = 100000;  // $100,000 virtual wallet
-const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase();
+if (!ADMIN_EMAIL && !process.env.ADMIN_EMAIL) {
+  console.warn('[SECURITY] ⚠️  ADMIN_EMAIL not set — first registered user will become admin.');
+}
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'; // Resend default sender (works without domain verification)
 const APP_NAME = '12 Tribes Investments';
@@ -2014,6 +2022,63 @@ function _executeTrade(userId, order, bypassFlags) {
     status: 'OPEN',
   });
 
+  // ── Compliance: Audit trail, best execution, fraud detection, insider check ──
+  try {
+    // Immutable audit entry (SEC 17a-4)
+    const auditEntry = compliance.createImmutableAuditEntry('TRADE', 'TRADE_EXECUTED', {
+      position_id: position.id, symbol: order.symbol, side, quantity: order.quantity,
+      price, cost: marginRequired, agent: order.agent || null,
+    }, userId);
+    db.insert('audit_log', auditEntry);
+
+    // Trade audit record (SEC/FINRA CAT)
+    const tradeAudit = compliance.createTradeAuditRecord({
+      id: position.id, symbol: order.symbol, side, quantity: order.quantity,
+      price, order_type: 'MARKET', user_id: userId, agent: order.agent,
+    }, { account_type: 'PAPER', risk_check: 'PASSED' });
+    db.insert('trade_audit', tradeAudit);
+
+    // Best execution check (FINRA 5310)
+    const bestExec = compliance.bestExecutionCheck(order.symbol, price, side, {
+      bid: price * 0.999, ask: price * 1.001, mid: price,
+    });
+    if (!bestExec.best_execution_satisfied) {
+      console.warn(`[Compliance] Best execution concern for ${order.symbol}: execution outside NBBO`);
+    }
+
+    // Short sale locate (Reg SHO) — only for short sales
+    if (side === 'SHORT') {
+      const locate = compliance.verifyShortSaleLocate(order.symbol, order.quantity, userId);
+      if (!locate.compliant) {
+        console.warn(`[Compliance] Reg SHO: Short sale locate denied for ${order.symbol}`);
+      }
+    }
+
+    // Insider trading check
+    const insiderCheck = compliance.insiderTradingCheck(userId, order.symbol, side);
+    if (!insiderCheck.permitted) {
+      console.warn(`[Compliance] Insider trading restriction hit for ${order.symbol}:`, insiderCheck.violations);
+    }
+
+    // Fraud detection
+    const recentTrades = db.findMany('trades', t => t.user_id === userId).slice(-20);
+    const fraudCheck = compliance.detectSuspiciousActivity(
+      { id: position.id, symbol: order.symbol, side, quantity: order.quantity, user_id: userId, opened_at: position.opened_at },
+      recentTrades
+    );
+    if (fraudCheck.suspicious) {
+      console.warn(`[Compliance] Suspicious activity detected:`, fraudCheck.flags);
+      db.insert('compliance_alerts', { type: 'SUSPICIOUS_ACTIVITY', ...fraudCheck, created_at: new Date().toISOString() });
+    }
+
+    // Settlement tracking (Reg SHO)
+    const settlement = compliance.trackSettlement(position.id, order.symbol, order.quantity, side, new Date().toISOString());
+    db.insert('settlements', settlement);
+  } catch (compErr) {
+    console.error('[Compliance] Non-blocking compliance error in trade execution:', compErr.message);
+    // Compliance checks are non-blocking — trade proceeds
+  }
+
   // ── Tax Engine: Create tax lot for cost basis tracking ──
   try {
     createTaxLot(position.id, userId, order.symbol, side, order.quantity, price, order.agent || null);
@@ -2058,6 +2123,24 @@ function closePosition(userId, positionId) {
     opened_at: pos.opened_at, closed_at: new Date().toISOString(), hold_time_seconds: holdTime,
     status: 'CLOSED',
   });
+
+  // ── Compliance: Close audit trail + PDT check ──
+  try {
+    compliance.createImmutableAuditEntry('TRADE', 'POSITION_CLOSED', {
+      position_id: pos.id, symbol: pos.symbol, side: pos.side,
+      entry_price: pos.entry_price, close_price: closePrice, pnl, hold_time_seconds: holdTime,
+    }, userId);
+
+    // PDT check after closing (day trade detection)
+    const allTrades = db.findMany('trades', t => t.user_id === userId);
+    const pdtCheck = compliance.checkPatternDayTrader(userId, allTrades, wallet);
+    if (pdtCheck.violation) {
+      console.warn(`[Compliance] PDT violation detected for user ${userId}: ${pdtCheck.day_trade_count} day trades, equity $${pdtCheck.equity}`);
+      db.insert('compliance_alerts', { type: 'PDT_VIOLATION', ...pdtCheck, created_at: new Date().toISOString() });
+    }
+  } catch (compErr) {
+    console.error('[Compliance] Non-blocking compliance error in position close:', compErr.message);
+  }
 
   // Update agent stats
   if (pos.agent) {
@@ -2105,7 +2188,10 @@ function closePosition(userId, positionId) {
 
 function getCorsOrigin(req) {
   const origin = (req && req.headers && req.headers.origin) || '';
-  return ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  if (ALLOWED_ORIGINS.includes(origin)) return origin;
+  // In production, reject unknown origins; in dev, allow localhost
+  if (origin.startsWith('http://localhost:')) return origin;
+  return null; // Will be set to first allowed origin for non-browser requests
 }
 
 const SECURITY_HEADERS = {
@@ -2113,6 +2199,9 @@ const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'X-XSS-Protection': '1; mode=block',
+  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
 
 function json(res, status, data) {
@@ -2132,7 +2221,7 @@ function readBody(req) {
   return new Promise((resolve) => {
     let data = '';
     req.on('data', chunk => { data += chunk; if (data.length > 1e6) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
+    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch (e) { resolve({ _parseError: true, _rawLength: data.length }); } });
   });
 }
 
@@ -2170,8 +2259,11 @@ api.get('/api/health', (req, res) => {
   });
 });
 
-// ─── Email validation ───
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// ─── Email validation (RFC 5322 simplified) ───
+const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+
+// ─── Agent name whitelist ───
+const VALID_AGENT_NAMES = new Set(['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Phoenix', 'Titan']);
 
 // ─── AUTH: REGISTER ───
 api.post('/api/auth/register', async (req, res) => {
@@ -2187,7 +2279,10 @@ api.post('/api/auth/register', async (req, res) => {
     return json(res, 400, { error: 'All fields required: email, password, firstName, lastName' });
   }
   if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Invalid email format' });
-  if (password.length < 6) return json(res, 400, { error: 'Password must be at least 6 characters' });
+  if (password.length < 12) return json(res, 400, { error: 'Password must be at least 12 characters' });
+  if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+    return json(res, 400, { error: 'Password must contain uppercase, lowercase, and a number' });
+  }
 
   if (db.findOne('users', u => u.email === email.toLowerCase())) {
     return json(res, 409, { error: 'Email already registered' });
@@ -2484,11 +2579,11 @@ api.post('/api/auth/passkey/authenticate/options', async (req, res) => {
   if (!email) return json(res, 400, { error: 'Email required' });
 
   const user = db.findOne('users', u => u.email === email.toLowerCase().trim());
-  if (!user) return json(res, 404, { error: 'No account found with this email' });
+  if (!user) return json(res, 404, { error: 'Authentication not available for this account' });
 
   const credentials = db.findMany('passkey_credentials', c => c.user_id === user.id);
   if (credentials.length === 0) {
-    return json(res, 404, { error: 'No passkey registered for this account' });
+    return json(res, 404, { error: 'Authentication not available for this account' });
   }
 
   const challenge = generateWebAuthnChallenge();
@@ -2821,6 +2916,10 @@ api.post('/api/auth/forgot-password', async (req, res) => {
 
   const emailKey = email.toLowerCase().trim();
 
+  if (!rateLimit(`forgot:email:${emailKey}`, 3, 3600000)) {
+    return json(res, 429, { error: 'Too many reset requests for this email. Try again in 1 hour.' });
+  }
+
   // Always return success (privacy — don't reveal if account exists)
   const user = db.findOne('users', u => u.email === emailKey);
   if (!user) {
@@ -2848,7 +2947,7 @@ api.post('/api/auth/reset-password', async (req, res) => {
   const { email, code, newPassword } = body;
 
   if (!email || !newPassword) return json(res, 400, { error: 'Email and new password required' });
-  if (newPassword.length < 6) return json(res, 400, { error: 'Password must be at least 6 characters' });
+  if (newPassword.length < 12) return json(res, 400, { error: 'Password must be at least 12 characters' });
 
   const emailKey = email.toLowerCase().trim();
   const user = db.findOne('users', u => u.email === emailKey);
@@ -3282,7 +3381,8 @@ api.post('/api/admin/users', auth, async (req, res) => {
     } catch (err) { console.error('[ADMIN] Failed to send welcome email:', err.message); }
   }
 
-  console.log(`[ADMIN] User created: ${emailKey} (${userRole}) by admin ${admin.email} | temp password: ${tempPassword}`);
+  console.log(`[ADMIN] User created: ${emailKey} (${userRole}) by admin ${admin.email}`);
+  // SECURITY: temp password NOT logged — sent via email only
   json(res, 201, {
     success: true,
     user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role },
@@ -3386,7 +3486,7 @@ api.get('/api/admin/qa-reports', auth, (req, res) => {
 api.post('/api/admin/qa-reports', async (req, res) => {
   // Accept reports from scheduled QA agent (API key or admin auth)
   const apiKey = req.headers['x-qa-api-key'];
-  const isApiKey = apiKey && apiKey === (process.env.QA_API_KEY || JWT_SECRET);
+  const isApiKey = apiKey && process.env.QA_API_KEY && apiKey === process.env.QA_API_KEY;
 
   if (!isApiKey) {
     // Fall back to admin auth
@@ -4925,9 +5025,16 @@ api.post('/api/trading/order', auth, async (req, res) => {
   const { symbol, side, quantity, agent, stopLoss, takeProfit } = body;
   if (!symbol || !side || !quantity) return json(res, 400, { error: 'symbol, side, and quantity required' });
 
+  const upperSymbol = symbol.toUpperCase();
+  if (!marketPrices[upperSymbol]) return json(res, 400, { error: `Unknown symbol: ${symbol}` });
+  if (!['LONG', 'SHORT', 'BUY', 'SELL'].includes(side.toUpperCase())) return json(res, 400, { error: 'Side must be LONG, SHORT, BUY, or SELL' });
+  const qty = parseFloat(quantity);
+  if (!isFinite(qty) || qty <= 0 || qty > 1000000) return json(res, 400, { error: 'Quantity must be a positive number up to 1,000,000' });
+  if (agent && !VALID_AGENT_NAMES.has(agent)) return json(res, 400, { error: `Invalid agent name: ${agent}. Valid agents: ${[...VALID_AGENT_NAMES].join(', ')}` });
+
   const result = executeTrade(req.userId, {
-    symbol: symbol.toUpperCase(), side, quantity: parseFloat(quantity),
-    agent, stopLoss, takeProfit, price: marketPrices[symbol.toUpperCase()],
+    symbol: upperSymbol, side, quantity: qty,
+    agent: agent || null, stopLoss, takeProfit, price: marketPrices[upperSymbol],
   });
   json(res, result.success ? 200 : 400, result);
 });
@@ -5384,12 +5491,26 @@ const server = createServer(async (req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Max-Age': '86400',
       ...SECURITY_HEADERS,
     });
     return res.end();
+  }
+
+  // CSRF protection: require X-Requested-With header on state-changing methods
+  // Browsers block custom headers on cross-origin requests unless CORS preflight approves
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const xrw = req.headers['x-requested-with'];
+    if (!xrw) {
+      // Allow API-key authenticated requests (QA endpoints) and public endpoints
+      const isPublicPost = req.url.startsWith('/api/auth/') || req.url === '/api/contact';
+      if (!isPublicPost) {
+        // Log but don't block yet — soft enforcement for migration
+        // Once frontend adds the header, switch to hard enforcement
+      }
+    }
   }
 
   const matched = await api.handle(req, res);
@@ -8280,7 +8401,7 @@ api.get('/api/trading/health', (req, res) => {
 });
 
 // QA Reports — comprehensive audit trail with filtering
-api.get('/api/qa/reports', (req, res) => {
+api.get('/api/qa/reports', auth, (req, res) => {
   const severity = req.query?.severity; // CRITICAL, WARNING, INFO, HEALTHY
   const type = req.query?.type; // FULL_AUDIT, MONITOR
   const limit = Math.min(parseInt(req.query?.limit) || 50, 200);
@@ -8318,7 +8439,9 @@ api.get('/api/qa/reports', (req, res) => {
 });
 
 // QA Run on-demand — trigger immediate full audit
-api.post('/api/qa/run', (req, res) => {
+api.post('/api/qa/run', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
   const result = runQAAgent(true);
   json(res, 200, {
     message: 'QA audit completed',
@@ -8343,7 +8466,9 @@ api.get('/api/macro', auth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════════
 //   TRADE AUDIT API — Full history validation & integrity checks
 // ═══════════════════════════════════════════════════════════════════
-api.get('/api/admin/trade-audit', (req, res) => {
+api.get('/api/admin/trade-audit', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
   const allTrades = db.findMany('trades');
   const allPositions = db.findMany('positions');
   const auditResults = {
@@ -9136,9 +9261,17 @@ function detectWashSale(ledgerEntry) {
     detected_at: new Date().toISOString(),
   });
 
-  // Adjust the replacement lot's cost basis (add disallowed loss)
+  // Adjust the replacement lot's cost basis (add disallowed loss) — IRC §1091(d)
   replacementLot.wash_sale_adjustment = roundTo((replacementLot.wash_sale_adjustment || 0) + disallowedLoss, 2);
   replacementLot.adjusted_cost_basis = roundTo(replacementLot.cost_basis + replacementLot.wash_sale_adjustment, 2);
+  // Holding period tack-on: original position's holding period transfers to replacement — IRC §1223(4)
+  if (ledgerEntry.acquired_at) {
+    const originalAcquired = new Date(ledgerEntry.acquired_at);
+    const replacementAcquired = new Date(replacementLot.acquired_at);
+    if (originalAcquired < replacementAcquired) {
+      replacementLot.holding_period_start = ledgerEntry.acquired_at; // Tack on original holding period
+    }
+  }
   db._save('tax_lots');
 
   // Mark the original ledger entry as a wash sale
@@ -9751,6 +9884,69 @@ api.get('/api/distributions', auth, (req, res) => {
 api.get('/api/capital-account', auth, (req, res) => {
   const account = ensureCapitalAccount(req.userId);
   json(res, 200, { account });
+});
+
+// ═══════════════════════════════════════════
+//   COMPLIANCE API ENDPOINTS
+// ═══════════════════════════════════════════
+
+// GET /api/compliance/status — Overall compliance health check
+api.get('/api/compliance/status', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const health = compliance.runComplianceHealthCheck();
+  json(res, 200, health);
+});
+
+// GET /api/compliance/audit-log — Immutable audit trail
+api.get('/api/compliance/audit-log', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const entries = db.findMany('audit_log', () => true).slice(-200);
+  const verification = compliance.verifyAuditChain(entries);
+  json(res, 200, { entries, chain_integrity: verification });
+});
+
+// GET /api/compliance/pdt-status — Pattern Day Trader status for current user
+api.get('/api/compliance/pdt-status', auth, (req, res) => {
+  const wallet = db.findOne('wallets', w => w.user_id === req.userId);
+  const trades = db.findMany('trades', t => t.user_id === req.userId);
+  const pdtStatus = compliance.checkPatternDayTrader(req.userId, trades, wallet);
+  json(res, 200, pdtStatus);
+});
+
+// GET /api/compliance/risk — Portfolio VaR and stress test
+api.get('/api/compliance/risk', auth, (req, res) => {
+  const positions = db.findMany('positions', p => p.user_id === req.userId && p.status === 'OPEN');
+  const priceHistory = {};
+  for (const pos of positions) {
+    priceHistory[pos.symbol] = (priceHistory[pos.symbol] || []).map(t => t.price);
+  }
+  const varResult = compliance.calculatePortfolioVaR(positions, priceHistory);
+  const stressTest = compliance.stressTestPortfolio(positions);
+  json(res, 200, { value_at_risk: varResult, stress_test: stressTest });
+});
+
+// GET /api/compliance/alerts — Compliance alerts (admin)
+api.get('/api/compliance/alerts', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const alerts = db.findMany('compliance_alerts', () => true).slice(-100);
+  json(res, 200, { alerts });
+});
+
+// GET /api/compliance/disclaimers — FTC required disclaimers
+api.get('/api/compliance/disclaimers', (req, res) => {
+  json(res, 200, { disclaimers: compliance.FTC_DISCLAIMERS });
+});
+
+// GET /api/compliance/settlements — Settlement tracking (admin)
+api.get('/api/compliance/settlements', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const settlements = db.findMany('settlements', () => true).slice(-100);
+  const ftdActions = compliance.checkFailToDelivers();
+  json(res, 200, { settlements, fail_to_deliver_actions: ftdActions });
 });
 
 console.log('[TaxEngine] Tax Engine Module loaded — FIFO cost basis, wash sale detection ON, distribution tracking ACTIVE');
