@@ -925,7 +925,14 @@ function updateMacroIntel() {
     // VIX proxy: SPY realized vol annualized + UVXY premium
     const annualizedVol = spyVol * Math.sqrt(252) * 100;
     const uvxyPremium = ((uvxyPrice / uvxyAnchor) - 1) * 15;
-    macroIntel.vix.value = Math.max(9, Math.min(80, annualizedVol * 0.7 + uvxyPremium + 12 + (Math.random() - 0.5) * 2));
+    let rawVix = annualizedVol * 0.7 + uvxyPremium + 12 + (Math.random() - 0.5) * 2;
+    // When running on simulated prices (0 real symbols from Yahoo), cap VIX to normal range
+    // Simulated random-walk volatility inflates VIX to crisis levels, which halves all long signals
+    const realSymbolCount = Object.keys(REAL_PRICE_CACHE).length;
+    if (realSymbolCount === 0 && rawVix > 24) {
+      rawVix = 16 + Math.random() * 6; // 16-22 range = normal market conditions
+    }
+    macroIntel.vix.value = Math.max(9, Math.min(80, rawVix));
     macroIntel.vix.regime = macroIntel.vix.value > 30 ? 'crisis' : macroIntel.vix.value > 25 ? 'elevated' : macroIntel.vix.value > 18 ? 'normal' : 'complacent';
     macroIntel.vix.lastUpdated = Date.now();
   }
@@ -5276,6 +5283,32 @@ server.on('upgrade', (req, socket, head) => {
   }
 });
 
+// ─── SEED PRICE HISTORY on boot ───
+// Pre-populate 50 ticks of synthetic history so signals can fire immediately
+// Without this, agents wait 60+ seconds (30 ticks × 2s) to get enough data
+(function seedPriceHistory() {
+  const seedTicks = 50; // Enough for 30-bar indicators + buffer
+  console.log(`[Market Data] Seeding ${seedTicks} ticks of price history for ${Object.keys(marketPrices).length} symbols...`);
+  for (let i = 0; i < seedTicks; i++) {
+    for (const symbol of Object.keys(marketPrices)) {
+      const price = marketPrices[symbol];
+      const isCash = ['BIL','SHV','SGOV'].includes(symbol);
+      const isFx = symbol.includes('/');
+      const isCrypto = ['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(symbol);
+      const baseVol = isCash ? 0.0001 : isFx ? 0.0008 : isCrypto ? 0.004 : 0.002;
+      const noise = (Math.random() - 0.5) * baseVol;
+      const seedPrice = price * (1 + noise);
+      if (!priceHistory[symbol]) priceHistory[symbol] = [];
+      priceHistory[symbol].push(seedPrice);
+    }
+  }
+  // Set initial regimes
+  for (const symbol of Object.keys(marketPrices)) {
+    symbolRegimes[symbol] = detectRegime(priceHistory[symbol]);
+  }
+  console.log(`[Market Data] ✅ Price history seeded — ${Object.keys(priceHistory).length} symbols with ${seedTicks} ticks each`);
+})();
+
 // Price tick engine — every 2 seconds
 const priceInterval = setInterval(() => {
   tickPrices();
@@ -5666,26 +5699,34 @@ function updateCircuitBreaker(agentName, pnl) {
   let shouldTrip = false;
   let reason = '';
 
-  // Condition 1: 4+ consecutive losses (RELAXED from 2 — agents need room to calibrate)
-  if (cb.consecutiveLosses >= 4) {
+  // When running on 100% simulated data, use relaxed thresholds — simulated volatility
+  // causes artificial losing streaks that permanently stall the trading engine
+  const isSimulated = Object.keys(REAL_PRICE_CACHE).length === 0;
+  const lossThreshold = isSimulated ? 8 : 4;   // More runway on simulated data
+  const ddThreshold = isSimulated ? 8000 : 3000;
+  const wrThreshold = isSimulated ? 0.20 : 0.35;
+  const wrMinTrades = isSimulated ? 15 : 8;
+
+  // Condition 1: Consecutive losses
+  if (cb.consecutiveLosses >= lossThreshold) {
     shouldTrip = true;
     reason = `${cb.consecutiveLosses} consecutive losses — safety halt`;
   }
 
-  // Condition 2: Drawdown from peak exceeds $3k (RELAXED from $1.5k)
-  if (cb.drawdownFromPeak > 3000) {
+  // Condition 2: Drawdown from peak
+  if (cb.drawdownFromPeak > ddThreshold) {
     shouldTrip = true;
     reason = `Drawdown $${cb.drawdownFromPeak.toFixed(0)} from peak — capital preservation`;
   }
 
-  // Condition 3: Recent win rate below 35% over last 8+ trades (RELAXED from <50%/5 trades)
+  // Condition 3: Recent win rate below threshold
   const ap = getAgentPerf(agentName);
   const recentPnl = (ap.recentPnl || []).slice(-10);
-  if (recentPnl.length >= 8) {
+  if (recentPnl.length >= wrMinTrades) {
     const recentWinRate = recentPnl.filter(p => p >= 0).length / recentPnl.length;
-    if (recentWinRate < 0.35) {
+    if (recentWinRate < wrThreshold) {
       shouldTrip = true;
-      reason = `Win rate ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades — below 35% threshold`;
+      reason = `Win rate ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades — below ${(wrThreshold*100).toFixed(0)}% threshold`;
     }
   }
 
@@ -6417,11 +6458,12 @@ function runAllAgents(userId, fundData) {
     const agentPerf = getAgentPerf(agent.name);
 
     // ─── WIN-RATE GATE: Block agents with poor recent performance ───
+    // Require 20+ trades (not 6) before enforcing — small samples are noise, especially on simulated data
     const totalAgentTrades = agentPerf.wins + agentPerf.losses;
-    if (totalAgentTrades >= 6) {
+    if (totalAgentTrades >= 20) {
       const agentWinRate = agentPerf.wins / totalAgentTrades;
-      if (agentWinRate < (AUTO_TRADE_CONFIG.minWinRateForTrading || 0.40)) {
-        if (autoTradeTickCount % 30 === 1) console.log(`[AutoTrader] Agent ${agent.name} benched — win rate ${(agentWinRate*100).toFixed(0)}% < ${((AUTO_TRADE_CONFIG.minWinRateForTrading||0.40)*100).toFixed(0)}% minimum`);
+      if (agentWinRate < (AUTO_TRADE_CONFIG.minWinRateForTrading || 0.35)) {
+        if (autoTradeTickCount % 30 === 1) console.log(`[AutoTrader] Agent ${agent.name} benched — win rate ${(agentWinRate*100).toFixed(0)}% < ${((AUTO_TRADE_CONFIG.minWinRateForTrading||0.35)*100).toFixed(0)}% minimum (${totalAgentTrades} trades)`);
         continue; // Skip this agent entirely until win rate recovers
       }
     }
@@ -6453,10 +6495,19 @@ function runAllAgents(userId, fundData) {
     }
   }
 
-  // Log signal generation on first 3 ticks for diagnostics
-  if (autoTradeTickCount <= 3) {
-    console.log(`[AutoTrader] User ${userId}: ${allSignals.length} signals generated, ${openPositions.length} open positions`);
+  // Log signal generation — first 10 ticks detailed, then every 30th tick summary
+  if (autoTradeTickCount <= 10 || autoTradeTickCount % 30 === 1) {
+    console.log(`[AutoTrader] User ${userId}: ${allSignals.length} signals generated, ${openPositions.length} open positions, VIX=${macroIntel.vix.value.toFixed(1)} (${macroIntel.vix.regime}), realPrices=${Object.keys(REAL_PRICE_CACHE).length}`);
     allSignals.forEach(s => console.log(`  → ${s.agent} ${s.symbol}: raw=${s.score.toFixed(3)} adj=${s.adjustedScore.toFixed(3)} conf=${s.confluence}`));
+    if (allSignals.length === 0) {
+      const agentStatuses = signalAgents.map(a => {
+        const perf = getAgentPerf(a.name);
+        const cb = getCircuitBreaker(a.name);
+        const trades = perf.wins + perf.losses;
+        return `${a.name}: ${trades}t/${perf.wins}w/${perf.losses}l CB=${cb.tripped}`;
+      });
+      console.log(`[AutoTrader] 0 signals — agent status: ${agentStatuses.join(' | ')}`);
+    }
   }
 
   // ─── PHASE 3: Rank signals by strength, execute top opportunities ───
