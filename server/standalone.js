@@ -3803,15 +3803,28 @@ async function ensureCloudBin() {
 }
 
 // Tables that MUST survive deploys — all investor-critical data
+// ── ESSENTIAL tables: Investor data that CANNOT be recreated after a redeploy ──
+// These hold real account state: balances, positions, trade history, tax records
 const CLOUD_SYNC_TABLES = [
-  'users', 'wallets', 'positions', 'trades', 'snapshots',
-  'agent_stats', 'fund_settings', 'auto_trade_log',
-  'signals', 'risk_events', 'order_queue',
+  'users', 'wallets', 'positions', 'trades',
+  'fund_settings', 'agent_stats',
   'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
-  'distributions', 'capital_accounts', 'trade_flags',
+  'distributions', 'capital_accounts',
   'broker_connections', 'withdrawal_requests', 'passkey_credentials',
-  'feedback', 'qa_reports', 'access_requests', 'system_config',
+  'system_config',
 ];
+// NOTE: Excluded high-volume operational tables that get regenerated each boot:
+//   snapshots, auto_trade_log, signals, risk_events, order_queue,
+//   trade_flags, feedback, qa_reports, access_requests
+// These were causing 21MB+ snapshots exceeding jsonblob.com 1MB free limit.
+
+// Row limits per table to keep snapshot compact (newest rows kept)
+const CLOUD_SYNC_ROW_LIMITS = {
+  trades: 2000,       // Keep last 2000 trades per table
+  tax_ledger: 2000,
+  tax_lots: 2000,
+  agent_stats: 500,
+};
 
 let lastCloudSyncTime = null;
 let cloudSyncInProgress = false;
@@ -3833,8 +3846,13 @@ function buildCloudSnapshot() {
   };
 
   for (const table of CLOUD_SYNC_TABLES) {
-    const rows = db.tables[table] || [];
+    let rows = db.tables[table] || [];
     if (rows.length > 0) {
+      // Apply row limits to keep snapshot compact
+      const limit = CLOUD_SYNC_ROW_LIMITS[table];
+      if (limit && rows.length > limit) {
+        rows = rows.slice(-limit); // Keep newest rows
+      }
       snapshot.data[table] = rows;
       snapshot._meta.tableManifest[table] = rows.length;
     }
