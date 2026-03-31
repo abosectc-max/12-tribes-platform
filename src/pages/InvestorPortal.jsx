@@ -48,6 +48,49 @@ const inputStyle = {
 
 const focusGlow = "0 0 0 3px rgba(0,212,255,0.15)";
 
+// ═══════ HAPTIC FEEDBACK ENGINE ═══════
+// Uses Vibration API (Android/Chrome) with graceful fallback
+const haptics = {
+  _vibrate(pattern) {
+    try { if (navigator.vibrate) navigator.vibrate(pattern); } catch {}
+  },
+  light()   { this._vibrate(10); },                     // Tab switch, minor action
+  medium()  { this._vibrate(20); },                     // Button press, confirm
+  heavy()   { this._vibrate([15, 30, 15]); },           // Important action (trade, submit)
+  success() { this._vibrate([10, 50, 20]); },           // Success feedback
+  error()   { this._vibrate([30, 50, 30, 50, 30]); },   // Error / warning
+  refresh() { this._vibrate([8, 40, 12]); },             // Pull-to-refresh feel
+  select()  { this._vibrate(6); },                       // Selection / toggle
+};
+
+// ═══════ REFRESH BUTTON COMPONENT ═══════
+function RefreshButton({ onRefresh, label = "Refresh", style = {} }) {
+  const [spinning, setSpinning] = useState(false);
+  const handleClick = async () => {
+    haptics.refresh();
+    setSpinning(true);
+    try { await Promise.resolve(onRefresh()); } catch {}
+    setTimeout(() => setSpinning(false), 600);
+  };
+  return (
+    <button onClick={handleClick} disabled={spinning} style={{
+      padding: '8px 18px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
+      background: spinning ? 'rgba(0,212,255,0.08)' : 'transparent',
+      color: spinning ? '#00D4FF' : 'rgba(255,255,255,0.5)',
+      fontSize: 12, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+      transition: 'all 0.2s', fontWeight: 500, ...style,
+    }}>
+      <span style={{
+        display: 'inline-block',
+        transition: 'transform 0.6s ease',
+        transform: spinning ? 'rotate(360deg)' : 'rotate(0deg)',
+        fontSize: 14,
+      }}>↻</span>
+      {label}
+    </button>
+  );
+}
+
 // Safe area helper — adds iOS notch/status bar padding in PWA standalone mode
 const safeAreaTop = "env(safe-area-inset-top, 0px)";
 const safeAreaBottom = "env(safe-area-inset-bottom, 0px)";
@@ -260,7 +303,8 @@ function LoginForm({ onAuth, onSwitch, isMobile }) {
   const [loading, setLoading] = useState(false);
 
   const handlePasskeyLogin = async () => {
-    if (!email.includes("@")) { setError("Enter your email first"); return; }
+    if (!email.includes("@")) { haptics.error(); setError("Enter your email first"); return; }
+    haptics.medium();
     setLoading(true); setError("");
     const result = await authenticateWithPasskey(email);
     setLoading(false);
@@ -273,19 +317,23 @@ function LoginForm({ onAuth, onSwitch, isMobile }) {
 
   const handleEmailLogin = async () => {
     setError("");
-    if (!email.includes("@")) { setError("Enter a valid email address"); return; }
-    if (!password) { setError("Enter your password"); return; }
+    if (!email.includes("@")) { haptics.error(); setError("Enter a valid email address"); return; }
+    if (!password) { haptics.error(); setError("Enter your password"); return; }
+    haptics.medium();
     setLoading(true);
     try {
       const result = await loginWithEmail(email, password);
       setLoading(false);
       if (result.success) {
+        haptics.success();
         onAuth(result.user);
       } else {
+        haptics.error();
         setError(result.error || 'Login failed. Please try again.');
       }
     } catch (err) {
       setLoading(false);
+      haptics.error();
       setError('Connection error. Please try again.');
       console.error('[Login] Unhandled error:', err);
     }
@@ -1106,7 +1154,7 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
             const active = activeTab === item.id;
             return (
               <button key={item.id}
-                onClick={() => { onTabChange(item.id); if (isMobile) onToggle(); }}
+                onClick={() => { haptics.light(); onTabChange(item.id); if (isMobile) onToggle(); }}
                 style={{
                   width: "100%", padding: "12px 16px", borderRadius: 14, border: "none",
                   cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
@@ -1159,7 +1207,7 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
 
         {/* Sign Out */}
         <div style={{ padding: "12px 12px 20px" }}>
-          <button onClick={onLogout}
+          <button onClick={() => { haptics.heavy(); onLogout(); }}
             style={{
               width: "100%", padding: "12px 16px", borderRadius: 14, cursor: "pointer",
               border: "1px solid rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)",
@@ -1199,32 +1247,31 @@ function SignalTracker({ investor, isMobile }) {
 
   const glass = { background: "rgba(255,255,255,0.03)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)" };
 
-  useEffect(() => {
-    const controller = new AbortController();
+  const safeFetch = useCallback((url) => {
     const timeout = (ms) => new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
-    const safeFetch = (url) => Promise.race([fetch(url, { headers, signal: controller.signal }), timeout(12000)]).catch(() => null);
+    return Promise.race([fetch(url, { headers }), timeout(12000)]).catch(() => null);
+  }, []);
 
-    const fetchAll = async () => {
-      // Fetch stats and signals first (fast), heatmap in background (heavy)
-      try {
-        const [statsRes, signalsRes] = await Promise.all([
-          safeFetch(`${API_BASE}/signals/stats`),
-          safeFetch(`${API_BASE}/signals?limit=100`),
-        ]);
-        if (statsRes?.ok) setStats(await statsRes.json());
-        if (signalsRes?.ok) { const d = await signalsRes.json(); setSignals(d.signals || []); }
-      } catch (e) { console.error('Signal fetch error:', e); }
-      setLoading(false);
+  const fetchAll = useCallback(async () => {
+    try {
+      const [statsRes, signalsRes] = await Promise.all([
+        safeFetch(`${API_BASE}/signals/stats`),
+        safeFetch(`${API_BASE}/signals?limit=100`),
+      ]);
+      if (statsRes?.ok) setStats(await statsRes.json());
+      if (signalsRes?.ok) { const d = await signalsRes.json(); setSignals(d.signals || []); }
+    } catch (e) { console.error('Signal fetch error:', e); }
+    setLoading(false);
+    try {
+      const heatmapRes = await safeFetch(`${API_BASE}/signals/heatmap`);
+      if (heatmapRes?.ok) setHeatmap(await heatmapRes.json());
+    } catch (e) { /* heatmap is non-critical */ }
+  }, []);
 
-      // Heatmap loaded separately — non-blocking
-      try {
-        const heatmapRes = await safeFetch(`${API_BASE}/signals/heatmap`);
-        if (heatmapRes?.ok) setHeatmap(await heatmapRes.json());
-      } catch (e) { /* heatmap is non-critical */ }
-    };
+  useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, 20000); // refresh every 20s
-    return () => { clearInterval(interval); controller.abort(); };
+    const interval = setInterval(fetchAll, 20000);
+    return () => { clearInterval(interval); };
   }, []);
 
   if (loading) return (
@@ -1252,14 +1299,15 @@ function SignalTracker({ investor, isMobile }) {
               {stats ? `${stats.total} signals tracked | ${stats.executed} executed | ${stats.winRate}% win rate` : 'Initializing...'}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {subTabs.map(t => (
-              <button key={t.id} onClick={() => setActiveSubTab(t.id)} style={{
+              <button key={t.id} onClick={() => { haptics.select(); setActiveSubTab(t.id); }} style={{
                 padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer",
                 background: activeSubTab === t.id ? "rgba(0,212,255,0.2)" : "rgba(255,255,255,0.05)",
                 color: activeSubTab === t.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
               }}>{t.label}</button>
             ))}
+            <RefreshButton onRefresh={fetchAll} />
           </div>
         </div>
       </div>
@@ -1534,21 +1582,22 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
   const [chartPeriod, setChartPeriod] = useState("monthly");
   const [serverPerf, setServerPerf] = useState(null);
 
-  // Fetch server-side performance data for accurate returns
+  const token = (() => { try { return localStorage.getItem('12tribes_auth_token') || ''; } catch { return ''; } })();
+  const apiBase = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    return `http://${window.location.hostname}:4000/api`;
+  })();
+
+  const fetchPerf = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBase}/wallet/performance?period=${chartPeriod}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (res.ok) setServerPerf(await res.json());
+    } catch {}
+  }, [chartPeriod]);
+
   useEffect(() => {
-    const token = (() => { try { return localStorage.getItem('12tribes_auth_token') || ''; } catch { return ''; } })();
-    const apiBase = (() => {
-      if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
-      return `http://${window.location.hostname}:4000/api`;
-    })();
-    const fetchPerf = async () => {
-      try {
-        const res = await fetch(`${apiBase}/wallet/performance?period=${chartPeriod}`, {
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
-        if (res.ok) setServerPerf(await res.json());
-      } catch {}
-    };
     fetchPerf();
     const interval = setInterval(fetchPerf, 30000);
     return () => clearInterval(interval);
@@ -1668,6 +1717,11 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+
+      {/* ─── HEADER WITH REFRESH ─── */}
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <RefreshButton onRefresh={fetchPerf} />
+      </div>
 
       {/* ─── PERIOD RETURN METERS ─── */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 14 }}>
@@ -2024,9 +2078,15 @@ function ResearchView({ isMobile }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* Search Header */}
       <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
-        <div style={{ fontSize: 18, fontWeight: 700, color: '#fff', marginBottom: 4 }}>Market Research</div>
-        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', marginBottom: 16 }}>
-          AI-powered technical analysis across stocks, crypto, forex, ETFs, futures, options & cash
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#fff', marginBottom: 4 }}>Market Research</div>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', marginBottom: 16 }}>
+              AI-powered technical analysis across stocks, crypto, forex, ETFs, futures, options & cash
+              {refreshError && <span style={{ color: '#EF4444', marginLeft: 8 }}>● Connection issue</span>}
+            </div>
+          </div>
+          {selectedSymbol && <RefreshButton onRefresh={() => handleSearch(selectedSymbol)} />}
         </div>
 
         {/* Search Bar */}
@@ -3210,7 +3270,7 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
             AI Agents Active
           </span>
         </div>
-        <button onClick={handleStop}
+        <button onClick={() => { haptics.heavy(); handleStop(); }}
           style={{
             padding: "8px 20px", borderRadius: 12, cursor: "pointer",
             border: "1px solid rgba(239,68,68,0.3)", background: "rgba(239,68,68,0.08)",
@@ -3223,7 +3283,7 @@ function TradingControlPanel({ investorId, wallet, isMobile, onTick }) {
       {/* Mode Toggle */}
       <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
         {["conservative", "balanced", "aggressive"].map(m => (
-          <button key={m} onClick={() => handleModeChange(m)}
+          <button key={m} onClick={() => { haptics.select(); handleModeChange(m); }}
             style={{
               padding: "6px 14px", borderRadius: 10, border: "none", cursor: "pointer",
               background: tradingMode === m ? "rgba(0,212,255,0.15)" : "rgba(255,255,255,0.04)",
@@ -3496,12 +3556,15 @@ function PortfolioDashboard({ investor, onLogout }) {
             </div>
           </div>
 
-          <div style={{
-            padding: "6px 14px", borderRadius: 10,
-            background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)",
-            fontSize: 11, fontWeight: 600, color: "#10B981",
-          }}>
-            ● Markets Open
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <RefreshButton label="Sync" onRefresh={() => syncFromServer(investor.id).then(() => setTick(t => t + 1))} />
+            <div style={{
+              padding: "6px 14px", borderRadius: 10,
+              background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)",
+              fontSize: 11, fontWeight: 600, color: "#10B981",
+            }}>
+              ● Markets Open
+            </div>
           </div>
         </div>
 
@@ -3854,6 +3917,7 @@ function TaxReportingView({ investor, wallet, isMobile }) {
             }}>
               {[2026, 2025, 2024].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
+            <RefreshButton onRefresh={fetchTaxData} />
             <button onClick={downloadCSV} style={{
               padding: "10px 20px", borderRadius: 14, border: "none", cursor: "pointer",
               background: "linear-gradient(135deg, #10B981, #059669)", color: "#fff",
@@ -4211,7 +4275,8 @@ function FeedbackView({ investor, isMobile }) {
   };
 
   const handleSubmit = async () => {
-    if (!message.trim()) { setError('Please enter your feedback'); return; }
+    if (!message.trim()) { haptics.error(); setError('Please enter your feedback'); return; }
+    haptics.heavy();
     setSubmitting(true);
     setError('');
     try {
@@ -4222,6 +4287,7 @@ function FeedbackView({ investor, isMobile }) {
       });
       const data = await r.json();
       if (r.ok) {
+        haptics.success();
         setSubmitted(true);
         setMessage('');
         setRating(0);
@@ -4229,9 +4295,10 @@ function FeedbackView({ investor, isMobile }) {
         fetchMyFeedback();
         setTimeout(() => setSubmitted(false), 4000);
       } else {
+        haptics.error();
         setError(data.error || 'Failed to submit feedback');
       }
-    } catch { setError('Network error. Please try again.'); }
+    } catch { haptics.error(); setError('Network error. Please try again.'); }
     setSubmitting(false);
   };
 
@@ -4340,7 +4407,10 @@ function FeedbackView({ investor, isMobile }) {
 
       {/* Previous Feedback */}
       <div style={{ ...glassStyle, padding: isMobile ? 20 : 28 }}>
-        <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Your Submissions</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Your Submissions</div>
+          <RefreshButton onRefresh={fetchMyFeedback} />
+        </div>
         {loadingHistory ? (
           <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, textAlign: "center", padding: 20 }}>Loading...</div>
         ) : myFeedback.length === 0 ? (
@@ -4429,11 +4499,13 @@ function SettingsView({ investor, isMobile }) {
   }, []);
 
   const handleRegisterPasskey = async () => {
+    haptics.medium();
     setPasskeyMsg(null);
     setPasskeyLoading(true);
     const result = await registerPasskey(investor.email);
     setPasskeyLoading(false);
     if (result.success) {
+      haptics.success();
       setPasskeyMsg({ type: "success", text: "Passkey created successfully! You can now sign in with biometrics." });
       setPasskeyHasKey(true);
       // Refresh credential list
@@ -4477,16 +4549,19 @@ function SettingsView({ investor, isMobile }) {
 
   const handlePasswordChange = async () => {
     setPwMsg(null);
-    if (!currentPw) { setPwMsg({ type: "error", text: "Enter your current password" }); return; }
-    if (newPw.length < 6) { setPwMsg({ type: "error", text: "New password must be at least 6 characters" }); return; }
-    if (newPw !== confirmPw) { setPwMsg({ type: "error", text: "Passwords do not match" }); return; }
+    if (!currentPw) { haptics.error(); setPwMsg({ type: "error", text: "Enter your current password" }); return; }
+    if (newPw.length < 6) { haptics.error(); setPwMsg({ type: "error", text: "New password must be at least 6 characters" }); return; }
+    if (newPw !== confirmPw) { haptics.error(); setPwMsg({ type: "error", text: "Passwords do not match" }); return; }
+    haptics.medium();
     setPwLoading(true);
     const result = await changePassword(investor.email, currentPw, newPw);
     setPwLoading(false);
     if (result.success) {
+      haptics.success();
       setPwMsg({ type: "success", text: "Password updated successfully" });
       setCurrentPw(""); setNewPw(""); setConfirmPw("");
     } else {
+      haptics.error();
       setPwMsg({ type: "error", text: result.error });
     }
   };
@@ -6200,11 +6275,7 @@ function AdminPanel({ investor, isMobile }) {
 
       {/* Refresh Button */}
       <div style={{ textAlign: 'center', marginTop: 24 }}>
-        <button onClick={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); }} style={{
-          padding: '10px 24px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)',
-          background: 'transparent', color: 'rgba(255,255,255,0.5)',
-          fontSize: 13, cursor: 'pointer',
-        }}>Refresh</button>
+        <RefreshButton label="Refresh All" onRefresh={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); }} />
       </div>
     </div>
   );
