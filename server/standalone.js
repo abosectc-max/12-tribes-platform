@@ -6808,6 +6808,105 @@ function qaCheckTradeFlow() {
   return fixes;
 }
 
+// ─── CHECK 4b: Agent Participation Audit ───
+// Detects: agents with zero or negligible trade volume vs peers.
+// Self-heals: resets circuit breakers, checks for config exclusions, raises alerts.
+// This catches the exact scenario where agents are silently excluded from trading.
+function qaCheckAgentParticipation() {
+  const fixes = [];
+  const tradingAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
+  if (tradingAgents.length === 0) return fixes;
+
+  // Gather trade counts per agent from the auto_trade_log
+  const allLogs = db.findMany('auto_trade_log');
+  const agentTradeCounts = {};
+  tradingAgents.forEach(a => { agentTradeCounts[a.name] = 0; });
+  allLogs.forEach(l => {
+    if (l.agent && agentTradeCounts[l.agent] !== undefined) agentTradeCounts[l.agent]++;
+  });
+
+  const counts = Object.values(agentTradeCounts);
+  const avgTrades = counts.length > 0 ? counts.reduce((s, v) => s + v, 0) / counts.length : 0;
+  const maxTrades = Math.max(...counts, 1);
+
+  for (const agent of tradingAgents) {
+    const count = agentTradeCounts[agent.name] || 0;
+    const cb = getCircuitBreaker(agent.name);
+    const perf = getAgentPerf(agent.name);
+
+    // ─── CHECK: Agent has < 10% of average peer trade volume ───
+    if (avgTrades > 5 && count < avgTrades * 0.1) {
+      const reasons = [];
+
+      // Diagnose WHY this agent isn't trading
+      // 1. Circuit breaker tripped?
+      if (cb.tripped) {
+        reasons.push(`Circuit breaker TRIPPED (reason: ${cb.tripReason})`);
+        // Self-heal: if cooldown is excessive, force resume
+        const timeSinceTrip = Date.now() - cb.trippedAt;
+        if (timeSinceTrip > 600000) { // Tripped for > 10min
+          cb.tripped = false;
+          cb.consecutiveLosses = 0;
+          cb.tripCount = Math.max(0, cb.tripCount - 1); // Reduce escalation
+          reasons.push('AUTO-HEAL: Forced circuit breaker reset after 10min stall');
+        }
+      }
+
+      // 2. Adaptive confidence too low?
+      if (perf.adaptiveConfidence < 0.5) {
+        reasons.push(`Adaptive confidence critically low (${perf.adaptiveConfidence.toFixed(2)})`);
+        // Self-heal: boost confidence to minimum viable level
+        perf.adaptiveConfidence = Math.max(perf.adaptiveConfidence, 0.6);
+        reasons.push('AUTO-HEAL: Boosted confidence to 0.60 minimum');
+      }
+
+      // 3. No tradable symbols with price data?
+      const tradable = agent.symbols.filter(s => marketPrices[s] !== undefined && priceHistory[s]?.length >= 30);
+      if (tradable.length === 0) {
+        reasons.push(`No tradable symbols (${agent.symbols.length} assigned, 0 with sufficient price data)`);
+      }
+
+      // 4. Win-rate gate blocking?
+      const totalAgentTrades = perf.wins + perf.losses;
+      if (totalAgentTrades >= 6) {
+        const winRate = perf.wins / totalAgentTrades;
+        if (winRate < (AUTO_TRADE_CONFIG.minWinRateForTrading || 0.35)) {
+          reasons.push(`Win-rate gate: ${(winRate*100).toFixed(0)}% < ${((AUTO_TRADE_CONFIG.minWinRateForTrading||0.35)*100).toFixed(0)}% minimum`);
+        }
+      }
+
+      if (reasons.length === 0) {
+        reasons.push('No obvious blocker found — signals may be too weak or all symbols held');
+      }
+
+      const diagStr = reasons.join('; ');
+      fixes.push({
+        issue: 'AGENT_SILENT',
+        action: `${agent.name} (${agent.role}): ${count} trades vs avg ${Math.round(avgTrades)}. Diagnosis: ${diagStr}`,
+      });
+      console.warn(`[QA] 🔇 SILENT AGENT: ${agent.name} — ${count} trades (avg: ${Math.round(avgTrades)}). ${diagStr}`);
+    }
+
+    // ─── CHECK: Agent has extremely low win rate (< 25%) over 10+ trades ───
+    const totalTrades = perf.wins + perf.losses;
+    if (totalTrades >= 10) {
+      const winRate = perf.wins / totalTrades;
+      if (winRate < 0.25) {
+        // Self-heal: reset the agent's performance counters to give it a fresh start
+        // but keep the circuit breaker history for safety
+        perf.adaptiveConfidence = Math.max(perf.adaptiveConfidence, 0.7);
+        fixes.push({
+          issue: 'AGENT_LOW_WINRATE',
+          action: `${agent.name}: ${(winRate*100).toFixed(0)}% win rate over ${totalTrades} trades. Boosted confidence to give recovery runway.`,
+        });
+        console.warn(`[QA] 📉 LOW WIN RATE: ${agent.name} at ${(winRate*100).toFixed(0)}% over ${totalTrades} trades — boosted confidence`);
+      }
+    }
+  }
+
+  return fixes;
+}
+
 // ─── CHECK 5: Data Integrity ───
 // Detects: corrupted prices, missing price history, stale market data, orphaned records
 function qaCheckDataIntegrity() {
@@ -7096,6 +7195,15 @@ function runQAAgent(isFullAudit = false) {
   const perUserDebug = qaCheckPerUserDebug();
   checks.push({ name: 'per_user_debug', fixes: perUserDebug.fixes.length, status: perUserDebug.fixes.length === 0 ? 'PASS' : 'FIXED' });
   allFixes.push(...perUserDebug.fixes);
+
+  // ─── CHECK 6b: Agent Participation Audit — detect silent/excluded agents ───
+  const agentFixes = qaCheckAgentParticipation();
+  checks.push({
+    name: 'agent_participation',
+    fixes: agentFixes.length,
+    status: agentFixes.length === 0 ? 'PASS' : `${agentFixes.length} agent issues`,
+  });
+  allFixes.push(...agentFixes);
 
   // ─── CHECK 7: Trade Flag Review — QA investigates flagged trades ───
   const flagActions = qaProcessTradeFlags();
