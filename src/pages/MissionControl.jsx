@@ -81,19 +81,7 @@ function generateGrowthData(initial, days, dailyReturn) {
   return data;
 }
 
-// Generate daily P&L data
-function generateDailyPnL(days) {
-  const data = [];
-  let cumulative = 0;
-  for (let d = 1; d <= days; d++) {
-    const pnl = (Math.random() - 0.35) * 1800;
-    cumulative += pnl;
-    data.push({ day: d, daily: Math.round(pnl), cumulative: Math.round(cumulative) });
-  }
-  return data;
-}
-
-// No static trade generator — real trades fetched from API
+// No static generators — all data fetched from API
 
 // === STYLES ===
 const glassStyle = {
@@ -151,7 +139,7 @@ function MetricCard({ label, value, change, prefix = "", suffix = "", color = "#
         <div style={{ fontSize: isMobile ? 11 : 13, color: isPositive ? "#10B981" : "#EF4444", marginTop: 6, display: "flex", alignItems: "center", gap: 4 }}>
           <span>{isPositive ? "▲" : "▼"}</span>
           <span>{Math.abs(safeChange || 0).toFixed(2)}%</span>
-          {!isMobile && <span style={{ color: "rgba(255,255,255,0.3)", marginLeft: 4 }}>today</span>}
+          {!isMobile && <span style={{ color: "rgba(255,255,255,0.3)", marginLeft: 4 }}>return</span>}
         </div>
       )}
     </GlassCard>
@@ -199,29 +187,65 @@ function AgentCard({ agent, isMobile = false }) {
   );
 }
 
-function AllocationChart({ isMobile = false }) {
-  const activeAssets = ASSET_CLASSES.filter(a => a.pct > 0);
+function AllocationChart({ isMobile = false, liveTrades = [], groupData = {} }) {
+  // Build allocation from real open positions in liveTrades
+  const SYMBOL_COLORS = ["#00D4FF", "#A855F7", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#6366F1", "#14B8A6"];
+  const positionMap = {};
+  liveTrades.forEach(t => {
+    if (t.status === 'open' || !t.close_price) {
+      const sym = t.symbol || 'Unknown';
+      if (!positionMap[sym]) positionMap[sym] = { name: sym, value: 0, count: 0 };
+      positionMap[sym].value += Math.abs((t.entry_price || 0) * (t.quantity || 1));
+      positionMap[sym].count += 1;
+    }
+  });
+
+  let allocationData = Object.values(positionMap).sort((a, b) => b.value - a.value);
+  const totalValue = allocationData.reduce((s, d) => s + d.value, 0);
+
+  // Add cash/unallocated if we have AUM data
+  const totalEquity = groupData.totalEquity || 0;
+  if (totalEquity > 0 && totalEquity > totalValue) {
+    allocationData.push({ name: "Cash", value: totalEquity - totalValue, count: 0 });
+  }
+
+  // Calculate percentages
+  const total = allocationData.reduce((s, d) => s + d.value, 0) || 1;
+  allocationData = allocationData.map((d, i) => ({
+    ...d,
+    pct: Math.round((d.value / total) * 100),
+    color: d.name === "Cash" ? "#6B7280" : SYMBOL_COLORS[i % SYMBOL_COLORS.length],
+  }));
+
+  // Fallback if no positions
+  if (allocationData.length === 0) {
+    allocationData = [{ name: "Cash", pct: 100, value: totalEquity || 0, color: "#6B7280", count: 0 }];
+  }
+
   const chartSize = isMobile ? 140 : 180;
   return (
     <GlassCard>
-      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Capital Allocation</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Position Allocation</div>
+        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{allocationData.filter(d => d.name !== "Cash").length} assets</div>
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 16 : 24, flexDirection: isMobile ? "column" : "row" }}>
         <div style={{ width: chartSize, height: chartSize, flexShrink: 0 }}>
           <ResponsiveContainer>
             <PieChart>
-              <Pie data={activeAssets} dataKey="pct" nameKey="name" cx="50%" cy="50%" innerRadius={isMobile ? 35 : 50} outerRadius={isMobile ? 60 : 80} paddingAngle={3} strokeWidth={0}>
-                {activeAssets.map((a, i) => <Cell key={i} fill={a.color} />)}
+              <Pie data={allocationData} dataKey="pct" nameKey="name" cx="50%" cy="50%" innerRadius={isMobile ? 35 : 50} outerRadius={isMobile ? 60 : 80} paddingAngle={3} strokeWidth={0}>
+                {allocationData.map((a, i) => <Cell key={i} fill={a.color} />)}
               </Pie>
             </PieChart>
           </ResponsiveContainer>
         </div>
         <div style={{ flex: 1, width: isMobile ? "100%" : "auto" }}>
-          {activeAssets.map(a => (
+          {allocationData.map(a => (
             <div key={a.name} style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 10, marginBottom: 8, fontSize: isMobile ? 12 : 13 }}>
               <div style={{ width: 8, height: 8, borderRadius: 2, background: a.color, flexShrink: 0 }} />
-              <span style={{ color: "rgba(255,255,255,0.7)", flex: 1, minWidth: 0 }}>{a.name}</span>
+              <span style={{ color: "rgba(255,255,255,0.7)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
               <span style={{ fontWeight: 600, color: "#fff", flexShrink: 0 }}>{a.pct}%</span>
-              {!isMobile && <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", flexShrink: 0 }}>${a.notional.toLocaleString()}</span>}
+              {!isMobile && <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", flexShrink: 0 }}>${a.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>}
             </div>
           ))}
         </div>
@@ -274,23 +298,52 @@ function GrowthProjection({ data, isMobile = false }) {
   );
 }
 
-function DailyPnLChart({ data, isMobile = false }) {
+function RecentTradesPnL({ trades = [], isMobile = false }) {
+  // Build P&L per trade from real trade data
+  const pnlData = trades.filter(t => t.realized_pnl !== undefined).slice(0, 25).map((t, i) => ({
+    idx: i + 1,
+    pnl: Math.round(t.realized_pnl || 0),
+    symbol: t.symbol,
+    agent: t.agent || '',
+  }));
+
+  if (pnlData.length === 0) {
+    return (
+      <GlassCard>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Recent Trade P&L</div>
+        <div style={{ padding: 24, textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>Waiting for closed trades...</div>
+      </GlassCard>
+    );
+  }
+
+  const totalPnL = pnlData.reduce((s, d) => s + d.pnl, 0);
+  const wins = pnlData.filter(d => d.pnl > 0).length;
+  const losses = pnlData.filter(d => d.pnl < 0).length;
+
   return (
     <GlassCard>
-      <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Daily P&L (Last 30 Days)</div>
-      <div style={{ height: isMobile ? 180 : 220 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 6 }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Recent Trade P&L</div>
+        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", display: "flex", gap: 8 }}>
+          <span style={{ color: "#10B981" }}>{wins}W</span>
+          <span style={{ color: "#EF4444" }}>{losses}L</span>
+          <span style={{ color: totalPnL >= 0 ? "#10B981" : "#EF4444", fontWeight: 600 }}>Net: ${totalPnL.toLocaleString()}</span>
+        </div>
+      </div>
+      <div style={{ height: isMobile ? 160 : 200 }}>
         <ResponsiveContainer>
-          <BarChart data={data.slice(-30)}>
+          <BarChart data={pnlData}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis dataKey="day" stroke="rgba(255,255,255,0.3)" fontSize={10} />
-            <YAxis stroke="rgba(255,255,255,0.3)" fontSize={10} tickFormatter={v => `$${v}`} />
+            <XAxis dataKey="idx" stroke="rgba(255,255,255,0.3)" fontSize={9} tickFormatter={v => `#${v}`} />
+            <YAxis stroke="rgba(255,255,255,0.3)" fontSize={9} tickFormatter={v => `$${v >= 1000 ? `${(v/1000).toFixed(0)}k` : v}`} />
             <Tooltip
-              contentStyle={{ background: "rgba(0,0,0,0.8)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12 }}
-              formatter={(v) => [`$${Number(v).toLocaleString()}`, ""]}
+              contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, fontSize: 11 }}
+              labelFormatter={v => `Trade #${v}`}
+              formatter={(v, name, props) => [`$${Number(v).toLocaleString()} · ${props.payload.symbol} · ${props.payload.agent}`, "P&L"]}
             />
-            <Bar dataKey="daily" radius={[4, 4, 0, 0]}>
-              {data.slice(-30).map((entry, i) => (
-                <Cell key={i} fill={entry.daily >= 0 ? "#10B981" : "#EF4444"} fillOpacity={0.8} />
+            <Bar dataKey="pnl" radius={[3, 3, 0, 0]}>
+              {pnlData.map((entry, i) => (
+                <Cell key={i} fill={entry.pnl >= 0 ? "#10B981" : "#EF4444"} fillOpacity={0.85} />
               ))}
             </Bar>
           </BarChart>
@@ -540,30 +593,44 @@ function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = fal
   );
 }
 
-function RiskPanel({ isMobile = false, isTablet = false }) {
+function RiskPanel({ isMobile = false, isTablet = false, groupData = {} }) {
+  const winRate = groupData.winRate || 0;
+  const maxDD = groupData.maxDrawdown || 0;
+  const returnPct = groupData.returnPct || 0;
+  const cagr = groupData.cagr || 0;
+  const openPos = groupData.openPositions || 0;
+  const closedTrades = groupData.closedTrades || 0;
+  const daysActive = groupData.daysActive || 0;
+  const totalPnL = groupData.totalPnL || 0;
+
+  // Derived risk metrics from real data
+  const avgTradeReturn = closedTrades > 0 ? (totalPnL / closedTrades) : 0;
+  const profitFactor = (groupData.totalRealizedPnL || 0) > 0 ? 'Positive' : 'Negative';
+
   const metrics = [
-    { label: "Portfolio Beta", value: "1.24", status: "normal" },
-    { label: "Max Drawdown", value: "-4.8%", status: "normal" },
-    { label: "Sharpe Ratio", value: "1.87", status: "good" },
-    { label: "Sortino Ratio", value: "2.41", status: "good" },
-    { label: "VaR (95%)", value: "-$1,842", status: "warning" },
-    { label: "Margin Util.", value: "62%", status: "normal" },
-    { label: "Correlation", value: "0.38", status: "good" },
-    { label: "Win Rate", value: "64.2%", status: "good" },
+    { label: "Win Rate", value: `${winRate.toFixed(1)}%`, status: winRate >= 50 ? "good" : winRate >= 40 ? "normal" : "warning" },
+    { label: "Max Drawdown", value: maxDD > 0 ? `-${maxDD.toFixed(1)}%` : "0%", status: maxDD < 5 ? "good" : maxDD < 15 ? "normal" : maxDD < 25 ? "warning" : "critical" },
+    { label: "CAGR", value: `${cagr.toFixed(0)}%`, status: cagr > 50 ? "good" : cagr > 10 ? "normal" : "warning" },
+    { label: "Return", value: `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%`, status: returnPct > 0 ? "good" : "critical" },
+    { label: "Open Positions", value: `${openPos}`, status: openPos <= 50 ? "normal" : "warning" },
+    { label: "Closed Trades", value: closedTrades.toLocaleString(), status: "normal" },
+    { label: "Days Active", value: `${Math.round(daysActive)}`, status: "normal" },
+    { label: "Avg Trade P&L", value: `$${avgTradeReturn.toFixed(0)}`, status: avgTradeReturn > 0 ? "good" : avgTradeReturn > -50 ? "normal" : "warning" },
   ];
+
   const statusColors = { good: "#10B981", normal: "#00D4FF", warning: "#F59E0B", critical: "#EF4444" };
   return (
     <GlassCard>
       <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Risk Command Center</div>
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : isTablet ? "repeat(3, 1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: isMobile ? 10 : 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : isTablet ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: isMobile ? 8 : 10 }}>
         {metrics.map(m => (
           <div key={m.label} style={{
-            padding: isMobile ? 12 : 12, borderRadius: 14, minHeight: isMobile ? 80 : 90,
+            padding: isMobile ? 10 : 12, borderRadius: 14,
             background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
-            display: "flex", flexDirection: "column", justifyContent: "space-between"
+            display: "flex", flexDirection: "column", gap: 4,
           }}>
-            <div style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{m.label}</div>
-            <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 700, color: statusColors[m.status] }}>{m.value}</div>
+            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.8 }}>{m.label}</div>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: statusColors[m.status] }}>{m.value}</div>
           </div>
         ))}
       </div>
@@ -571,38 +638,52 @@ function RiskPanel({ isMobile = false, isTablet = false }) {
   );
 }
 
-function SelfHealingPanel({ isMobile = false }) {
-  const [healEvents] = useState([
-    { time: "14:32", event: "Model drift detected on VIPER momentum scanner", action: "Retrained on 90-day rolling window", result: "Accuracy restored: 85.1% → 91.7%" },
-    { time: "13:15", event: "Correlation spike: BTC/SPY exceeded 0.70 threshold", action: "Reduced crypto allocation 15% → 10%, rebalanced to forex", result: "Portfolio correlation normalized to 0.42" },
-    { time: "11:48", event: "Slippage anomaly on EUR/USD entries", action: "Switched to limit orders, adjusted fill expectation model", result: "Avg slippage reduced from 2.1bps to 0.8bps" },
-    { time: "09:22", event: "Overnight gap risk detected on futures positions", action: "Tightened stop-losses, reduced MES position by 30%", result: "Gap exposure reduced from $3,200 to $1,100" },
-  ]);
+function SelfHealingPanel({ isMobile = false, liveAgents = [] }) {
+  // Build real events from agent circuit breakers and strategy changes
+  const healEvents = [];
+  for (const a of liveAgents) {
+    if (a.circuitBreaker) {
+      healEvents.push({ time: 'CB', event: `${a.name} circuit breaker tripped`, action: a.circuitBreaker.reason || 'Performance threshold breached', result: `Agent quarantined — will resume after cooldown`, severity: 'critical' });
+    }
+    if (a.strategy && a.strategy !== 'default') {
+      healEvents.push({ time: 'ADJ', event: `${a.name} strategy shift`, action: `Switched to ${a.strategy} mode`, result: `Trend: ${a.performanceTrend || 'adapting'}`, severity: 'info' });
+    }
+    if (a.benchedAgents > 0) {
+      healEvents.push({ time: 'QA', event: `${a.name} benched for low win rate`, action: `Win rate below threshold`, result: 'Temporarily removed from signal generation', severity: 'warning' });
+    }
+  }
+  // If no real events, show system healthy
+  if (healEvents.length === 0) {
+    healEvents.push({ time: '✓', event: 'All systems nominal', action: 'QA agent monitoring continuously', result: `${liveAgents.length} agents active, 0 circuit breakers tripped`, severity: 'healthy' });
+  }
+
+  const sevColors = { critical: "#EF4444", warning: "#F59E0B", info: "#00D4FF", healthy: "#10B981" };
+
   return (
     <GlassCard>
       <div style={{ display: "flex", alignItems: isMobile ? "flex-start" : "center", gap: isMobile ? 8 : 10, marginBottom: 12, flexDirection: isMobile ? "column" : "row" }}>
         <span style={{ fontSize: isMobile ? 18 : 20, flexShrink: 0 }}>🔥</span>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Phoenix Self-Healing Engine</div>
-          <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)" }}>Autonomous model repair & portfolio rebalancing</div>
+          <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)" }}>Autonomous QA, circuit breakers & strategy adaptation</div>
         </div>
         <div style={{
           marginLeft: isMobile ? 0 : "auto", padding: "4px 10px", borderRadius: 12,
           background: "rgba(16,185,129,0.15)", color: "#10B981", fontSize: isMobile ? 10 : 11, fontWeight: 600, flexShrink: 0
-        }}>ACTIVE</div>
+        }}>LIVE</div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {healEvents.map((e, i) => (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {healEvents.slice(0, 6).map((e, i) => (
           <div key={i} style={{
-            padding: isMobile ? 10 : 12, borderRadius: 14,
-            background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+            padding: isMobile ? 10 : 12, borderRadius: 12,
+            background: "rgba(255,255,255,0.03)", border: `1px solid ${sevColors[e.severity]}22`,
           }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
-              <span style={{ fontFamily: "monospace", fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.4)", flexShrink: 0 }}>{e.time}</span>
-              <span style={{ fontSize: isMobile ? 11 : 12, color: "#F59E0B" }}>⚠️ {e.event}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 6, background: `${sevColors[e.severity]}22`, color: sevColors[e.severity], fontWeight: 700, textTransform: "uppercase" }}>{e.time}</span>
+              <span style={{ fontSize: isMobile ? 11 : 12, color: sevColors[e.severity], fontWeight: 600 }}>{e.event}</span>
             </div>
-            <div style={{ fontSize: isMobile ? 11 : 12, color: "#00D4FF", marginBottom: 3 }}>→ {e.action}</div>
-            <div style={{ fontSize: isMobile ? 10 : 11, color: "#10B981" }}>✓ {e.result}</div>
+            <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.5)" }}>{e.action}</div>
+            <div style={{ fontSize: isMobile ? 10 : 11, color: "#10B981", marginTop: 2 }}>{e.result}</div>
           </div>
         ))}
       </div>
@@ -659,7 +740,12 @@ function GrowthTable({ isMobile = false, totalAUM = 0 }) {
 
 function AssetStrategyCards({ isMobile = false, isTablet = false }) {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(280px, 1fr))", gap: isMobile ? 12 : 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 12 : 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Target Strategy Allocation</div>
+        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", padding: "3px 8px", borderRadius: 8, background: "rgba(168,85,247,0.1)", border: "1px solid rgba(168,85,247,0.2)" }}>PLANNED</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(280px, 1fr))", gap: isMobile ? 12 : 16 }}>
       {ASSET_CLASSES.filter(a => a.name !== "Cash").map(asset => (
         <GlassCard key={asset.name} style={{ borderLeft: `3px solid ${asset.color}` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
@@ -687,13 +773,14 @@ function AssetStrategyCards({ isMobile = false, isTablet = false }) {
           </div>
         </GlassCard>
       ))}
+      </div>
     </div>
   );
 }
 
 // === VIEWS ===
 
-function OverviewView({ growthData, pnlData, trades, groupData, isMobile, isTablet }) {
+function OverviewView({ growthData, trades, groupData, liveTrades = [], liveAgents = [], isMobile, isTablet }) {
   const totalAUM = groupData.totalEquity || 0;
   const totalPnL = groupData.totalPnL || 0;
   const returnPct = groupData.returnPct || 0;
@@ -709,19 +796,20 @@ function OverviewView({ growthData, pnlData, trades, groupData, isMobile, isTabl
         : { display: "flex", gap: 16, flexWrap: "wrap" }
       }>
         <MetricCard label="Total AUM" value={Math.round(totalAUM)} prefix="$" change={returnPct} color="#00D4FF" isMobile={isMobile} />
-        <MetricCard label="Total P&L" value={Math.round(totalPnL)} prefix={totalPnL >= 0 ? "+$" : "-$"} color={totalPnL >= 0 ? "#10B981" : "#EF4444"} isMobile={isMobile} />
+        <MetricCard label="Total P&L" value={Math.round(Math.abs(totalPnL))} prefix={totalPnL >= 0 ? "+$" : "-$"} color={totalPnL >= 0 ? "#10B981" : "#EF4444"} isMobile={isMobile} />
         <MetricCard label="Investors" value={memberCount} color="#A855F7" isMobile={isMobile} />
         <MetricCard label="Open Positions" value={openPos} color="#F59E0B" isMobile={isMobile} />
         <MetricCard label="Win Rate" value={winRate.toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "1fr" : "2fr 1fr", gap: isMobile ? 16 : 20 }}>
         <GrowthProjection data={growthData} isMobile={isMobile} />
-        <AllocationChart isMobile={isMobile} />
+        <AllocationChart isMobile={isMobile} liveTrades={liveTrades} groupData={groupData} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: isMobile ? 16 : 20 }}>
-        <DailyPnLChart data={pnlData} isMobile={isMobile} />
-        <RiskPanel isMobile={isMobile} isTablet={isTablet} />
+        <RecentTradesPnL trades={liveTrades} isMobile={isMobile} />
+        <RiskPanel isMobile={isMobile} isTablet={isTablet} groupData={groupData} />
       </div>
+      <SelfHealingPanel isMobile={isMobile} liveAgents={liveAgents} />
       <TradeLog trades={trades} isMobile={isMobile} />
     </div>
   );
@@ -737,14 +825,24 @@ function AgentsView({ isMobile, isTablet, liveAgents = [] }) {
         {liveAgents.map(a => <AgentCard key={a.id} agent={a} isMobile={isMobile} />)}
       </div>
       )}
-      <SelfHealingPanel isMobile={isMobile} />
+      <SelfHealingPanel isMobile={isMobile} liveAgents={liveAgents} />
     </div>
   );
 }
 
-function CapitalView({ growthData, isMobile, isTablet, totalAUM = 0 }) {
+function CapitalView({ growthData, isMobile, isTablet, totalAUM = 0, liveTrades = [], groupData = {} }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
+      <div style={isMobile
+        ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }
+        : { display: "flex", gap: 16, flexWrap: "wrap" }
+      }>
+        <MetricCard label="Total AUM" value={Math.round(totalAUM)} prefix="$" color="#00D4FF" isMobile={isMobile} />
+        <MetricCard label="Return" value={(groupData.returnPct || 0).toFixed(1)} suffix="%" change={groupData.returnPct || 0} color="#10B981" isMobile={isMobile} />
+        <MetricCard label="Open Positions" value={groupData.openPositions || 0} color="#F59E0B" isMobile={isMobile} />
+        {!isMobile && <MetricCard label="Closed Trades" value={groupData.closedTrades || 0} color="#A855F7" isMobile={isMobile} />}
+      </div>
+      <AllocationChart isMobile={isMobile} liveTrades={liveTrades} groupData={groupData} />
       <AssetStrategyCards isMobile={isMobile} isTablet={isTablet} />
       <GrowthProjection data={growthData} isMobile={isMobile} />
       <GrowthTable isMobile={isMobile} totalAUM={totalAUM} />
@@ -840,7 +938,6 @@ export default function TwelveTribes_MissionControl() {
 
   const totalAUM = groupData.totalEquity || 0;
   const growthData = useMemo(() => generateGrowthData(totalAUM > 0 ? totalAUM : 60000, 252, 0.012), [totalAUM]);
-  const pnlData = useMemo(() => generateDailyPnL(90), []);
 
   const navItems = [
     { id: "overview", label: "Overview", icon: "◉" },
@@ -922,9 +1019,9 @@ export default function TwelveTribes_MissionControl() {
       </div>
 
       {/* Content */}
-      <div style={{ padding: isMobile ? "12px 10px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 100 : 24 }}>
-        {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={liveTrades} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
-        {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} totalAUM={totalAUM} />}
+      <div style={{ padding: isMobile ? "12px 8px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 100 : 24 }}>
+        {activeView === "overview" && <OverviewView growthData={growthData} trades={liveTrades} liveTrades={liveTrades} liveAgents={liveAgents} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} totalAUM={totalAUM} liveTrades={liveTrades} groupData={groupData} />}
         {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} liveAgents={liveAgents} />}
         {activeView === "investors" && <InvestorsView groupData={groupData} serverUsers={serverUsers} liveTrades={liveTrades} isMobile={isMobile} isTablet={isTablet} />}
       </div>
