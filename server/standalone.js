@@ -3208,6 +3208,49 @@ api.post('/api/wallet/snapshot', auth, (req, res) => {
   json(res, 200, { success: true });
 });
 
+// ─── INVESTORS: ROSTER (any authenticated user) ───
+api.get('/api/investors/roster', auth, (req, res) => {
+  const allUsers = db.findMany('users');
+  const roster = allUsers.map(u => {
+    const wallet = db.findOne('wallets', w => w.user_id === u.id);
+    const openPositions = db.findMany('positions', p => p.user_id === u.id && p.status === 'OPEN');
+    const fundSettings = db.findOne('fund_settings', s => s.user_id === u.id);
+    const unrealizedPnL = openPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0);
+    return {
+      id: u.id,
+      email: u.email,
+      firstName: u.firstName || u.first_name || '',
+      lastName: u.lastName || u.last_name || '',
+      role: u.role || 'investor',
+      emailVerified: u.emailVerified || false,
+      tradingMode: u.tradingMode || 'paper',
+      createdAt: u.created_at || u.createdAt || null,
+      lastLogin: u.last_login || u.lastLogin || null,
+      loginCount: u.login_count || u.loginCount || 0,
+      balance: wallet?.balance || 0,
+      equity: wallet?.equity || wallet?.balance || 0,
+      initialBalance: wallet?.initial_balance || 100000,
+      realizedPnL: wallet?.realized_pnl || 0,
+      unrealizedPnL,
+      tradeCount: wallet?.trade_count || 0,
+      openPositions: openPositions.length,
+      isTrading: fundSettings?.data?.autoTrading?.isAutoTrading || false,
+      tradingModeActive: fundSettings?.data?.autoTrading?.tradingMode || 'balanced',
+      ownershipPct: u.ownership_pct || 0,
+      accountType: u.account_type || 'Member — LLC',
+    };
+  });
+
+  // Calculate equal ownership if none explicitly set
+  const totalExplicit = roster.reduce((s, u) => s + (u.ownershipPct || 0), 0);
+  if (totalExplicit === 0) {
+    const equalShare = roundTo(100 / roster.length, 2);
+    roster.forEach(u => { u.ownershipPct = equalShare; });
+  }
+
+  json(res, 200, roster);
+});
+
 // ─── WALLET: GROUP ───
 api.get('/api/wallet/group', auth, (req, res) => {
   const wallets = db.findMany('wallets');

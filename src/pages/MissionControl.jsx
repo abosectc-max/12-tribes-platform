@@ -647,38 +647,39 @@ export default function TwelveTribes_MissionControl() {
   }, []);
 
   // Fetch real data from server — 15s refresh for live feel
+  // Critical data (group, users) fetched independently from optional data (trades, agents)
+  // to prevent slow/hanging endpoints from blocking the entire dashboard
   useEffect(() => {
     const token = getToken();
     const headers = { "Content-Type": "application/json" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
+    const fetchWithTimeout = (url, opts, ms = 8000) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ms);
+      return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+    };
+
     const fetchData = async () => {
+      // Critical: group + roster (never blocked by slow endpoints)
       try {
-        const [groupRes, usersRes, tradesRes, agentsRes] = await Promise.all([
-          fetch(`${API_BASE}/wallet/group`, { headers }),
-          fetch(`${API_BASE}/admin/users`, { headers }),
-          fetch(`${API_BASE}/admin/trades/recent?limit=25`, { headers }).catch(() => null),
-          fetch(`${API_BASE}/admin/agents/status`, { headers }).catch(() => null),
+        const [groupRes, usersRes] = await Promise.all([
+          fetchWithTimeout(`${API_BASE}/wallet/group`, { headers }),
+          fetchWithTimeout(`${API_BASE}/investors/roster`, { headers }),
         ]);
-        if (groupRes.ok) {
-          const gd = await groupRes.json();
-          setGroupData(gd);
-        }
-        if (usersRes.ok) {
-          const ud = await usersRes.json();
-          setServerUsers(Array.isArray(ud) ? ud : ud.users || []);
-        }
-        if (tradesRes?.ok) {
-          const td = await tradesRes.json();
-          setLiveTrades(td.trades || []);
-        }
-        if (agentsRes?.ok) {
-          const ad = await agentsRes.json();
-          setLiveAgents(ad.agents || []);
-        }
-      } catch (err) {
-        console.error("MissionControl fetch error:", err);
-      }
+        if (groupRes.ok) { const gd = await groupRes.json(); setGroupData(gd); }
+        if (usersRes.ok) { const ud = await usersRes.json(); setServerUsers(Array.isArray(ud) ? ud : ud.users || []); }
+      } catch (err) { console.error("MissionControl critical fetch error:", err); }
+
+      // Optional: trades + agents (may be slow, must not block core data)
+      try {
+        const [tradesRes, agentsRes] = await Promise.all([
+          fetchWithTimeout(`${API_BASE}/admin/trades/recent?limit=25`, { headers }).catch(() => null),
+          fetchWithTimeout(`${API_BASE}/admin/agents/status`, { headers }).catch(() => null),
+        ]);
+        if (tradesRes?.ok) { const td = await tradesRes.json(); setLiveTrades(td.trades || []); }
+        if (agentsRes?.ok) { const ad = await agentsRes.json(); setLiveAgents(ad.agents || []); }
+      } catch { /* optional data — silent fail */ }
     };
 
     fetchData();
