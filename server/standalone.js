@@ -47,11 +47,12 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'; // Resend default sender (works without domain verification)
 const APP_NAME = '12 Tribes Investments';
 const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://12-tribes-platform.vercel.app';
+// Production origins FIRST — fallback uses [0] for non-browser requests
 const ALLOWED_ORIGINS = [
-  'http://localhost:5173', 'http://localhost:4173', 'http://localhost:3000',
   'https://12-tribes-platform.vercel.app',
   FRONTEND_ORIGIN,
-].filter(Boolean);
+  'http://localhost:5173', 'http://localhost:4173', 'http://localhost:3000',
+].filter((v, i, a) => v && a.indexOf(v) === i); // dedupe + filter nulls
 
 // ─── Rate Limiter ───
 const rateLimitStore = new Map();
@@ -2371,9 +2372,11 @@ function runPostMortem(userId, position, closePrice, pnl, holdTimeSeconds) {
 function getCorsOrigin(req) {
   const origin = (req && req.headers && req.headers.origin) || '';
   if (ALLOWED_ORIGINS.includes(origin)) return origin;
-  // In production, reject unknown origins; in dev, allow localhost
+  // In development, allow any localhost origin
   if (origin.startsWith('http://localhost:')) return origin;
-  return null; // Will be set to first allowed origin for non-browser requests
+  // Non-browser requests (no Origin header) get the production origin
+  // This ensures CORS responses always reflect a valid production URL
+  return ALLOWED_ORIGINS[0]; // Production URL (https://12-tribes-platform.vercel.app)
 }
 
 const SECURITY_HEADERS = {
