@@ -77,6 +77,8 @@ const DB_TABLES = [
   'login_log', 'agent_stats', 'broker_connections', 'risk_events',
   'order_queue', 'access_requests', 'auto_trade_log', 'fund_settings',
   'verification_codes', 'qa_reports', 'feedback', 'withdrawal_requests',
+  // Signal tracking table
+  'signals',
   // Tax Engine tables
   'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
   // Distribution & Capital Account tables
@@ -2956,6 +2958,340 @@ api.post('/api/admin/backup', auth, (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//   DISASTER RECOVERY — USER PROFILE BACKUP & RESTORE SYSTEM
+//   Per-user full-state snapshots | Bulk export | Point-in-time restore
+//   Survives Render ephemeral wipes by writing to disk + admin download
+// ═══════════════════════════════════════════════════════════════════════
+
+const PROFILE_BACKUP_DIR = join(DATA_DIR, '_profile_backups');
+if (!existsSync(PROFILE_BACKUP_DIR)) mkdirSync(PROFILE_BACKUP_DIR, { recursive: true });
+
+// Tables that contain per-user data (keyed by user_id)
+const USER_DATA_TABLES = [
+  'wallets', 'positions', 'trades', 'snapshots', 'fund_settings',
+  'auto_trade_log', 'risk_events', 'order_queue', 'broker_connections',
+  'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
+  'distributions', 'capital_accounts', 'withdrawal_requests',
+  'passkey_credentials', 'feedback',
+];
+
+/**
+ * Extract a complete profile snapshot for a single user.
+ * Captures user record + all rows from every user-keyed table.
+ */
+function extractUserProfile(userId) {
+  const user = db.findOne('users', u => u.id === userId);
+  if (!user) return null;
+
+  const profile = {
+    _meta: {
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      userId: userId,
+      email: user.email,
+      name: `${user.first_name || user.firstName || ''} ${user.last_name || user.lastName || ''}`.trim(),
+    },
+    user: { ...user },
+    data: {},
+  };
+
+  for (const table of USER_DATA_TABLES) {
+    const rows = db.findMany(table, r => r.user_id === userId);
+    if (rows.length > 0) {
+      profile.data[table] = rows.map(r => ({ ...r }));
+    }
+  }
+
+  // Include login history
+  const loginLog = db.findMany('login_log', l => l.user_id === userId || l.email === user.email);
+  if (loginLog.length > 0) profile.data.login_log = loginLog.map(r => ({ ...r }));
+
+  // Include agent_stats (global but relevant)
+  const agentStats = db.findMany('agent_stats');
+  if (agentStats.length > 0) profile.data.agent_stats = agentStats.map(r => ({ ...r }));
+
+  // Summary metrics for quick inspection
+  const wallet = db.findOne('wallets', w => w.user_id === userId);
+  profile._meta.summary = {
+    equity: wallet?.equity || 0,
+    balance: wallet?.balance || 0,
+    initialBalance: wallet?.initial_balance || 0,
+    realizedPnL: wallet?.realized_pnl || 0,
+    tradeCount: wallet?.trade_count || 0,
+    openPositions: db.count('positions', p => p.user_id === userId && p.status === 'OPEN'),
+    closedPositions: db.count('positions', p => p.user_id === userId && p.status === 'CLOSED'),
+    role: user.role || 'investor',
+  };
+
+  return profile;
+}
+
+/**
+ * Write a user profile backup to disk as a JSON file.
+ * Returns the filename.
+ */
+function saveProfileBackupToDisk(profile) {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const safeName = (profile._meta.email || profile._meta.userId).replace(/[^a-zA-Z0-9]/g, '_');
+  const filename = `profile_${safeName}_${ts}.json`;
+  const filepath = join(PROFILE_BACKUP_DIR, filename);
+  writeFileSync(filepath, JSON.stringify(profile, null, 2));
+  return filename;
+}
+
+/**
+ * Write a full platform backup (all users) to disk.
+ */
+function saveFullPlatformBackup() {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const allUsers = db.findMany('users');
+  const profiles = [];
+  for (const user of allUsers) {
+    const profile = extractUserProfile(user.id);
+    if (profile) profiles.push(profile);
+  }
+
+  const bundle = {
+    _meta: {
+      version: '1.0',
+      type: 'FULL_PLATFORM_BACKUP',
+      exportedAt: new Date().toISOString(),
+      userCount: profiles.length,
+      users: profiles.map(p => ({ id: p._meta.userId, email: p._meta.email, name: p._meta.name })),
+    },
+    profiles,
+    // Also include non-user-keyed tables
+    globalData: {
+      agent_stats: db.findMany('agent_stats').map(r => ({ ...r })),
+      qa_reports: db.findMany('qa_reports').map(r => ({ ...r })),
+      access_requests: db.findMany('access_requests').map(r => ({ ...r })),
+    },
+  };
+
+  const filename = `full_backup_${ts}.json`;
+  const filepath = join(PROFILE_BACKUP_DIR, filename);
+  writeFileSync(filepath, JSON.stringify(bundle, null, 2));
+
+  // Prune old full backups (keep last 5)
+  try {
+    const fullBackups = readdirSync(PROFILE_BACKUP_DIR)
+      .filter(f => f.startsWith('full_backup_') && f.endsWith('.json'))
+      .sort();
+    while (fullBackups.length > 5) {
+      const oldest = fullBackups.shift();
+      try { unlinkSync(join(PROFILE_BACKUP_DIR, oldest)); } catch {}
+    }
+  } catch {}
+
+  return { filename, userCount: profiles.length };
+}
+
+// ─── ADMIN: EXPORT SINGLE USER PROFILE ───
+api.get('/api/admin/backup/user/:userId', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const profile = extractUserProfile(req.params.userId);
+  if (!profile) return json(res, 404, { error: 'User not found' });
+
+  // Also save to disk
+  const filename = saveProfileBackupToDisk(profile);
+  console.log(`[BACKUP] User profile exported: ${profile._meta.email} → ${filename}`);
+
+  json(res, 200, { success: true, filename, profile });
+});
+
+// ─── ADMIN: EXPORT ALL USER PROFILES (BULK) ───
+api.get('/api/admin/backup/all', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const allUsers = db.findMany('users');
+  const profiles = [];
+  const filenames = [];
+
+  for (const user of allUsers) {
+    const profile = extractUserProfile(user.id);
+    if (profile) {
+      profiles.push(profile);
+      const fn = saveProfileBackupToDisk(profile);
+      filenames.push(fn);
+    }
+  }
+
+  // Also save full platform bundle
+  const bundle = saveFullPlatformBackup();
+
+  console.log(`[BACKUP] Full platform backup: ${profiles.length} users → ${bundle.filename}`);
+
+  json(res, 200, {
+    success: true,
+    message: `Backed up ${profiles.length} user profiles`,
+    bundleFile: bundle.filename,
+    individualFiles: filenames,
+    profiles: profiles.map(p => ({
+      userId: p._meta.userId,
+      email: p._meta.email,
+      name: p._meta.name,
+      summary: p._meta.summary,
+    })),
+  });
+});
+
+// ─── ADMIN: LIST AVAILABLE BACKUPS ───
+api.get('/api/admin/backup/list', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  try {
+    const files = readdirSync(PROFILE_BACKUP_DIR)
+      .filter(f => f.endsWith('.json'))
+      .map(f => {
+        const fp = join(PROFILE_BACKUP_DIR, f);
+        const stat = statSync(fp);
+        return { filename: f, size: stat.size, modified: stat.mtime.toISOString() };
+      })
+      .sort((a, b) => b.modified.localeCompare(a.modified));
+
+    json(res, 200, {
+      backupDir: PROFILE_BACKUP_DIR,
+      count: files.length,
+      files,
+    });
+  } catch (err) {
+    json(res, 500, { error: `Failed to list backups: ${err.message}` });
+  }
+});
+
+// ─── ADMIN: DOWNLOAD SPECIFIC BACKUP FILE ───
+api.get('/api/admin/backup/download/:filename', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const filename = req.params.filename;
+  // Sanitize to prevent directory traversal
+  if (filename.includes('..') || filename.includes('/')) {
+    return json(res, 400, { error: 'Invalid filename' });
+  }
+
+  const filepath = join(PROFILE_BACKUP_DIR, filename);
+  if (!existsSync(filepath)) return json(res, 404, { error: 'Backup file not found' });
+
+  try {
+    const data = readFileSync(filepath, 'utf8');
+    const parsed = JSON.parse(data);
+    json(res, 200, { filename, data: parsed });
+  } catch (err) {
+    json(res, 500, { error: `Failed to read backup: ${err.message}` });
+  }
+});
+
+// ─── ADMIN: RESTORE USER FROM BACKUP ───
+api.post('/api/admin/backup/restore', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  if (!body || !body.profile) {
+    return json(res, 400, { error: 'Expected { profile: <user profile object> }' });
+  }
+
+  const profile = body.profile;
+  if (!profile.user || !profile.user.id || !profile.user.email) {
+    return json(res, 400, { error: 'Invalid profile: missing user.id or user.email' });
+  }
+
+  const userId = profile.user.id;
+  const results = { restored: [], skipped: [], errors: [] };
+
+  try {
+    // Step 1: Restore user record (upsert)
+    const existingUser = db.findOne('users', u => u.id === userId);
+    if (existingUser) {
+      // Update existing — preserve password hash, merge everything else
+      const { password_hash, ...userData } = profile.user;
+      Object.assign(existingUser, userData, { updated_at: new Date().toISOString(), _restored: true });
+      db._save('users');
+      results.restored.push('users (updated)');
+    } else {
+      db.tables.users.push({ ...profile.user, _restored: true, restored_at: new Date().toISOString() });
+      db._save('users');
+      results.restored.push('users (created)');
+    }
+
+    // Step 2: Restore each user-keyed data table
+    if (profile.data) {
+      for (const [table, rows] of Object.entries(profile.data)) {
+        if (!DB_TABLES.includes(table) && table !== 'login_log') {
+          results.skipped.push(`${table} (unknown table)`);
+          continue;
+        }
+        if (table === 'agent_stats') {
+          results.skipped.push('agent_stats (global table — not overwritten)');
+          continue;
+        }
+
+        try {
+          // Remove existing rows for this user in this table
+          const before = db.tables[table]?.length || 0;
+          if (db.tables[table]) {
+            db.tables[table] = db.tables[table].filter(r => r.user_id !== userId);
+          }
+
+          // Insert backup rows
+          for (const row of rows) {
+            if (!db.tables[table]) db.tables[table] = [];
+            db.tables[table].push({ ...row, _restored: true });
+          }
+          db._save(table);
+          results.restored.push(`${table} (${rows.length} rows)`);
+        } catch (err) {
+          results.errors.push(`${table}: ${err.message}`);
+        }
+      }
+    }
+
+    // Step 3: Force a full backup after restore
+    db._dirty = new Set(DB_TABLES);
+    db._rotateBackup();
+
+    console.log(`[RESTORE] User profile restored: ${profile.user.email} (${userId})`);
+    console.log(`[RESTORE] Results: ${JSON.stringify(results)}`);
+
+    json(res, 200, {
+      success: true,
+      message: `User ${profile.user.email} restored from backup`,
+      userId,
+      results,
+    });
+  } catch (err) {
+    console.error(`[RESTORE] Failed: ${err.message}`);
+    json(res, 500, { error: `Restore failed: ${err.message}` });
+  }
+});
+
+// ─── AUTO PROFILE BACKUP: Runs every 30 minutes alongside DB rotation ───
+const PROFILE_BACKUP_INTERVAL_MS = 1800000; // 30 minutes
+setInterval(() => {
+  try {
+    const result = saveFullPlatformBackup();
+    console.log(`[AUTO-BACKUP] Platform profile backup: ${result.userCount} users → ${result.filename}`);
+  } catch (err) {
+    console.error(`[AUTO-BACKUP] Profile backup failed: ${err.message}`);
+  }
+}, PROFILE_BACKUP_INTERVAL_MS);
+
+// Run initial profile backup on boot (after a 60-second delay to let data stabilize)
+setTimeout(() => {
+  try {
+    const result = saveFullPlatformBackup();
+    console.log(`[BOOT-BACKUP] Initial profile backup: ${result.userCount} users → ${result.filename}`);
+  } catch (err) {
+    console.error(`[BOOT-BACKUP] Initial profile backup failed: ${err.message}`);
+  }
+}, 60000);
+
 // ─── FEEDBACK SYSTEM ───
 
 // Submit feedback (any authenticated user)
@@ -4865,7 +5201,9 @@ function runAutoTradeTick() {
     try {
       runAllAgents(userId, data);
     } catch (err) {
-      console.error(`[AutoTrader] Error for user ${userId}:`, err.message);
+      const user = db.findOne('users', u => u.id === userId);
+      console.error(`[AutoTrader] CRITICAL error for user ${userId} (${user?.email || 'unknown'}): ${err.message}`);
+      console.error(`[AutoTrader] Stack: ${err.stack}`);
     }
   }
 
@@ -4903,16 +5241,16 @@ function runAutoTradeTick() {
  * Signal-based entries with self-healing feedback loop.
  */
 function runAllAgents(userId, fundData) {
-  const wallet = db.findOne('wallets', w => w.user_id === userId);
+  let wallet = db.findOne('wallets', w => w.user_id === userId);
   if (!wallet) {
     // Auto-create wallet on demand if missing
     wallet = db.insert('wallets', {
-      user_id: userId, balance: 100000, equity: 100000, initial_balance: 100000,
+      user_id: userId, balance: INITIAL_BALANCE, equity: INITIAL_BALANCE, initial_balance: INITIAL_BALANCE,
       unrealized_pnl: 0, realized_pnl: 0, trade_count: 0,
       win_count: 0, loss_count: 0, kill_switch_active: false,
       created_at: new Date().toISOString(),
     });
-    console.log(`[AutoTrader] Auto-created wallet for user ${userId}`);
+    console.log(`[AutoTrader] Auto-created wallet for user ${userId} with $${INITIAL_BALANCE}`);
   }
   if (wallet.kill_switch_active) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE`); return; }
 
@@ -7895,8 +8233,8 @@ function ensureAutoTradingActive() {
     const totalWithdrawn = userWithdrawals.reduce((s, w) => s + (w.amount || 0), 0);
     if (totalWithdrawn > 0) {
       wallet.total_withdrawals = totalWithdrawn;
-      // Ensure initial_balance reflects withdrawals
-      const expectedInitial = Math.max(1000, 100000 - totalWithdrawn);
+      // Ensure initial_balance reflects withdrawals but never drops below INITIAL_BALANCE
+      const expectedInitial = Math.max(INITIAL_BALANCE, INITIAL_BALANCE - totalWithdrawn);
       if (wallet.initial_balance > expectedInitial + 100) {
         wallet.initial_balance = expectedInitial;
         console.log(`[Boot] Adjusted initial_balance for user ${user.id} to $${expectedInitial} (withdrew $${totalWithdrawn})`);
@@ -7905,6 +8243,13 @@ function ensureAutoTradingActive() {
       if (wallet.peak_equity && wallet.peak_equity > wallet.equity + totalWithdrawn) {
         wallet.peak_equity = wallet.equity;
       }
+    }
+
+    // Safety net: initial_balance must never be below INITIAL_BALANCE ($100K)
+    if (wallet.initial_balance < INITIAL_BALANCE) {
+      console.log(`[Boot] CORRECTING initial_balance for user ${user.id}: $${wallet.initial_balance} → $${INITIAL_BALANCE}`);
+      wallet.initial_balance = INITIAL_BALANCE;
+      db._save('wallets');
     }
 
     // Reset kill switch on boot — allows trading to resume after restart
