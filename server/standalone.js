@@ -3819,11 +3819,12 @@ const CLOUD_SYNC_TABLES = [
 // These were causing 21MB+ snapshots exceeding jsonblob.com 1MB free limit.
 
 // Row limits per table to keep snapshot compact (newest rows kept)
+// Target: compressed payload must stay under 1MB (jsonblob.com free limit)
 const CLOUD_SYNC_ROW_LIMITS = {
-  trades: 2000,       // Keep last 2000 trades per table
-  tax_ledger: 2000,
-  tax_lots: 2000,
-  agent_stats: 500,
+  trades: 500,
+  tax_ledger: 500,
+  tax_lots: 500,
+  agent_stats: 200,
 };
 
 let lastCloudSyncTime = null;
@@ -3936,7 +3937,7 @@ async function cloudSyncPush() {
     const rawSizeKB = (Buffer.byteLength(rawJson) / 1024).toFixed(1);
 
     // Gzip compress + base64 encode to fit within jsonblob 1MB limit
-    const compressed = await gzip(Buffer.from(rawJson, 'utf8'));
+    const compressed = await gzip(Buffer.from(rawJson, 'utf8'), { level: 9 });
     const b64 = compressed.toString('base64');
     const envelope = JSON.stringify({
       _compressed: true,
