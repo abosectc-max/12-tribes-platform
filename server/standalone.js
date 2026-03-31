@@ -97,6 +97,8 @@ const DB_TABLES = [
   'trade_flags',
   // System config — agent intelligence, cloud sync state
   'system_config',
+  // Agent management — preferences and post-mortem analysis
+  'agent_preferences', 'post_mortems',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -2179,7 +2181,177 @@ function closePosition(userId, positionId) {
     // Non-blocking — position close proceeds even if tax recording fails (logged for audit)
   }
 
+  // ── Post-Mortem: Automated trade analysis for learning ──
+  try {
+    runPostMortem(userId, pos, closePrice, pnl, holdTime);
+  } catch (pmErr) {
+    console.error('[PostMortem] Non-blocking error:', pmErr.message);
+  }
+
   return { success: true, pnl, closePrice, returnPct: ((closePrice / pos.entry_price - 1) * 100 * dir) };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//   POST-MORTEM AUDIT ENGINE
+//   Automated trade analysis for learning and self-healing
+//   Triggers: after every closed trade
+// ═══════════════════════════════════════════════════════════════
+
+function runPostMortem(userId, position, closePrice, pnl, holdTimeSeconds) {
+  try {
+    const dir = position.side === 'LONG' ? 1 : -1;
+    const returnPct = ((closePrice / position.entry_price - 1) * 100 * dir);
+    const outcome = pnl >= 0 ? 'WIN' : 'LOSS';
+
+    // ── Phase 1: Market context at entry and exit ──
+    const entryContext = {};
+    const exitContext = {};
+    const hist = priceHistory[position.symbol] || [];
+
+    // Volatility at exit
+    if (hist.length >= 20) {
+      const returns = [];
+      for (let i = hist.length - 20; i < hist.length - 1; i++) {
+        returns.push((hist[i + 1] - hist[i]) / hist[i]);
+      }
+      const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+      const variance = returns.reduce((s, r) => s + Math.pow(r - mean, 2), 0) / returns.length;
+      exitContext.volatility = Math.sqrt(variance) * Math.sqrt(252) * 100; // Annualized %
+    }
+
+    // Regime at exit
+    exitContext.regime = macroIntel?.regime || 'unknown';
+    exitContext.vix = macroIntel?.vix || 'unknown';
+    exitContext.fearGreed = macroIntel?.fearGreed?.value || 50;
+
+    // ── Phase 2: Pattern detection ──
+    const patterns = [];
+
+    // Quick reversal (held < 5 min and lost)
+    if (holdTimeSeconds < 300 && pnl < 0) patterns.push('QUICK_REVERSAL');
+
+    // Long hold winner (held > 1 hour and won)
+    if (holdTimeSeconds > 3600 && pnl > 0) patterns.push('PATIENT_WINNER');
+
+    // Overstayed (held > 2 hours, negative P&L, had unrealized profit)
+    if (holdTimeSeconds > 7200 && pnl < 0) patterns.push('OVERSTAYED_POSITION');
+
+    // High volatility entry
+    if (exitContext.volatility > 40) patterns.push('HIGH_VOL_ENTRY');
+
+    // Trend alignment
+    if (hist.length >= 30) {
+      const sma10 = hist.slice(-10).reduce((s, p) => s + p, 0) / 10;
+      const sma30 = hist.slice(-30).reduce((s, p) => s + p, 0) / 30;
+      const trendUp = sma10 > sma30;
+      if ((position.side === 'LONG' && trendUp) || (position.side === 'SHORT' && !trendUp)) {
+        patterns.push('TREND_ALIGNED');
+      } else {
+        patterns.push('COUNTER_TREND');
+      }
+    }
+
+    // Fear/Greed extremes
+    if (exitContext.fearGreed > 75) patterns.push('GREED_EXTREME');
+    if (exitContext.fearGreed < 25) patterns.push('FEAR_EXTREME');
+
+    // Small win (< 0.3% return)
+    if (outcome === 'WIN' && Math.abs(returnPct) < 0.3) patterns.push('RAZOR_THIN_WIN');
+
+    // Large loss (> 2% return)
+    if (outcome === 'LOSS' && Math.abs(returnPct) > 2) patterns.push('OVERSIZED_LOSS');
+
+    // Consecutive same-direction trades in this symbol
+    const recentSymbolTrades = db.findMany('trades', t =>
+      t.user_id === userId && t.symbol === position.symbol && t.agent === position.agent
+    ).slice(-5);
+    if (recentSymbolTrades.length >= 3) {
+      const allSameSide = recentSymbolTrades.every(t => t.side === position.side);
+      if (allSameSide) patterns.push('REPETITIVE_DIRECTION');
+    }
+
+    // ── Phase 3: Self-healing recommendations ──
+    let selfHealingAction = null;
+    let selfHealingDetail = '';
+
+    // If agent has 3+ consecutive losses on same symbol, mark for avoidance
+    const recentLosses = recentSymbolTrades.filter(t => (t.realized_pnl || 0) < 0);
+    if (recentLosses.length >= 3 && outcome === 'LOSS') {
+      selfHealingAction = 'SYMBOL_COOLDOWN';
+      selfHealingDetail = `${position.agent} has ${recentLosses.length} consecutive losses on ${position.symbol} — recommending 1-hour cooldown`;
+
+      // Apply cooldown: record in symbol performance to dampen future signals
+      try {
+        const sp = db.findOne('symbol_performance', s => s.symbol === position.symbol);
+        if (sp) {
+          sp.cooldown_until = new Date(Date.now() + 3600000).toISOString();
+          sp.cooldown_reason = `Post-mortem: ${recentLosses.length} consecutive losses by ${position.agent}`;
+          db._save('symbol_performance');
+        }
+      } catch (e) { /* non-critical */ }
+    }
+
+    // If counter-trend pattern detected on loss, flag for trend filter adjustment
+    if (patterns.includes('COUNTER_TREND') && outcome === 'LOSS') {
+      selfHealingAction = selfHealingAction || 'TREND_FILTER_TIGHTEN';
+      selfHealingDetail += (selfHealingDetail ? ' | ' : '') + 'Counter-trend loss detected — tightening trend alignment requirement';
+    }
+
+    // If quick reversal, flag for better entry timing
+    if (patterns.includes('QUICK_REVERSAL')) {
+      selfHealingAction = selfHealingAction || 'ENTRY_TIMING_REVIEW';
+      selfHealingDetail += (selfHealingDetail ? ' | ' : '') + 'Quick reversal — entry timing needs refinement';
+    }
+
+    // If oversized loss, flag for position sizing review
+    if (patterns.includes('OVERSIZED_LOSS')) {
+      selfHealingAction = selfHealingAction || 'POSITION_SIZE_REDUCE';
+      selfHealingDetail += (selfHealingDetail ? ' | ' : '') + `Large loss (${returnPct.toFixed(2)}%) — consider reducing position size`;
+    }
+
+    // ── Phase 4: Store post-mortem record ──
+    const postMortem = db.insert('post_mortems', {
+      user_id: userId,
+      position_id: position.id,
+      agent: position.agent || 'Manual',
+      symbol: position.symbol,
+      side: position.side,
+      entry_price: position.entry_price,
+      close_price: closePrice,
+      pnl: Math.round(pnl * 100) / 100,
+      return_pct: Math.round(returnPct * 100) / 100,
+      outcome,
+      hold_time_seconds: holdTimeSeconds,
+      hold_time_display: holdTimeSeconds > 3600 ? `${(holdTimeSeconds / 3600).toFixed(1)}h` : `${Math.round(holdTimeSeconds / 60)}m`,
+
+      // Market context
+      exit_volatility: exitContext.volatility ? Math.round(exitContext.volatility * 100) / 100 : null,
+      exit_regime: exitContext.regime,
+      exit_vix: exitContext.vix,
+      exit_fear_greed: exitContext.fearGreed,
+
+      // Analysis
+      patterns_detected: patterns,
+      pattern_count: patterns.length,
+
+      // Self-healing
+      self_healing_action: selfHealingAction,
+      self_healing_detail: selfHealingDetail,
+
+      // Metadata
+      created_at: new Date().toISOString(),
+    });
+
+    // Log significant findings
+    if (selfHealingAction) {
+      console.log(`[PostMortem] ${position.agent} ${outcome} on ${position.symbol}: ${selfHealingAction} — ${selfHealingDetail}`);
+    }
+
+    return postMortem;
+  } catch (err) {
+    console.error('[PostMortem] Error running post-mortem analysis:', err.message);
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -3581,7 +3753,7 @@ const USER_DATA_TABLES = [
   'auto_trade_log', 'risk_events', 'order_queue', 'broker_connections',
   'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
   'distributions', 'capital_accounts', 'withdrawal_requests',
-  'passkey_credentials', 'feedback',
+  'passkey_credentials', 'feedback', 'agent_preferences', 'post_mortems',
 ];
 
 /**
@@ -4040,7 +4212,7 @@ const CLOUD_SYNC_TABLES = [
   'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
   'distributions', 'capital_accounts',
   'broker_connections', 'withdrawal_requests', 'passkey_credentials',
-  'system_config',
+  'system_config', 'agent_preferences', 'post_mortems',
 ];
 // NOTE: Excluded high-volume operational tables that get regenerated each boot:
 //   snapshots, auto_trade_log, signals, risk_events, order_queue,
@@ -6703,7 +6875,11 @@ function runAllAgents(userId, fundData) {
   // Sentinel (RISK_MANAGER) and Titan (POSITION_SIZER) now generate signals alongside their management roles.
   // Previously excluded via isRiskManager/isPositionManager flags — caused 24 symbols to go completely untraded.
   // Warden (isIntegrityAgent) is the only non-trading agent.
-  const signalAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
+
+  // Load user's agent preferences — filter out disabled agents
+  const agentPrefs = db.findOne('agent_preferences', p => p.user_id === userId);
+  const disabledAgents = new Set(agentPrefs?.disabled_agents || []);
+  const signalAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent && !disabledAgents.has(a.name));
   const allSignals = [];
   const heldSymbols = new Set(openPositions.map(p => p.symbol));
 
@@ -9947,6 +10123,194 @@ api.get('/api/compliance/settlements', auth, (req, res) => {
   const settlements = db.findMany('settlements', () => true).slice(-100);
   const ftdActions = compliance.checkFailToDelivers();
   json(res, 200, { settlements, fail_to_deliver_actions: ftdActions });
+});
+
+// GET /api/compliance/dashboard — Full compliance dashboard data for admin panel
+api.get('/api/compliance/dashboard', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const health = compliance.runComplianceHealthCheck();
+
+  // Recent audit log entries
+  const auditEntries = db.findMany('audit_log', () => true).slice(-50);
+  const chainVerification = auditEntries.length > 0 ? compliance.verifyAuditChain(auditEntries) : { valid: true, violations: [], entriesChecked: 0 };
+
+  // Compliance alerts
+  const alerts = db.findMany('compliance_alerts', () => true).slice(-20);
+
+  // Settlement status
+  const settlements = db.findMany('settlements', () => true);
+  const pendingSettlements = settlements.filter(s => s.settlement_status === 'PENDING').length;
+  const ftdActions = compliance.checkFailToDelivers();
+
+  // Post-mortem insights
+  const postMortems = db.findMany('post_mortems', () => true);
+  const healingActions = postMortems.filter(pm => pm.self_healing_action).slice(-10);
+
+  // Trade flag summary
+  const flags = db.findMany('trade_flags', () => true);
+  const pendingFlags = flags.filter(f => f.status === 'PENDING').length;
+  const resolvedFlags = flags.filter(f => f.status !== 'PENDING').length;
+
+  json(res, 200, {
+    health,
+    audit: {
+      totalEntries: auditEntries.length,
+      chainIntegrity: chainVerification,
+      recentEntries: auditEntries.slice(-10),
+    },
+    alerts: {
+      total: alerts.length,
+      recent: alerts.slice(-10),
+    },
+    settlements: {
+      total: settlements.length,
+      pending: pendingSettlements,
+      failToDeliverActions: ftdActions,
+    },
+    selfHealing: {
+      totalPostMortems: postMortems.length,
+      recentActions: healingActions,
+    },
+    tradeFlags: {
+      pending: pendingFlags,
+      resolved: resolvedFlags,
+    },
+    disclaimers: compliance.FTC_DISCLAIMERS,
+  });
+});
+
+// ═══════════════════════════════════════════
+//   AGENT MANAGEMENT API
+// ═══════════════════════════════════════════
+
+// GET /api/agents/status — Get all agents with enable/disable status for this user
+api.get('/api/agents/status', auth, (req, res) => {
+  const agentNames = ['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Phoenix', 'Titan'];
+  const userPrefs = db.findOne('agent_preferences', p => p.user_id === req.userId) || {};
+  const disabledAgents = new Set(userPrefs.disabled_agents || []);
+
+  const agents = agentNames.map(name => {
+    const stats = db.findOne('agent_stats', a => a.agent_name === name) || {};
+    const recentTrades = db.findMany('trades', t => t.agent === name && t.user_id === req.userId);
+    const wins = recentTrades.filter(t => t.realized_pnl > 0).length;
+    const losses = recentTrades.filter(t => t.realized_pnl <= 0).length;
+    const totalPnl = recentTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+    const openPositions = db.count('positions', p => p.agent === name && p.user_id === req.userId && p.status === 'OPEN');
+
+    return {
+      name,
+      enabled: !disabledAgents.has(name),
+      trades: recentTrades.length,
+      wins,
+      losses,
+      winRate: (wins + losses) > 0 ? ((wins / (wins + losses)) * 100).toFixed(1) : 'N/A',
+      totalPnl: Math.round(totalPnl * 100) / 100,
+      openPositions,
+      avgReturn: recentTrades.length > 0 ? Math.round((totalPnl / recentTrades.length) * 100) / 100 : 0,
+      bestTrade: recentTrades.length > 0 ? Math.max(...recentTrades.map(t => t.realized_pnl || 0)) : 0,
+      worstTrade: recentTrades.length > 0 ? Math.min(...recentTrades.map(t => t.realized_pnl || 0)) : 0,
+    };
+  });
+
+  json(res, 200, { agents });
+});
+
+// PUT /api/agents/:agentName/toggle — Enable or disable an agent
+api.put('/api/agents/:agentName/toggle', auth, async (req, res) => {
+  const body = await readBody(req);
+  const { agentName } = req.params;
+  const { enabled } = body;
+
+  const validAgents = ['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Phoenix', 'Titan'];
+  if (!validAgents.includes(agentName)) return json(res, 400, { error: `Invalid agent: ${agentName}` });
+  if (typeof enabled !== 'boolean') return json(res, 400, { error: 'enabled must be true or false' });
+
+  let prefs = db.findOne('agent_preferences', p => p.user_id === req.userId);
+  if (!prefs) {
+    prefs = db.insert('agent_preferences', {
+      user_id: req.userId,
+      disabled_agents: [],
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  const disabledSet = new Set(prefs.disabled_agents || []);
+  if (enabled) {
+    disabledSet.delete(agentName);
+  } else {
+    disabledSet.add(agentName);
+  }
+  prefs.disabled_agents = [...disabledSet];
+  prefs.updated_at = new Date().toISOString();
+  db._save('agent_preferences');
+
+  // Log to immutable audit
+  try {
+    const auditEntry = compliance.createImmutableAuditEntry('ADMIN', enabled ? 'AGENT_ENABLED' : 'AGENT_DISABLED', {
+      agent: agentName, enabled, user_id: req.userId,
+    }, req.userId);
+    db.insert('audit_log', auditEntry);
+  } catch (e) { /* non-blocking */ }
+
+  json(res, 200, { success: true, agent: agentName, enabled, disabled_agents: prefs.disabled_agents });
+});
+
+// GET /api/agents/post-mortems — Get post-mortem analysis results
+api.get('/api/agents/post-mortems', auth, (req, res) => {
+  const limit = parseInt(req.query?.limit || '50', 10);
+  const agent = req.query?.agent || null;
+  let postMortems = db.findMany('post_mortems', pm => pm.user_id === req.userId);
+  if (agent) postMortems = postMortems.filter(pm => pm.agent === agent);
+  postMortems.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  json(res, 200, { post_mortems: postMortems.slice(0, limit) });
+});
+
+// GET /api/agents/learning-insights — Aggregated learning insights across agents
+api.get('/api/agents/learning-insights', auth, (req, res) => {
+  const postMortems = db.findMany('post_mortems', pm => pm.user_id === req.userId);
+  const agents = ['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Phoenix', 'Titan'];
+
+  const insights = agents.map(name => {
+    const agentPMs = postMortems.filter(pm => pm.agent === name);
+    const wins = agentPMs.filter(pm => pm.outcome === 'WIN');
+    const losses = agentPMs.filter(pm => pm.outcome === 'LOSS');
+
+    // Find best and worst patterns
+    const patternFreq = {};
+    agentPMs.forEach(pm => {
+      (pm.patterns_detected || []).forEach(p => {
+        if (!patternFreq[p]) patternFreq[p] = { wins: 0, losses: 0 };
+        if (pm.outcome === 'WIN') patternFreq[p].wins++;
+        else patternFreq[p].losses++;
+      });
+    });
+
+    const bestPatterns = Object.entries(patternFreq)
+      .filter(([, v]) => (v.wins + v.losses) >= 3)
+      .sort((a, b) => (b[1].wins / (b[1].wins + b[1].losses)) - (a[1].wins / (a[1].wins + a[1].losses)))
+      .slice(0, 3)
+      .map(([pattern, stats]) => ({ pattern, winRate: ((stats.wins / (stats.wins + stats.losses)) * 100).toFixed(0) + '%', trades: stats.wins + stats.losses }));
+
+    const worstPatterns = Object.entries(patternFreq)
+      .filter(([, v]) => (v.wins + v.losses) >= 3)
+      .sort((a, b) => (a[1].wins / (a[1].wins + a[1].losses)) - (b[1].wins / (b[1].wins + b[1].losses)))
+      .slice(0, 3)
+      .map(([pattern, stats]) => ({ pattern, winRate: ((stats.wins / (stats.wins + stats.losses)) * 100).toFixed(0) + '%', trades: stats.wins + stats.losses }));
+
+    return {
+      agent: name,
+      totalAnalyzed: agentPMs.length,
+      avgHoldTime: agentPMs.length > 0 ? Math.round(agentPMs.reduce((s, pm) => s + (pm.hold_time_seconds || 0), 0) / agentPMs.length) : 0,
+      avgPnl: agentPMs.length > 0 ? Math.round(agentPMs.reduce((s, pm) => s + (pm.pnl || 0), 0) / agentPMs.length * 100) / 100 : 0,
+      bestPatterns,
+      worstPatterns,
+      selfHealingActions: agentPMs.filter(pm => pm.self_healing_action).length,
+    };
+  });
+
+  json(res, 200, { insights });
 });
 
 console.log('[TaxEngine] Tax Engine Module loaded — FIFO cost basis, wash sale detection ON, distribution tracking ACTIVE');

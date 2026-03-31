@@ -3743,38 +3743,7 @@ function PortfolioDashboard({ investor, onLogout }) {
 
           {/* ═══ AI AGENTS VIEW ═══ */}
           {activeTab === "agents" && (
-            <div style={{ ...glass, padding: 24 }}>
-              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>AI Agents Working For You</div>
-              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(3, 1fr)", gap: 12 }}>
-                {[
-                  { icon: "⚡", name: "Viper", role: "Momentum & Speed", status: "Active", color: "#00E676", trades: 47, winRate: "78%", pnl: "+$412" },
-                  { icon: "🔮", name: "Oracle", role: "Macro Intelligence", status: "Active", color: "#A855F7", trades: 31, winRate: "82%", pnl: "+$289" },
-                  { icon: "👻", name: "Spectre", role: "Options Strategy", status: "Standby", color: "#FF6B6B", trades: 18, winRate: "72%", pnl: "+$156" },
-                  { icon: "🛡️", name: "Sentinel", role: "Risk Guardian", status: "Active", color: "#00D4FF", trades: 0, winRate: "N/A", pnl: "$0" },
-                  { icon: "🔥", name: "Phoenix", role: "Self-Healing", status: "Active", color: "#FFD93D", trades: 5, winRate: "100%", pnl: "+$88" },
-                  { icon: "🏛️", name: "Titan", role: "Position Sizing", status: "Active", color: "#FF8A65", trades: 22, winRate: "81%", pnl: "+$201" },
-                ].map(a => (
-                  <div key={a.name} style={{ padding: 18, borderRadius: 18, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-                      <span style={{ fontSize: 28 }}>{a.icon}</span>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: a.color }}>{a.name}</div>
-                        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>{a.role}</div>
-                      </div>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: a.status === "Active" ? "#10B981" : "#F59E0B", boxShadow: `0 0 6px ${a.status === "Active" ? "#10B981" : "#F59E0B"}` }} />
-                    </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                      {[{ l: "Trades", v: a.trades }, { l: "Win Rate", v: a.winRate }, { l: "P&L", v: a.pnl }].map(s => (
-                        <div key={s.l} style={{ textAlign: "center" }}>
-                          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", marginBottom: 4 }}>{s.l}</div>
-                          <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>{s.v}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <AgentManagementView isMobile={isMobile} isTablet={isTablet} glass={glass} />
           )}
 
           {/* ═══ STATEMENTS VIEW ═══ */}
@@ -5178,6 +5147,296 @@ export default function TwelveTribes_InvestorPortal() {
 
 
 // ════════════════════════════════════════
+//   AGENT MANAGEMENT VIEW — Live status + toggle control
+// ════════════════════════════════════════
+
+function AgentManagementView({ isMobile, isTablet, glass }) {
+  const [agents, setAgents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [toggling, setToggling] = useState(null);
+  const [postMortems, setPostMortems] = useState([]);
+  const [insights, setInsights] = useState([]);
+  const [activeView, setActiveView] = useState('agents'); // 'agents' | 'post-mortems' | 'insights'
+
+  const AGENT_META = {
+    Viper: { icon: '⚡', color: '#00E676', role: 'Momentum & Speed' },
+    Oracle: { icon: '🔮', color: '#A855F7', role: 'Macro Intelligence' },
+    Spectre: { icon: '👻', color: '#FF6B6B', role: 'Options Strategy' },
+    Sentinel: { icon: '🛡️', color: '#00D4FF', role: 'Risk Guardian' },
+    Phoenix: { icon: '🔥', color: '#FFD93D', role: 'Self-Healing' },
+    Titan: { icon: '🏛️', color: '#FF8A65', role: 'Position Sizing' },
+  };
+
+  const token = (() => { try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; } })();
+  const API = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    return `http://${hostname}:4000/api`;
+  })();
+  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  const fetchAgents = async () => {
+    try {
+      const resp = await fetch(`${API}/agents/status`, { headers });
+      if (resp.ok) { const data = await resp.json(); setAgents(data.agents || []); }
+    } catch (e) { console.error('Failed to fetch agents:', e); }
+    setLoading(false);
+  };
+
+  const fetchPostMortems = async () => {
+    try {
+      const resp = await fetch(`${API}/agents/post-mortems?limit=30`, { headers });
+      if (resp.ok) { const data = await resp.json(); setPostMortems(data.post_mortems || []); }
+    } catch (e) { console.error('Failed to fetch post-mortems:', e); }
+  };
+
+  const fetchInsights = async () => {
+    try {
+      const resp = await fetch(`${API}/agents/learning-insights`, { headers });
+      if (resp.ok) { const data = await resp.json(); setInsights(data.insights || []); }
+    } catch (e) { console.error('Failed to fetch insights:', e); }
+  };
+
+  useEffect(() => { fetchAgents(); fetchPostMortems(); fetchInsights(); const iv = setInterval(fetchAgents, 30000); return () => clearInterval(iv); }, []);
+
+  const toggleAgent = async (name, currentlyEnabled) => {
+    setToggling(name);
+    try {
+      const resp = await fetch(`${API}/agents/${name}/toggle`, {
+        method: 'PUT', headers, body: JSON.stringify({ enabled: !currentlyEnabled }),
+      });
+      if (resp.ok) {
+        setAgents(prev => prev.map(a => a.name === name ? { ...a, enabled: !currentlyEnabled } : a));
+      }
+    } catch (e) { console.error('Toggle failed:', e); }
+    setToggling(null);
+  };
+
+  const viewTabStyle = (active) => ({
+    padding: isMobile ? '8px 14px' : '10px 20px', borderRadius: 12, border: 'none', cursor: 'pointer',
+    background: active ? 'rgba(0,212,255,0.15)' : 'rgba(255,255,255,0.04)',
+    color: active ? '#00D4FF' : 'rgba(255,255,255,0.4)',
+    fontSize: isMobile ? 11 : 13, fontWeight: 600, whiteSpace: 'nowrap',
+  });
+
+  const enabledCount = agents.filter(a => a.enabled).length;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Header + Sub-tabs */}
+      <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', flexDirection: isMobile ? 'column' : 'row', gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>AI Trading Agents</div>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{enabledCount} of {agents.length} agents active</div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setActiveView('agents')} style={viewTabStyle(activeView === 'agents')}>Agents</button>
+          <button onClick={() => { setActiveView('post-mortems'); fetchPostMortems(); }} style={viewTabStyle(activeView === 'post-mortems')}>Post-Mortems</button>
+          <button onClick={() => { setActiveView('insights'); fetchInsights(); }} style={viewTabStyle(activeView === 'insights')}>Learning</button>
+        </div>
+      </div>
+
+      {/* ── Agent Cards Grid ── */}
+      {activeView === 'agents' && (
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : isTablet ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: 14 }}>
+          {loading ? (
+            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: 40, color: 'rgba(255,255,255,0.3)' }}>Loading agents...</div>
+          ) : agents.map(a => {
+            const meta = AGENT_META[a.name] || { icon: '🤖', color: '#888', role: 'Agent' };
+            return (
+              <div key={a.name} style={{
+                padding: 20, borderRadius: 20,
+                background: a.enabled ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.015)',
+                border: `1px solid ${a.enabled ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)'}`,
+                opacity: a.enabled ? 1 : 0.55,
+                transition: 'all 0.3s ease',
+              }}>
+                {/* Top: Icon + Name + Toggle */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                  <span style={{ fontSize: 30 }}>{meta.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: meta.color }}>{a.name}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{meta.role}</div>
+                  </div>
+                  {/* Toggle Switch */}
+                  <button
+                    onClick={() => toggleAgent(a.name, a.enabled)}
+                    disabled={toggling === a.name}
+                    style={{
+                      width: 48, height: 26, borderRadius: 13, border: 'none', cursor: 'pointer',
+                      background: a.enabled ? '#10B981' : 'rgba(255,255,255,0.1)',
+                      position: 'relative', transition: 'background 0.3s',
+                      opacity: toggling === a.name ? 0.5 : 1,
+                    }}
+                  >
+                    <div style={{
+                      width: 20, height: 20, borderRadius: '50%',
+                      background: '#fff',
+                      position: 'absolute', top: 3,
+                      left: a.enabled ? 25 : 3,
+                      transition: 'left 0.3s',
+                      boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                    }} />
+                  </button>
+                </div>
+
+                {/* Status indicator */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
+                  <span style={{
+                    width: 7, height: 7, borderRadius: '50%',
+                    background: a.enabled ? '#10B981' : '#6B7280',
+                    boxShadow: a.enabled ? '0 0 8px #10B981' : 'none',
+                  }} />
+                  <span style={{ fontSize: 11, color: a.enabled ? '#10B981' : 'rgba(255,255,255,0.3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    {a.enabled ? 'Active' : 'Disabled'}
+                  </span>
+                  {a.openPositions > 0 && (
+                    <span style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 8px', borderRadius: 8, background: 'rgba(0,212,255,0.1)', color: '#00D4FF' }}>
+                      {a.openPositions} open
+                    </span>
+                  )}
+                </div>
+
+                {/* Stats Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                  {[
+                    { l: 'Trades', v: a.trades || 0 },
+                    { l: 'Win Rate', v: a.winRate === 'N/A' ? '—' : `${a.winRate}%` },
+                    { l: 'P&L', v: a.totalPnl >= 0 ? `+$${Math.abs(a.totalPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : `-$${Math.abs(a.totalPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}` },
+                  ].map(s => (
+                    <div key={s.l} style={{ textAlign: 'center', padding: '8px 0', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{s.l}</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Best/Worst trade row */}
+                {a.trades > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>Best: <span style={{ color: '#10B981', fontWeight: 600 }}>+${Math.max(0, a.bestTrade).toFixed(0)}</span></span>
+                    <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>Worst: <span style={{ color: '#EF4444', fontWeight: 600 }}>${Math.min(0, a.worstTrade).toFixed(0)}</span></span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Post-Mortem Feed ── */}
+      {activeView === 'post-mortems' && (
+        <div style={{ ...glass, padding: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 14 }}>Trade Post-Mortems</div>
+          {postMortems.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 30, color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>No post-mortem analyses yet. Trades will be analyzed as they close.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {postMortems.slice(0, 20).map((pm, i) => {
+                const meta = AGENT_META[pm.agent] || { icon: '🤖', color: '#888' };
+                return (
+                  <div key={pm.id || i} style={{
+                    padding: 14, borderRadius: 14,
+                    background: pm.outcome === 'WIN' ? 'rgba(16,185,129,0.04)' : 'rgba(239,68,68,0.04)',
+                    border: `1px solid ${pm.outcome === 'WIN' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)'}`,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                      <span style={{ fontSize: 18 }}>{meta.icon}</span>
+                      <div style={{ flex: 1 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: meta.color }}>{pm.agent}</span>
+                        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginLeft: 8 }}>{pm.symbol} {pm.side}</span>
+                      </div>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: pm.outcome === 'WIN' ? '#10B981' : '#EF4444' }}>
+                        {pm.pnl >= 0 ? '+' : ''}{pm.pnl?.toFixed(2)}
+                      </span>
+                      <span style={{
+                        fontSize: 10, padding: '2px 8px', borderRadius: 6, fontWeight: 700,
+                        background: pm.outcome === 'WIN' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                        color: pm.outcome === 'WIN' ? '#10B981' : '#EF4444',
+                      }}>{pm.outcome}</span>
+                    </div>
+                    {/* Patterns */}
+                    {pm.patterns_detected?.length > 0 && (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
+                        {pm.patterns_detected.map((p, j) => (
+                          <span key={j} style={{ fontSize: 9, padding: '2px 7px', borderRadius: 6, background: 'rgba(168,85,247,0.1)', color: '#A855F7', fontWeight: 600 }}>
+                            {p.replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Self-healing action */}
+                    {pm.self_healing_action && (
+                      <div style={{ fontSize: 11, color: '#FFD93D', marginTop: 4 }}>
+                        🔧 {pm.self_healing_detail}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 6 }}>
+                      Hold: {pm.hold_time_display} · Entry: ${pm.entry_price?.toFixed(2)} → Exit: ${pm.close_price?.toFixed(2)} · Return: {pm.return_pct?.toFixed(2)}%
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Learning Insights ── */}
+      {activeView === 'insights' && (
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: 14 }}>
+          {insights.map(ins => {
+            const meta = AGENT_META[ins.agent] || { icon: '🤖', color: '#888' };
+            return (
+              <div key={ins.agent} style={{ ...glass, padding: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+                  <span style={{ fontSize: 24 }}>{meta.icon}</span>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: meta.color }}>{ins.agent}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{ins.totalAnalyzed} trades analyzed</div>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
+                  {[
+                    { l: 'Avg P&L', v: `$${ins.avgPnl?.toFixed(0) || 0}` },
+                    { l: 'Avg Hold', v: ins.avgHoldTime > 3600 ? `${(ins.avgHoldTime / 3600).toFixed(1)}h` : `${Math.round(ins.avgHoldTime / 60)}m` },
+                    { l: 'Healed', v: ins.selfHealingActions || 0 },
+                  ].map(s => (
+                    <div key={s.l} style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', marginBottom: 3 }}>{s.l}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700 }}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+                {ins.bestPatterns?.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 4, textTransform: 'uppercase' }}>Best Patterns</div>
+                    {ins.bestPatterns.map((p, i) => (
+                      <div key={i} style={{ fontSize: 11, color: '#10B981', marginBottom: 2 }}>✓ {p.pattern.replace(/_/g, ' ')} — {p.winRate} ({p.trades} trades)</div>
+                    ))}
+                  </div>
+                )}
+                {ins.worstPatterns?.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 4, textTransform: 'uppercase' }}>Avoid Patterns</div>
+                    {ins.worstPatterns.map((p, i) => (
+                      <div key={i} style={{ fontSize: 11, color: '#EF4444', marginBottom: 2 }}>✗ {p.pattern.replace(/_/g, ' ')} — {p.winRate} ({p.trades} trades)</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {insights.length === 0 && (
+            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: 40, color: 'rgba(255,255,255,0.3)' }}>Learning insights will appear as trades are analyzed.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
 //   ADMIN PANEL — Access Request Management
 // ════════════════════════════════════════
 
@@ -5378,6 +5637,8 @@ function AdminPanel({ investor, isMobile }) {
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState('');
   const [createSuccess, setCreateSuccess] = useState('');
+  const [complianceData, setComplianceData] = useState(null);
+  const [complianceLoading, setComplianceLoading] = useState(false);
 
   const token = (() => {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
@@ -5471,6 +5732,15 @@ function AdminPanel({ investor, isMobile }) {
       });
       if (resp.ok) fetchAdminWithdrawals();
     } catch { /* silent */ }
+  };
+
+  const fetchCompliance = async () => {
+    setComplianceLoading(true);
+    try {
+      const resp = await fetch(`${ADMIN_API_BASE}/compliance/dashboard`, { headers: authHeaders });
+      if (resp.ok) setComplianceData(await resp.json());
+    } catch (e) { console.error('Compliance fetch error:', e); }
+    setComplianceLoading(false);
   };
 
   useEffect(() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); }, [fetchRequests, fetchUsers, fetchHealth, fetchQaReports, fetchAdminFeedback, fetchAdminWithdrawals]);
@@ -5686,6 +5956,9 @@ function AdminPanel({ investor, isMobile }) {
         </button>
         <button onClick={() => setActiveSection('tax-admin')} style={tabStyle(activeSection === 'tax-admin')}>
           § Tax Admin
+        </button>
+        <button onClick={() => { setActiveSection('compliance'); fetchCompliance(); }} style={tabStyle(activeSection === 'compliance')}>
+          🛡️ Compliance
         </button>
       </div>
 
@@ -6334,9 +6607,169 @@ function AdminPanel({ investor, isMobile }) {
         <AdminTaxSection isMobile={isMobile} glass={glass} authHeaders={authHeaders} />
       )}
 
+      {/* ═══ COMPLIANCE DASHBOARD ═══ */}
+      {activeSection === 'compliance' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {complianceLoading ? (
+            <div style={{ ...glass, padding: 40, textAlign: 'center', color: 'rgba(255,255,255,0.3)' }}>Loading compliance data...</div>
+          ) : !complianceData ? (
+            <div style={{ ...glass, padding: 40, textAlign: 'center', color: 'rgba(255,255,255,0.3)' }}>No compliance data available</div>
+          ) : (
+            <>
+              {/* Overall Score Card */}
+              <div style={{ ...glass, padding: 24 }}>
+                <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', flexDirection: isMobile ? 'column' : 'row', gap: 16 }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Compliance Score</div>
+                    <div style={{ fontSize: 48, fontWeight: 800, color: complianceData.health?.overall_score >= 80 ? '#10B981' : complianceData.health?.overall_score >= 60 ? '#F59E0B' : '#EF4444' }}>
+                      {complianceData.health?.overall_score || 0}
+                    </div>
+                    <div style={{
+                      fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 8, display: 'inline-block', marginTop: 4,
+                      background: complianceData.health?.overall_status === 'COMPLIANT' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
+                      color: complianceData.health?.overall_status === 'COMPLIANT' ? '#10B981' : '#F59E0B',
+                    }}>{complianceData.health?.overall_status || 'UNKNOWN'}</div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+                    {[
+                      { l: 'Frameworks', v: complianceData.health?.frameworks_checked || 0, c: '#00D4FF' },
+                      { l: 'Audit Entries', v: complianceData.audit?.totalEntries || 0, c: '#A855F7' },
+                      { l: 'Alerts', v: complianceData.alerts?.total || 0, c: complianceData.alerts?.total > 0 ? '#EF4444' : '#10B981' },
+                    ].map(s => (
+                      <div key={s.l} style={{ textAlign: 'center', padding: '12px 16px', borderRadius: 14, background: 'rgba(255,255,255,0.03)' }}>
+                        <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', marginBottom: 4 }}>{s.l}</div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: s.c }}>{s.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Framework Scores Grid */}
+              <div style={{ ...glass, padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Regulatory Framework Scores</div>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: 10 }}>
+                  {(complianceData.health?.checks || []).map((check, i) => (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 12,
+                      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)',
+                    }}>
+                      <div style={{
+                        width: 36, height: 36, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 14, fontWeight: 800,
+                        background: check.score >= 80 ? 'rgba(16,185,129,0.12)' : check.score >= 60 ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)',
+                        color: check.score >= 80 ? '#10B981' : check.score >= 60 ? '#F59E0B' : '#EF4444',
+                      }}>{check.score}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#fff' }}>{check.name}</div>
+                        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>{check.framework}</div>
+                      </div>
+                      <span style={{
+                        fontSize: 9, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
+                        background: check.status === 'IMPLEMENTED' ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.12)',
+                        color: check.status === 'IMPLEMENTED' ? '#10B981' : '#F59E0B',
+                      }}>{check.status}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Audit Chain + Trade Flags + Settlements Row */}
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: 14 }}>
+                {/* Audit Chain Integrity */}
+                <div style={{ ...glass, padding: 18 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>Audit Chain</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: complianceData.audit?.chainIntegrity?.valid ? '#10B981' : '#EF4444', marginBottom: 4 }}>
+                    {complianceData.audit?.chainIntegrity?.valid ? '✓ INTACT' : '✗ BROKEN'}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
+                    {complianceData.audit?.chainIntegrity?.entriesChecked || 0} entries verified
+                  </div>
+                  {(complianceData.audit?.chainIntegrity?.violations?.length || 0) > 0 && (
+                    <div style={{ fontSize: 11, color: '#EF4444', marginTop: 6 }}>
+                      {complianceData.audit.chainIntegrity.violations.length} violations detected
+                    </div>
+                  )}
+                </div>
+
+                {/* Trade Flags */}
+                <div style={{ ...glass, padding: 18 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>Trade Flags</div>
+                  <div style={{ display: 'flex', gap: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 28, fontWeight: 800, color: complianceData.tradeFlags?.pending > 0 ? '#F59E0B' : '#10B981' }}>
+                        {complianceData.tradeFlags?.pending || 0}
+                      </div>
+                      <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>Pending</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 28, fontWeight: 800, color: '#10B981' }}>{complianceData.tradeFlags?.resolved || 0}</div>
+                      <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>Resolved</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Settlements */}
+                <div style={{ ...glass, padding: 18 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>Settlements</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: '#00D4FF' }}>{complianceData.settlements?.total || 0}</div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
+                    {complianceData.settlements?.pending || 0} pending · {complianceData.settlements?.failToDeliverActions?.length || 0} FTD actions
+                  </div>
+                </div>
+              </div>
+
+              {/* Self-Healing Activity */}
+              {complianceData.selfHealing?.recentActions?.length > 0 && (
+                <div style={{ ...glass, padding: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>🔧 Self-Healing Activity</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {complianceData.selfHealing.recentActions.map((pm, i) => (
+                      <div key={i} style={{ padding: 10, borderRadius: 10, background: 'rgba(255,217,61,0.04)', border: '1px solid rgba(255,217,61,0.1)' }}>
+                        <div style={{ fontSize: 12, color: '#FFD93D', fontWeight: 600 }}>{pm.self_healing_action?.replace(/_/g, ' ')}</div>
+                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>{pm.self_healing_detail}</div>
+                        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>{pm.agent} · {pm.symbol} · {new Date(pm.created_at).toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Recent Alerts */}
+              {complianceData.alerts?.recent?.length > 0 && (
+                <div style={{ ...glass, padding: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: '#EF4444' }}>⚠️ Recent Compliance Alerts</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {complianceData.alerts.recent.map((alert, i) => (
+                      <div key={i} style={{ padding: 10, borderRadius: 10, background: 'rgba(239,68,68,0.04)', border: '1px solid rgba(239,68,68,0.08)' }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#EF4444' }}>{alert.type?.replace(/_/g, ' ')}</div>
+                        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>{new Date(alert.created_at).toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* FTC Disclaimers */}
+              <div style={{ ...glass, padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>📋 FTC Required Disclaimers</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {Object.entries(complianceData.disclaimers || {}).map(([key, text]) => (
+                    <div key={key} style={{ padding: 12, borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#00D4FF', textTransform: 'uppercase', marginBottom: 4 }}>{key.replace(/_/g, ' ')}</div>
+                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5 }}>{text}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Refresh Button */}
       <div style={{ textAlign: 'center', marginTop: 24 }}>
-        <RefreshButton label="Refresh All" onRefresh={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); }} />
+        <RefreshButton label="Refresh All" onRefresh={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); if (activeSection === 'compliance') fetchCompliance(); }} />
       </div>
     </div>
   );
