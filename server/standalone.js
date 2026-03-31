@@ -10520,58 +10520,85 @@ api.get('/api/compliance/settlements', auth, (req, res) => {
 
 // GET /api/compliance/dashboard — Full compliance dashboard data for admin panel
 api.get('/api/compliance/dashboard', auth, (req, res) => {
-  const user = db.findOne('users', u => u.id === req.userId);
-  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  try {
+    const user = db.findOne('users', u => u.id === req.userId);
+    if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
 
-  const health = compliance.runComplianceHealthCheck();
+    let health = {};
+    try { health = compliance.runComplianceHealthCheck(); } catch (e) {
+      console.error('[Compliance] runComplianceHealthCheck error:', e.message);
+      health = { overall_score: 0, overall_status: 'ERROR', checks: [], error: e.message };
+    }
 
-  // Recent audit log entries
-  const auditEntries = db.findMany('audit_log', () => true).slice(-50);
-  const chainVerification = auditEntries.length > 0 ? compliance.verifyAuditChain(auditEntries) : { valid: true, violations: [], entriesChecked: 0 };
+    // Recent audit log entries
+    const auditEntries = (db.findMany('audit_log', () => true) || []).slice(-50);
+    let chainVerification = { valid: true, violations: [], entriesChecked: 0 };
+    try {
+      if (auditEntries.length > 0) chainVerification = compliance.verifyAuditChain(auditEntries);
+    } catch (e) {
+      console.error('[Compliance] verifyAuditChain error:', e.message);
+      chainVerification = { valid: false, violations: [{ error: e.message }], entriesChecked: auditEntries.length };
+    }
 
-  // Compliance alerts
-  const alerts = db.findMany('compliance_alerts', () => true).slice(-20);
+    // Compliance alerts
+    const alerts = (db.findMany('compliance_alerts', () => true) || []).slice(-20);
 
-  // Settlement status
-  const settlements = db.findMany('settlements', () => true);
-  const pendingSettlements = settlements.filter(s => s.settlement_status === 'PENDING').length;
-  const ftdActions = compliance.checkFailToDelivers();
+    // Settlement status
+    const settlements = db.findMany('settlements', () => true) || [];
+    const pendingSettlements = settlements.filter(s => s.settlement_status === 'PENDING').length;
+    let ftdActions = [];
+    try { ftdActions = compliance.checkFailToDelivers() || []; } catch (e) {
+      console.error('[Compliance] checkFailToDelivers error:', e.message);
+    }
 
-  // Post-mortem insights
-  const postMortems = db.findMany('post_mortems', () => true);
-  const healingActions = postMortems.filter(pm => pm.self_healing_action).slice(-10);
+    // Post-mortem insights
+    const postMortems = db.findMany('post_mortems', () => true) || [];
+    const healingActions = postMortems.filter(pm => pm.self_healing_action).slice(-10);
 
-  // Trade flag summary
-  const flags = db.findMany('trade_flags', () => true);
-  const pendingFlags = flags.filter(f => f.status === 'PENDING').length;
-  const resolvedFlags = flags.filter(f => f.status !== 'PENDING').length;
+    // Trade flag summary
+    const flags = db.findMany('trade_flags', () => true) || [];
+    const pendingFlags = flags.filter(f => f.status === 'PENDING').length;
+    const resolvedFlags = flags.filter(f => f.status !== 'PENDING').length;
 
-  json(res, 200, {
-    health,
-    audit: {
-      totalEntries: auditEntries.length,
-      chainIntegrity: chainVerification,
-      recentEntries: auditEntries.slice(-10),
-    },
-    alerts: {
-      total: alerts.length,
-      recent: alerts.slice(-10),
-    },
-    settlements: {
-      total: settlements.length,
-      pending: pendingSettlements,
-      failToDeliverActions: ftdActions,
-    },
-    selfHealing: {
-      totalPostMortems: postMortems.length,
-      recentActions: healingActions,
-    },
-    tradeFlags: {
-      pending: pendingFlags,
-      resolved: resolvedFlags,
-    },
-    disclaimers: compliance.FTC_DISCLAIMERS,
-  });
+    json(res, 200, {
+      health,
+      audit: {
+        totalEntries: auditEntries.length,
+        chainIntegrity: chainVerification,
+        recentEntries: auditEntries.slice(-10),
+      },
+      alerts: {
+        total: alerts.length,
+        recent: alerts.slice(-10),
+      },
+      settlements: {
+        total: settlements.length,
+        pending: pendingSettlements,
+        failToDeliverActions: ftdActions,
+      },
+      selfHealing: {
+        totalPostMortems: postMortems.length,
+        recentActions: healingActions,
+      },
+      tradeFlags: {
+        pending: pendingFlags,
+        resolved: resolvedFlags,
+      },
+      disclaimers: compliance.FTC_DISCLAIMERS,
+    });
+  } catch (err) {
+    console.error('[Compliance] Dashboard endpoint crash:', err.message, err.stack);
+    json(res, 200, {
+      health: { overall_score: 0, overall_status: 'ERROR', checks: [], error: err.message },
+      audit: { totalEntries: 0, chainIntegrity: { valid: false, violations: [], entriesChecked: 0 }, recentEntries: [] },
+      alerts: { total: 0, recent: [] },
+      settlements: { total: 0, pending: 0, failToDeliverActions: [] },
+      selfHealing: { totalPostMortems: 0, recentActions: [] },
+      tradeFlags: { pending: 0, resolved: 0 },
+      disclaimers: compliance.FTC_DISCLAIMERS || {},
+      _error: err.message,
+    });
+  }
 });
 
 // ═══════════════════════════════════════════
