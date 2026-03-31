@@ -2032,6 +2032,12 @@ api.get('/api/health', (req, res) => {
     users: db.count('users'),
     uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
+    cloudSync: {
+      enabled: CLOUD_SYNC_ENABLED,
+      backend: CLOUD_BACKEND,
+      blobId: BLOB_ID || null,
+      lastSync: lastCloudSyncTime || null,
+    },
   });
 });
 
@@ -3722,6 +3728,7 @@ async function ensureCloudBin() {
 
   // Auto-create a new jsonblob.com blob (zero auth required)
   console.log('[CLOUD-SYNC] No cloud storage configured — auto-creating jsonblob.com blob...');
+  console.log(`[CLOUD-SYNC] ENV check: CLOUD_BACKUP_ID="${process.env.CLOUD_BACKUP_ID || ''}", CLOUD_BACKUP_KEY="${process.env.CLOUD_BACKUP_KEY ? '***set***' : ''}", CLOUD_BACKUP_BIN="${process.env.CLOUD_BACKUP_BIN || ''}"`);
   try {
     const https = await import('node:https');
     const initData = JSON.stringify({
@@ -9826,6 +9833,21 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log('   Awaiting connections.');
   console.log('');
   console.log('═══════════════════════════════════════════');
+
+  // ── Cloud sync status diagnostic (30s after boot — visible in Render logs) ──
+  setTimeout(() => {
+    console.log(`[CLOUD-DIAG] ═══ Cloud Sync Diagnostic ═══`);
+    console.log(`[CLOUD-DIAG] Enabled: ${CLOUD_SYNC_ENABLED}`);
+    console.log(`[CLOUD-DIAG] Backend: ${CLOUD_BACKEND}`);
+    console.log(`[CLOUD-DIAG] BlobId: ${BLOB_ID || 'NONE'}`);
+    console.log(`[CLOUD-DIAG] LastSync: ${lastCloudSyncTime || 'NEVER'}`);
+    console.log(`[CLOUD-DIAG] EnvVars: CLOUD_BACKUP_ID="${process.env.CLOUD_BACKUP_ID || ''}", CLOUD_BACKUP_KEY=${process.env.CLOUD_BACKUP_KEY ? 'SET' : 'EMPTY'}`);
+    if (!CLOUD_SYNC_ENABLED) {
+      console.log(`[CLOUD-DIAG] ⚠️  Cloud sync NOT active — investor data WILL be lost on next deploy`);
+      console.log(`[CLOUD-DIAG] ⚠️  Fix: Set CLOUD_BACKUP_ID env var on Render, or check jsonblob.com connectivity`);
+    }
+    console.log(`[CLOUD-DIAG] ═══════════════════════════`);
+  }, 30000);
 
   // ── Initial cloud push after boot stabilization (2 min) ──
   if (CLOUD_SYNC_ENABLED) {
