@@ -5943,68 +5943,64 @@ api.get('/api/admin/trades/recent', auth, (req, res) => {
 
 // ─── ADMIN: Agent status with live metrics (for Mission Control) ───
 api.get('/api/admin/agents/status', auth, (req, res) => {
-  const user = db.findOne('users', u => u.id === req.userId);
-  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  try {
+    const allTrades = db.findMany('trades');
+    const allSignals = db.findMany('signals');
+    const now = Date.now();
 
-  const allTrades = db.findMany('trades');
-  const allSignals = db.findMany('signals');
-  const now = Date.now();
+    const agentStatus = AI_AGENTS.map(a => {
+      const agentTrades = allTrades.filter(t => t.agent === a.name);
+      const agentSignals = allSignals.filter(s => s.agent === a.name);
+      const wins = agentTrades.filter(t => (t.realized_pnl || 0) > 0).length;
+      const losses = agentTrades.filter(t => (t.realized_pnl || 0) < 0).length;
+      const totalPnl = agentTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+      const recentSignals = agentSignals.filter(s => {
+        try { return now - new Date(s.timestamp || s.created_at || 0).getTime() < 3600000; } catch { return false; }
+      });
 
-  const agentStatus = AI_AGENTS.map(a => {
-    const agentTrades = allTrades.filter(t => t.agent === a.name);
-    const agentSignals = allSignals.filter(s => s.agent === a.name);
-    const wins = agentTrades.filter(t => (t.realized_pnl || 0) > 0).length;
-    const losses = agentTrades.filter(t => (t.realized_pnl || 0) < 0).length;
-    const totalPnl = agentTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
-    const recentSignals = agentSignals.filter(s => now - new Date(s.timestamp || s.created_at).getTime() < 3600000);
+      const cb = typeof getCircuitBreaker === 'function' ? getCircuitBreaker(a.name) : null;
+      const isQuarantined = cb?.isOpen || false;
+      const ss = typeof getStrategyState === 'function' ? getStrategyState(a.name) : null;
 
-    // Check circuit breaker status
-    const cb = typeof getCircuitBreaker === 'function' ? getCircuitBreaker(a.name) : null;
-    const isQuarantined = cb?.isOpen || false;
+      return {
+        id: a.name.toUpperCase(),
+        name: a.name,
+        role: a.description || a.role,
+        status: isQuarantined ? 'quarantined' : recentSignals.length > 0 ? 'active' : 'idle',
+        trades: agentTrades.length,
+        wins,
+        losses,
+        winRate: (wins + losses) > 0 ? roundTo(wins / (wins + losses) * 100, 1) : 0,
+        totalPnl: roundTo(totalPnl, 2),
+        signalsLastHour: recentSignals.length,
+        strategy: ss?.currentStrategy || 'default',
+        symbols: a.symbols || [],
+        circuitBreaker: isQuarantined ? {
+          reason: cb?.reason || 'threshold exceeded',
+          cooldownEnds: cb?.cooldownUntil || null,
+        } : null,
+      };
+    });
 
-    // Check strategy state
-    const ss = typeof getStrategyState === 'function' ? getStrategyState(a.name) : null;
+    // Add Debugger as virtual agent (platform health monitor)
+    let recentErrors = [];
+    try { recentErrors = db.findMany('risk_events', e => now - new Date(e.timestamp || e.created_at || 0).getTime() < 3600000); } catch { /* */ }
+    agentStatus.push({
+      id: 'DEBUGGER',
+      name: 'Debugger',
+      role: 'Platform health monitor & error detection',
+      status: recentErrors.length > 0 ? 'active' : 'monitoring',
+      trades: 0, wins: 0, losses: 0, winRate: 0, totalPnl: 0,
+      signalsLastHour: recentErrors.length,
+      strategy: 'diagnostic', symbols: [], circuitBreaker: null,
+      errorsDetected: recentErrors.length,
+    });
 
-    return {
-      id: a.name.toUpperCase(),
-      name: a.name,
-      role: a.description || a.role,
-      status: isQuarantined ? 'quarantined' : recentSignals.length > 0 ? 'active' : 'idle',
-      trades: agentTrades.length,
-      wins,
-      losses,
-      winRate: (wins + losses) > 0 ? roundTo(wins / (wins + losses) * 100, 1) : 0,
-      totalPnl: roundTo(totalPnl, 2),
-      signalsLastHour: recentSignals.length,
-      strategy: ss?.currentStrategy || 'default',
-      symbols: a.symbols || [],
-      circuitBreaker: isQuarantined ? {
-        reason: cb?.reason || 'threshold exceeded',
-        cooldownEnds: cb?.cooldownUntil || null,
-      } : null,
-    };
-  });
-
-  // Add Debugger as virtual agent (platform health monitor)
-  const recentErrors = db.findMany('risk_events', e => now - new Date(e.timestamp || e.created_at).getTime() < 3600000);
-  agentStatus.push({
-    id: 'DEBUGGER',
-    name: 'Debugger',
-    role: 'Platform health monitor & error detection',
-    status: recentErrors.length > 0 ? 'active' : 'monitoring',
-    trades: 0,
-    wins: 0,
-    losses: 0,
-    winRate: 0,
-    totalPnl: 0,
-    signalsLastHour: recentErrors.length,
-    strategy: 'diagnostic',
-    symbols: [],
-    circuitBreaker: null,
-    errorsDetected: recentErrors.length,
-  });
-
-  json(res, 200, { agents: agentStatus, count: agentStatus.length });
+    json(res, 200, { agents: agentStatus, count: agentStatus.length });
+  } catch (err) {
+    console.error('[agents/status] Error:', err.message);
+    json(res, 500, { error: 'Agent status computation failed', detail: err.message });
+  }
 });
 
 // Trading debug — dry-run one tick for a sample user, expose full decision chain
