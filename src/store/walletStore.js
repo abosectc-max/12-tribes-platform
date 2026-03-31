@@ -428,9 +428,10 @@ export async function syncFromServer(userId) {
       persistPositions();
     }
 
-    // Trade history
+    // Trade history — server returns { total, offset, limit, trades }
     if (histRes.status === 'fulfilled' && histRes.value.ok) {
-      const trades = await histRes.value.json();
+      const histData = await histRes.value.json();
+      const trades = Array.isArray(histData) ? histData : (histData.trades || []);
       walletState.tradeHistory = trades.map(t => ({
         id: t.id || t.position_id,
         symbol: t.symbol,

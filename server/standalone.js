@@ -4744,20 +4744,20 @@ const AI_AGENTS = [
 
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
-  maxOpenPositions: 8,         // 8 positions across 7 asset classes (stocks, ETFs, crypto, forex, options, futures, cash)
-  maxDailyTrades: 20,          // Precision over volume — high win-rate strategy. QA agent resets after 15min cooldown.
-  baseSizePct: 0.05,           // 5% of equity per trade (concentrated bets on high conviction)
-  winnerSizePct: 0.08,         // 8% for high-conviction signals
-  eliteSizePct: 0.10,          // 10% for multi-indicator confluence trades
-  consensusThreshold: 0.5,     // RAISED — higher consensus required before action
-  minSignalStrength: 0.78,     // RAISED from 0.65 — only take elite-conviction signals
-  minConfluence: 4,            // RAISED from 3 — minimum 4 confirming indicators required
-  maxCorrelatedPositions: 2,   // Max 2 in same asset class (reduce correlated risk)
-  maxDrawdownPct: 12,          // TIGHTENED from 15% — kill switch at -12% from peak equity
+  maxOpenPositions: 10,        // 10 positions — Sentinel/Titan now trade, need more slots
+  maxDailyTrades: 25,          // Increased for 6 active trading agents (was 20 for 4)
+  baseSizePct: 0.04,           // 4% of equity — slightly smaller base for tighter risk
+  winnerSizePct: 0.06,         // 6% for high-conviction signals
+  eliteSizePct: 0.08,          // 8% for multi-indicator confluence trades
+  consensusThreshold: 0.45,    // Slightly lower to allow more signal diversity
+  minSignalStrength: 0.55,     // LOWERED from 0.78 — 0.78 was choking signal flow, causing stalls
+  minConfluence: 3,            // LOWERED from 4 — 3 confirming indicators is still high quality
+  maxCorrelatedPositions: 3,   // Increased from 2 — Sentinel/Titan need room in ETF/forex classes
+  maxDrawdownPct: 15,          // Relaxed from 12% — prevents premature kill switch on normal volatility
   // Win-rate optimization parameters
-  minWinRateForTrading: 0.40,  // Halt new entries if agent win rate drops below 40%
-  profitTargetPct: 1.5,        // Take profit at 1.5% gain (high win rate, smaller gains)
-  maxLossPct: 0.6,             // Hard max loss at -0.6% (tight risk control)
+  minWinRateForTrading: 0.35,  // Lowered from 0.40 — new agents need runway to calibrate
+  profitTargetPct: 1.2,        // TIGHTENED from 1.5% — take profits earlier, lock in more wins
+  maxLossPct: 0.5,             // TIGHTENED from 0.6% — cut losers faster, preserve win rate
 };
 
 let autoTradeTickCount = 0;
@@ -5044,26 +5044,26 @@ function updateCircuitBreaker(agentName, pnl) {
   let shouldTrip = false;
   let reason = '';
 
-  // Condition 1: 2+ consecutive losses (TIGHTENED from 3 — zero tolerance in precision mode)
-  if (cb.consecutiveLosses >= 2) {
+  // Condition 1: 4+ consecutive losses (RELAXED from 2 — agents need room to calibrate)
+  if (cb.consecutiveLosses >= 4) {
     shouldTrip = true;
-    reason = `${cb.consecutiveLosses} consecutive losses — precision mode halt`;
+    reason = `${cb.consecutiveLosses} consecutive losses — safety halt`;
   }
 
-  // Condition 2: Drawdown from peak exceeds $1.5k (TIGHTENED from $3k)
-  if (cb.drawdownFromPeak > 1500) {
+  // Condition 2: Drawdown from peak exceeds $3k (RELAXED from $1.5k)
+  if (cb.drawdownFromPeak > 3000) {
     shouldTrip = true;
     reason = `Drawdown $${cb.drawdownFromPeak.toFixed(0)} from peak — capital preservation`;
   }
 
-  // Condition 3: Recent win rate below 50% over last 5+ trades (TIGHTENED from <30%/6 trades)
+  // Condition 3: Recent win rate below 35% over last 8+ trades (RELAXED from <50%/5 trades)
   const ap = getAgentPerf(agentName);
   const recentPnl = (ap.recentPnl || []).slice(-10);
-  if (recentPnl.length >= 5) {
+  if (recentPnl.length >= 8) {
     const recentWinRate = recentPnl.filter(p => p >= 0).length / recentPnl.length;
-    if (recentWinRate < 0.50) {
+    if (recentWinRate < 0.35) {
       shouldTrip = true;
-      reason = `Win rate ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades — below 50% threshold`;
+      reason = `Win rate ${(recentWinRate*100).toFixed(0)}% over last ${recentPnl.length} trades — below 35% threshold`;
     }
   }
 
@@ -5073,8 +5073,8 @@ function updateCircuitBreaker(agentName, pnl) {
     cb.tripReason = reason;
     cb.trippedAt = now;
 
-    // Escalating cooldown: 3min, 6min, 12min, 20min max (LONGER — force agents to reflect)
-    const cooldownMs = Math.min(1200000, cb.tripCount * 180000 + 180000);
+    // Shorter cooldown: 2min, 3min, 5min, 8min max — faster recovery to keep trading
+    const cooldownMs = Math.min(480000, cb.tripCount * 60000 + 120000);
     cb.resumeAt = now + cooldownMs;
 
     cb.healActions.push({
@@ -5088,8 +5088,8 @@ function updateCircuitBreaker(agentName, pnl) {
 
     console.log(`[SelfHeal] ${agentName}: CIRCUIT BREAKER TRIPPED — ${reason} — cooldown ${(cooldownMs/1000).toFixed(0)}s`);
 
-    // Self-healing action: reduce agent confidence on trip
-    ap.adaptiveConfidence = Math.max(0.3, ap.adaptiveConfidence * 0.6);
+    // Reduce confidence but not as aggressively — 0.75x instead of 0.6x, floor at 0.5 instead of 0.3
+    ap.adaptiveConfidence = Math.max(0.5, ap.adaptiveConfidence * 0.75);
     console.log(`[SelfHeal] ${agentName}: Confidence reduced to ${ap.adaptiveConfidence.toFixed(2)}`);
   }
 }
@@ -5650,12 +5650,14 @@ function computeSignal(symbol, agentStyle, agentName) {
   else if (confluence >= 6) { score *= 1.9; reasons.push(`Exceptional confluence (${confluence} indicators)`); }
   else if (confluence >= 5) { score *= 1.6; reasons.push(`Strong confluence (${confluence} indicators)`); }
   else if (confluence >= 4) { score *= 1.3; reasons.push(`Good confluence (${confluence} indicators)`); }
-  else if (confluence >= 3) { score *= 0.8; reasons.push(`Moderate confluence (${confluence}) — below precision threshold`); }
-  else {
-    // In ranging markets, accept slightly lower confluence since indicators naturally conflict
-    const rangingBonus = regime === 'ranging' ? 1.5 : 1.0;
-    score *= 0.3 * rangingBonus;
-    reasons.push(`Weak confluence (${confluence}) — signal dampened${regime === 'ranging' ? ' (ranging adjustment)' : ''}`);
+  else if (confluence >= 3) { score *= 1.1; reasons.push(`Solid confluence (${confluence} indicators)`); }
+  else if (confluence >= 2) {
+    const rangingBonus = regime === 'ranging' ? 1.3 : 1.0;
+    score *= 0.6 * rangingBonus;
+    reasons.push(`Moderate confluence (${confluence})${regime === 'ranging' ? ' — ranging adjustment' : ''}`);
+  } else {
+    score *= 0.3;
+    reasons.push(`Weak confluence (${confluence}) — signal dampened`);
   }
 
   // ─── HISTORICAL PERFORMANCE BIAS ───
@@ -6679,7 +6681,7 @@ function wardenSignalIntegrity() {
 
   // ─── CHECK F: Cross-Agent Signal Consistency ───
   // If all 4 signal agents agree on direction for a symbol, verify it's not groupthink on bad data
-  const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager && !a.isIntegrityAgent);
+  const signalAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
   const symbolAgreement = {};
   for (const agent of signalAgents) {
     for (const sym of agent.symbols) {
@@ -6755,7 +6757,7 @@ function qaCheckTradeFlow() {
     // Check signal availability
     const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
     const heldSymbols = new Set(openPositions.map(p => p.symbol));
-    const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+    const signalAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
     let hasExecutableSignal = false;
 
     for (const agent of signalAgents) {
@@ -7002,7 +7004,7 @@ function qaCheckPerUserDebug() {
     }
 
     // Agent health check — are any agents benched?
-    const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+    const signalAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
     const heldSymbols = new Set(openPositions.map(p => p.symbol));
     let benchedAgents = 0;
     let activeAgents = 0;
@@ -7529,7 +7531,7 @@ api.get('/api/signals/live', auth, (req, res) => {
 // Signal heatmap — strength by symbol, agent grid
 api.get('/api/signals/heatmap', auth, (req, res) => {
   const symbols = Object.keys(marketPrices);
-  const agents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+  const agents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
   const heatmap = {};
 
   for (const sym of symbols) {
@@ -7684,7 +7686,7 @@ api.get('/api/trading/debug', (req, res) => {
     const heldSymbols = openPositions.map(p => p.symbol);
     const heldSet = new Set(heldSymbols);
 
-    const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager);
+    const signalAgents = AI_AGENTS.filter(a => !a.isIntegrityAgent);
     const signals = [];
 
     for (const agent of signalAgents) {
