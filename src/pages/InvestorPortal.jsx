@@ -5580,19 +5580,32 @@ function AdminPanel({ investor, isMobile }) {
   };
 
   const tabStyle = (active) => ({
-    padding: '10px 20px', borderRadius: 12, border: 'none', cursor: 'pointer',
+    padding: isMobile ? '10px 14px' : '10px 20px', borderRadius: 12, border: 'none', cursor: 'pointer',
     background: active ? 'rgba(0,212,255,0.15)' : 'rgba(255,255,255,0.04)',
     color: active ? '#00D4FF' : 'rgba(255,255,255,0.4)',
-    fontSize: 13, fontWeight: 600, transition: 'all 0.2s',
+    fontSize: isMobile ? 11 : 13, fontWeight: 600, transition: 'all 0.2s',
+    whiteSpace: 'nowrap', flexShrink: 0, minHeight: isMobile ? 44 : 'auto',
+    touchAction: 'manipulation',
   });
 
   return (
-    <div style={{ padding: isMobile ? 16 : 0 }}>
-      <h2 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 800, color: '#fff', margin: '0 0 8px' }}>Admin Panel</h2>
-      <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', margin: '0 0 20px' }}>Manage users, access requests, and platform settings</p>
+    <div style={{ padding: 0 }}>
+      <h2 style={{ fontSize: isMobile ? 18 : 24, fontWeight: 800, color: '#fff', margin: '0 0 6px' }}>Admin Panel</h2>
+      <p style={{ fontSize: isMobile ? 12 : 13, color: 'rgba(255,255,255,0.4)', margin: '0 0 14px' }}>Manage users, access requests, and platform settings</p>
 
-      {/* Tab Switcher */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
+      {/* Tab Switcher — horizontally scrollable on mobile */}
+      <div style={{
+        display: 'flex', gap: 6, marginBottom: 20,
+        overflowX: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        paddingBottom: 6,
+        marginLeft: isMobile ? -16 : 0,
+        marginRight: isMobile ? -16 : 0,
+        paddingLeft: isMobile ? 16 : 0,
+        paddingRight: isMobile ? 16 : 0,
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none',
+      }}>
         <button onClick={() => setActiveSection('requests')} style={tabStyle(activeSection === 'requests')}>
           Access Requests {pending.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: '#F59E0B', color: '#000', fontSize: 10, fontWeight: 800 }}>{pending.length}</span>}
         </button>
@@ -5600,10 +5613,10 @@ function AdminPanel({ investor, isMobile }) {
           User Accounts <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 800 }}>{users.length}</span>
         </button>
         <button onClick={() => { setActiveSection('health'); fetchHealth(); }} style={tabStyle(activeSection === 'health')}>
-          Platform Health
+          Health
         </button>
         <button onClick={() => { setActiveSection('qa'); fetchQaReports(); }} style={tabStyle(activeSection === 'qa')}>
-          QA Reports {qaReports.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(168,85,247,0.3)', color: '#A855F7', fontSize: 10, fontWeight: 800 }}>{qaReports.length}</span>}
+          QA {qaReports.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(168,85,247,0.3)', color: '#A855F7', fontSize: 10, fontWeight: 800 }}>{qaReports.length}</span>}
         </button>
         <button onClick={() => { setActiveSection('feedback'); fetchAdminFeedback(); }} style={tabStyle(activeSection === 'feedback')}>
           Feedback {adminFeedback.filter(f => f.status === 'new').length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(239,68,68,0.25)', color: '#EF4444', fontSize: 10, fontWeight: 800 }}>{adminFeedback.filter(f => f.status === 'new').length} new</span>}

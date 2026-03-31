@@ -3368,9 +3368,9 @@ api.get('/api/wallet/group', auth, (req, res) => {
     }
   }
 
-  // Exclude admin wallets from investor count
-  const adminIds = new Set(db.findMany('users', u => u.role === 'admin').map(u => u.id));
-  const investorWallets = wallets.filter(w => !adminIds.has(w.user_id));
+  // Count ALL wallets that have a matching user (admins are investors too)
+  const allUserIds = new Set(db.findMany('users').map(u => u.id));
+  const investorWallets = wallets.filter(w => allUserIds.has(w.user_id));
 
   const totalEquity = wallets.reduce((s, w) => s + (w.equity || 0), 0);
   const totalInitial = wallets.reduce((s, w) => s + (w.initial_balance || 100000), 0);
