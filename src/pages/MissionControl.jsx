@@ -354,8 +354,59 @@ function TradeLog({ trades, isMobile = false }) {
   );
 }
 
-function InvestorTable({ serverUsers, groupData, isMobile = false, isTablet = false }) {
+function LiveTradeFeed({ trades = [], isMobile = false }) {
+  if (!trades.length) return null;
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#10B981", boxShadow: "0 0 8px #10B981", animation: "pulse 1.5s infinite" }} />
+          Live Trade Feed
+        </div>
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>{trades.length} recent</div>
+      </div>
+      <div style={{ maxHeight: isMobile ? 180 : 220, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+        {trades.slice(0, 15).map((t, i) => {
+          const pnl = t.realized_pnl || 0;
+          const isWin = pnl > 0;
+          const side = t.side || 'LONG';
+          const timeStr = t.time ? new Date(t.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+          return (
+            <div key={t.id || i} style={{
+              display: "flex", alignItems: "center", gap: 8, padding: isMobile ? "6px 8px" : "7px 10px",
+              borderRadius: 10, background: i === 0 ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.02)",
+              border: i === 0 ? "1px solid rgba(16,185,129,0.15)" : "1px solid transparent",
+              fontSize: isMobile ? 10 : 11, transition: "all 0.3s",
+            }}>
+              <span style={{ color: side === 'LONG' ? '#10B981' : '#EF4444', fontWeight: 700, width: 40, flexShrink: 0 }}>{side === 'LONG' ? '▲ BUY' : '▼ SELL'}</span>
+              <span style={{ color: "#00D4FF", fontWeight: 600, width: isMobile ? 50 : 60, flexShrink: 0 }}>{t.symbol}</span>
+              <span style={{ color: "rgba(255,255,255,0.4)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {t.quantity || 0} @ ${(t.entry_price || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </span>
+              {pnl !== 0 && <span style={{ color: isWin ? "#10B981" : "#EF4444", fontWeight: 600, flexShrink: 0 }}>
+                {isWin ? "+" : ""}{pnl < 1000 ? pnl.toFixed(2) : `${(pnl/1000).toFixed(1)}k`}
+              </span>}
+              <span style={{ color: "rgba(255,255,255,0.5)", fontWeight: 600, flexShrink: 0, fontSize: isMobile ? 9 : 10 }}>{t.agent || ''}</span>
+              <span style={{ color: "rgba(255,255,255,0.2)", fontSize: 9, flexShrink: 0 }}>{timeStr}</span>
+            </div>
+          );
+        })}
+      </div>
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
+    </GlassCard>
+  );
+}
+
+function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = false, isTablet = false }) {
   const memberCount = serverUsers.length;
+  // Map recent trades per investor for activity sparkline
+  const tradesByInvestor = {};
+  liveTrades.forEach(t => {
+    const inv = t.investor || 'Unknown';
+    if (!tradesByInvestor[inv]) tradesByInvestor[inv] = [];
+    tradesByInvestor[inv].push(t);
+  });
+
   return (
     <GlassCard>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 12, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 6 : 0 }}>
@@ -365,7 +416,7 @@ function InvestorTable({ serverUsers, groupData, isMobile = false, isTablet = fa
       {memberCount === 0 ? (
         <div style={{ padding: 24, textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>No investors registered yet</div>
       ) : (
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(280px, 1fr))", gap: isMobile ? 10 : 12 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 10 : 12 }}>
         {serverUsers.map(user => {
           const avatar = (user.firstName?.[0] || '') + (user.lastName?.[0] || '') || user.email?.[0]?.toUpperCase() || '?';
           const name = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
@@ -373,39 +424,118 @@ function InvestorTable({ serverUsers, groupData, isMobile = false, isTablet = fa
           const initial = user.initialBalance || user.walletInitial || 100000;
           const gain = equity - initial;
           const gainPct = initial > 0 ? (gain / initial * 100) : 0;
+          const realized = user.realizedPnL || 0;
+          const unrealized = user.unrealizedPnL || 0;
+          const trades = user.tradeCount || 0;
+          const openPos = user.openPositions || 0;
+          const userTrades = tradesByInvestor[name] || [];
+          const recentPnL = userTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+          const wins = userTrades.filter(t => (t.realized_pnl || 0) > 0).length;
+          const losses = userTrades.filter(t => (t.realized_pnl || 0) < 0).length;
+
           return (
             <div key={user.id} style={{
               padding: isMobile ? 12 : 16, borderRadius: 16,
               background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
-              display: "flex", alignItems: "center", gap: isMobile ? 10 : 12,
+              display: "flex", flexDirection: "column", gap: isMobile ? 10 : 12,
             }}>
+              {/* Top row: avatar, name, equity */}
+              <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 10 : 12 }}>
+                <div style={{
+                  width: isMobile ? 40 : 48, height: isMobile ? 40 : 48, borderRadius: 14,
+                  background: "linear-gradient(135deg, rgba(0,212,255,0.2), rgba(168,85,247,0.2))",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: isMobile ? 13 : 15, fontWeight: 700, color: "#00D4FF", flexShrink: 0,
+                  position: "relative",
+                }}>
+                  {avatar}
+                  {user.isTrading && <span style={{
+                    position: "absolute", bottom: -2, right: -2, width: 12, height: 12, borderRadius: "50%",
+                    background: "#10B981", border: "2px solid #0a0a1a",
+                    boxShadow: "0 0 8px rgba(16,185,129,0.6)", animation: "pulse 2s infinite",
+                  }} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: isMobile ? 13 : 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+                  <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.35)" }}>{user.email}</div>
+                  <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.25)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span>{user.role || 'investor'}</span>
+                    <span>·</span>
+                    <span>{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}</span>
+                    {user.isTrading && <span style={{ color: "#10B981", fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}>
+                      <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#10B981", animation: "pulse 1.5s infinite" }} />
+                      ACTIVE
+                    </span>}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color: "#fff" }}>${equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                  <div style={{ fontSize: isMobile ? 11 : 13, color: gain >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>
+                    {gain >= 0 ? "+" : ""}{gainPct.toFixed(1)}%
+                  </div>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.2)" }}>from ${initial.toLocaleString()}</div>
+                </div>
+              </div>
+
+              {/* Trading motion stats row */}
               <div style={{
-                width: isMobile ? 36 : 42, height: isMobile ? 36 : 42, borderRadius: 13,
-                background: "linear-gradient(135deg, rgba(0,212,255,0.2), rgba(168,85,247,0.2))",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: isMobile ? 12 : 13, fontWeight: 700, color: "#00D4FF", flexShrink: 0,
-              }}>{avatar}</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
-                <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.35)" }}>{user.email}</div>
-                <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.25)", marginTop: 2 }}>
-                  {user.role || 'investor'} · {user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}
-                  {user.isTrading && <span style={{ marginLeft: 6, color: "#10B981" }}>● trading</span>}
-                  {user.openPositions > 0 && <span style={{ marginLeft: 4, color: "rgba(255,255,255,0.35)" }}>· {user.openPositions} pos</span>}
+                display: "grid", gridTemplateColumns: isMobile ? "repeat(3, 1fr)" : "repeat(6, 1fr)", gap: isMobile ? 6 : 8,
+              }}>
+                <div style={{ padding: "6px 8px", borderRadius: 10, background: "rgba(0,212,255,0.06)", textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Open</div>
+                  <div style={{ fontSize: isMobile ? 14 : 16, fontWeight: 700, color: "#00D4FF" }}>{openPos}</div>
                 </div>
-              </div>
-              <div style={{ textAlign: "right", flexShrink: 0 }}>
-                <div style={{ fontSize: isMobile ? 13 : 15, fontWeight: 700, color: "#fff" }}>${equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
-                <div style={{ fontSize: isMobile ? 10 : 11, color: gain >= 0 ? "#10B981" : "#EF4444", fontWeight: 600 }}>
-                  {gain >= 0 ? "+" : ""}{gainPct.toFixed(2)}%
+                <div style={{ padding: "6px 8px", borderRadius: 10, background: "rgba(168,85,247,0.06)", textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Trades</div>
+                  <div style={{ fontSize: isMobile ? 14 : 16, fontWeight: 700, color: "#A855F7" }}>{trades}</div>
                 </div>
-                <div style={{ fontSize: 9, color: "rgba(255,255,255,0.2)" }}>of ${initial.toLocaleString()}</div>
+                <div style={{ padding: "6px 8px", borderRadius: 10, background: realized >= 0 ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)", textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Realized</div>
+                  <div style={{ fontSize: isMobile ? 12 : 14, fontWeight: 700, color: realized >= 0 ? "#10B981" : "#EF4444" }}>
+                    {realized >= 0 ? "+" : ""}${Math.abs(realized) >= 1000 ? `${(realized/1000).toFixed(1)}k` : realized.toFixed(0)}
+                  </div>
+                </div>
+                {!isMobile && <>
+                <div style={{ padding: "6px 8px", borderRadius: 10, background: unrealized >= 0 ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)", textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Unrealized</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: unrealized >= 0 ? "#10B981" : "#EF4444" }}>
+                    {unrealized >= 0 ? "+" : ""}${Math.abs(unrealized) >= 1000 ? `${(unrealized/1000).toFixed(1)}k` : unrealized.toFixed(0)}
+                  </div>
+                </div>
+                <div style={{ padding: "6px 8px", borderRadius: 10, background: "rgba(245,158,11,0.06)", textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>W/L</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B" }}>{wins}/{losses}</div>
+                </div>
+                <div style={{ padding: "6px 8px", borderRadius: 10, background: recentPnL >= 0 ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)", textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Session</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: recentPnL >= 0 ? "#10B981" : "#EF4444" }}>
+                    {recentPnL >= 0 ? "+" : ""}${Math.abs(recentPnL) >= 1000 ? `${(recentPnL/1000).toFixed(1)}k` : recentPnL.toFixed(0)}
+                  </div>
+                </div>
+                </>}
               </div>
+
+              {/* Recent trade activity mini-feed */}
+              {userTrades.length > 0 && (
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {userTrades.slice(0, 6).map((t, j) => (
+                    <span key={j} style={{
+                      padding: "2px 6px", borderRadius: 6, fontSize: 9, fontWeight: 600,
+                      background: (t.realized_pnl || 0) >= 0 ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)",
+                      color: (t.realized_pnl || 0) >= 0 ? "#10B981" : "#EF4444",
+                      border: `1px solid ${(t.realized_pnl || 0) >= 0 ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)"}`,
+                    }}>
+                      {t.side === 'LONG' ? '▲' : '▼'} {t.symbol} {(t.realized_pnl || 0) >= 0 ? '+' : ''}{(t.realized_pnl || 0).toFixed(0)} · {t.agent || ''}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
       </div>
       )}
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
     </GlassCard>
   );
 }
@@ -622,25 +752,31 @@ function CapitalView({ growthData, isMobile, isTablet, totalAUM = 0 }) {
   );
 }
 
-function InvestorsView({ groupData, serverUsers, isMobile, isTablet }) {
+function InvestorsView({ groupData, serverUsers, liveTrades = [], isMobile, isTablet }) {
   const totalAUM = groupData.totalEquity || 0;
   const investors = serverUsers; // Show all members — admins are investors too
   const memberCount = investors.length || groupData.investorCount || 0;
   const perInvestor = memberCount > 0 ? totalAUM / memberCount : 0;
   const avgGain = groupData.returnPct || 0;
+  const totalTrades = investors.reduce((s, u) => s + (u.tradeCount || 0), 0);
+  const totalOpen = investors.reduce((s, u) => s + (u.openPositions || 0), 0);
+  const winRate = groupData.winRate || (groupData.totalWins && groupData.totalLosses ? (groupData.totalWins / (groupData.totalWins + groupData.totalLosses) * 100) : 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
       <div style={isMobile
-        ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }
-        : { display: "flex", gap: 16, flexWrap: "wrap" }
+        ? { display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }
+        : { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }
       }>
         <MetricCard label="Total AUM" value={Math.round(totalAUM)} prefix="$" color="#00D4FF" isMobile={isMobile} />
         <MetricCard label="Per Investor" value={Math.round(perInvestor)} prefix="$" color="#A855F7" isMobile={isMobile} />
-        <MetricCard label="Avg Return" value={avgGain.toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
+        <MetricCard label="Avg Return" value={avgGain.toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} change={avgGain} />
         <MetricCard label="Members" value={memberCount} color="#F59E0B" isMobile={isMobile} />
+        <MetricCard label="Total Trades" value={totalTrades} color="#00D4FF" isMobile={isMobile} />
+        <MetricCard label="Open Positions" value={totalOpen} color="#A855F7" isMobile={isMobile} />
       </div>
-      <InvestorTable serverUsers={investors} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />
+      <LiveTradeFeed trades={liveTrades} isMobile={isMobile} />
+      <InvestorTable serverUsers={investors} groupData={groupData} liveTrades={liveTrades} isMobile={isMobile} isTablet={isTablet} />
     </div>
   );
 }
@@ -790,7 +926,7 @@ export default function TwelveTribes_MissionControl() {
         {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={liveTrades} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
         {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} totalAUM={totalAUM} />}
         {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} liveAgents={liveAgents} />}
-        {activeView === "investors" && <InvestorsView groupData={groupData} serverUsers={serverUsers} isMobile={isMobile} isTablet={isTablet} />}
+        {activeView === "investors" && <InvestorsView groupData={groupData} serverUsers={serverUsers} liveTrades={liveTrades} isMobile={isMobile} isTablet={isTablet} />}
       </div>
 
       {/* Footer */}
