@@ -882,6 +882,90 @@ function updateCorrelationMatrix() {
     'NEUTRAL';
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//   MACRO INTELLIGENCE ENGINE — VIX, Fear & Greed, DXY, Treasury Yields
+//   Provides market-wide context for signal generation and risk management
+// ═══════════════════════════════════════════════════════════════════
+const macroIntel = {
+  vix: { value: 18.5, regime: 'normal', lastUpdated: 0 },       // VIX fear gauge
+  fearGreed: { value: 50, label: 'Neutral', lastUpdated: 0 },    // CNN Fear & Greed proxy
+  dxy: { value: 104.2, trend: 'flat', lastUpdated: 0 },          // Dollar Index
+  treasuryYield: { y2: 4.62, y10: 4.25, spread: -0.37, curve: 'inverted', lastUpdated: 0 }, // Yield curve
+  sectorRotation: { leader: 'XLK', laggard: 'XLE', rotationScore: 0, lastUpdated: 0 },
+};
+
+function updateMacroIntel() {
+  // VIX estimation from SPY volatility + UVXY proxy
+  const spyHist = priceHistory['SPY'];
+  const uvxyHist = priceHistory['UVXY'];
+  if (spyHist && spyHist.length >= 30) {
+    const spyVol = volatility(spyHist, 20);
+    const uvxyPrice = marketPrices['UVXY'] || 24.80;
+    const uvxyAnchor = DEFAULT_PRICES['UVXY'] || 24.80;
+    // VIX proxy: SPY realized vol annualized + UVXY premium
+    const annualizedVol = spyVol * Math.sqrt(252) * 100;
+    const uvxyPremium = ((uvxyPrice / uvxyAnchor) - 1) * 15;
+    macroIntel.vix.value = Math.max(9, Math.min(80, annualizedVol * 0.7 + uvxyPremium + 12 + (Math.random() - 0.5) * 2));
+    macroIntel.vix.regime = macroIntel.vix.value > 30 ? 'crisis' : macroIntel.vix.value > 25 ? 'elevated' : macroIntel.vix.value > 18 ? 'normal' : 'complacent';
+    macroIntel.vix.lastUpdated = Date.now();
+  }
+
+  // Fear & Greed Index proxy — composite of momentum, VIX, breadth, and safe haven demand
+  const spyMom = spyHist && spyHist.length >= 20 ? momentum(spyHist, 20) : 0;
+  const gldMom = priceHistory['GLD']?.length >= 20 ? momentum(priceHistory['GLD'], 20) : 0;
+  const tltMom = priceHistory['TLT']?.length >= 20 ? momentum(priceHistory['TLT'], 20) : 0;
+  // Higher SPY momentum = greed, higher GLD/TLT momentum = fear
+  const fgRaw = 50 + (spyMom * 8) - (gldMom * 5) - (tltMom * 3) - ((macroIntel.vix.value - 18) * 1.5);
+  macroIntel.fearGreed.value = Math.max(0, Math.min(100, fgRaw + (Math.random() - 0.5) * 4));
+  macroIntel.fearGreed.label = macroIntel.fearGreed.value > 80 ? 'Extreme Greed' :
+    macroIntel.fearGreed.value > 60 ? 'Greed' :
+    macroIntel.fearGreed.value > 40 ? 'Neutral' :
+    macroIntel.fearGreed.value > 20 ? 'Fear' : 'Extreme Fear';
+  macroIntel.fearGreed.lastUpdated = Date.now();
+
+  // DXY (Dollar Index) proxy from USD forex pairs
+  const usdJpy = marketPrices['USD/JPY'] || 150.85;
+  const usdChf = marketPrices['USD/CHF'] || 0.8812;
+  const eurUsd = marketPrices['EUR/USD'] || 1.0842;
+  const gbpUsd = marketPrices['GBP/USD'] || 1.2934;
+  // DXY is inversely weighted by EUR (~57.6%), JPY (~13.6%), GBP (~11.9%), CHF (~3.6%)
+  const dxyProxy = 50 * (1 / eurUsd) + 14 * (usdJpy / 100) + 12 * (1 / gbpUsd) + 4 * (usdChf * 100 / 88) + 24;
+  macroIntel.dxy.value = roundTo(dxyProxy, 2);
+  const dxyHist = [macroIntel.dxy.value]; // simplified trend
+  macroIntel.dxy.trend = macroIntel.dxy.value > 105 ? 'strong' : macroIntel.dxy.value < 100 ? 'weak' : 'flat';
+  macroIntel.dxy.lastUpdated = Date.now();
+
+  // Treasury Yield Curve proxy — TLT (20y bonds) as inverse yield proxy
+  const tltPrice = marketPrices['TLT'] || 87.30;
+  const tltAnchor = DEFAULT_PRICES['TLT'] || 87.30;
+  // Higher TLT price = lower yields; lower TLT price = higher yields
+  macroIntel.treasuryYield.y10 = roundTo(4.25 + ((tltAnchor - tltPrice) / tltAnchor) * 8, 2);
+  macroIntel.treasuryYield.y2 = roundTo(macroIntel.treasuryYield.y10 + 0.15 + (Math.random() - 0.5) * 0.1, 2);
+  macroIntel.treasuryYield.spread = roundTo(macroIntel.treasuryYield.y10 - macroIntel.treasuryYield.y2, 2);
+  macroIntel.treasuryYield.curve = macroIntel.treasuryYield.spread > 0.5 ? 'steep' :
+    macroIntel.treasuryYield.spread > 0 ? 'normal' :
+    macroIntel.treasuryYield.spread > -0.5 ? 'flat_inverted' : 'deeply_inverted';
+  macroIntel.treasuryYield.lastUpdated = Date.now();
+
+  // Sector Rotation — rank sector ETFs by momentum
+  const sectors = ['XLF', 'XLE', 'XLK', 'ARKK', 'HYG'];
+  const sectorMom = sectors.map(s => ({
+    symbol: s,
+    momentum: priceHistory[s]?.length >= 20 ? momentum(priceHistory[s], 20) : 0,
+  })).sort((a, b) => b.momentum - a.momentum);
+  if (sectorMom.length > 0) {
+    macroIntel.sectorRotation.leader = sectorMom[0].symbol;
+    macroIntel.sectorRotation.laggard = sectorMom[sectorMom.length - 1].symbol;
+    macroIntel.sectorRotation.rotationScore = roundTo(sectorMom[0].momentum - sectorMom[sectorMom.length - 1].momentum, 2);
+    macroIntel.sectorRotation.rankings = sectorMom;
+    macroIntel.sectorRotation.lastUpdated = Date.now();
+  }
+}
+
+// Update macro intel every 30 seconds
+setInterval(updateMacroIntel, 30000);
+setTimeout(updateMacroIntel, 5000); // First update 5s after boot
+
 // ═══════════════════════════════════════════════════════════
 //   NEWS SENTIMENT ENGINE
 //   Fetches real headlines, scores sentiment, feeds to agents.
@@ -1160,7 +1244,7 @@ function tickPrices() {
       priceDataSource[symbol] = 'stale';
     } else {
       // SIMULATED, HYBRID FALLBACK, or REAL with no data ever received:
-      // SIMULATED or HYBRID FALLBACK: Full synthetic price engine
+      // SIMULATED or HYBRID FALLBACK: Full synthetic price engine with MEAN-REVERSION ANCHOR
       const baseVol = isCash ? 0.0001 : isFx ? 0.0008 : isCrypto ? 0.004 : isLeveraged ? 0.006 : isFutures ? 0.003 : 0.002;
       const sessionAdj = isCrypto ? (0.7 + sessionVol * 0.3) : sessionVol;
       const adjVol = baseVol * sessionAdj;
@@ -1168,15 +1252,36 @@ function tickPrices() {
       let ts = trendState[symbol];
       ts.duration++;
       if (ts.duration >= ts.maxDuration) {
-        ts.drift = (Math.random() - 0.45) * adjVol * 3;
+        ts.drift = (Math.random() - 0.50) * adjVol * 3; // Neutral drift — no upward bias
         ts.duration = 0;
         ts.maxDuration = 20 + Math.floor(Math.random() * 80);
       }
 
+      // ─── MEAN-REVERSION ANCHOR ───
+      // Prevents unbounded drift from realistic price levels
+      const anchorPrice = DEFAULT_PRICES[symbol] || price;
+      const driftFromAnchor = (price - anchorPrice) / anchorPrice; // % drift from seed price
+      const absDrift = Math.abs(driftFromAnchor);
+      let reversionForce = 0;
+      if (absDrift > 0.10) {
+        // Soft reversion: pull back proportionally when >10% off anchor
+        reversionForce = -driftFromAnchor * adjVol * 2.5;
+      } else if (absDrift > 0.05) {
+        // Gentle reversion: mild pull when 5-10% off
+        reversionForce = -driftFromAnchor * adjVol * 0.8;
+      }
+
       const noise = (Math.random() - 0.5) * adjVol;
-      const change = ts.drift + noise;
+      const change = ts.drift + noise + reversionForce;
       const decimals = price < 10 ? 4 : 2;
-      marketPrices[symbol] = roundTo(price * (1 + change), decimals);
+      let newPrice = price * (1 + change);
+
+      // ─── HARD CLAMP: Max ±25% from anchor ───
+      const maxPrice = anchorPrice * 1.25;
+      const minPrice = anchorPrice * 0.75;
+      newPrice = Math.max(minPrice, Math.min(maxPrice, newPrice));
+
+      marketPrices[symbol] = roundTo(newPrice, decimals);
       priceDataSource[symbol] = 'simulated';
     }
 
@@ -3328,8 +3433,11 @@ api.delete('/api/trading/positions/:positionId', auth, (req, res) => {
 
 // ─── TRADING: HISTORY ───
 api.get('/api/trading/history', auth, (req, res) => {
-  const trades = db.findMany('trades', t => t.user_id === req.userId).reverse().slice(0, 50);
-  json(res, 200, trades);
+  const limit = Math.min(parseInt(req.query?.limit) || 500, 5000);
+  const offset = parseInt(req.query?.offset) || 0;
+  const allTrades = db.findMany('trades', t => t.user_id === req.userId).reverse();
+  const trades = allTrades.slice(offset, offset + limit);
+  json(res, 200, { total: allTrades.length, offset, limit, trades });
 });
 
 // ─── TRADING: RISK DASHBOARD ───
@@ -3337,7 +3445,7 @@ api.get('/api/trading/risk', auth, (req, res) => {
   const wallet = db.findOne('wallets', w => w.user_id === req.userId);
   if (!wallet) return json(res, 404, { error: 'Wallet not found' });
   const positions = db.findMany('positions', p => p.user_id === req.userId && p.status === 'OPEN');
-  const trades = db.findMany('trades', t => t.user_id === req.userId).slice(-50);
+  const trades = db.findMany('trades', t => t.user_id === req.userId).slice(-500);
   const events = db.findMany('risk_events', e => e.user_id === req.userId).slice(-20);
 
   const peakEquity = wallet.peak_equity || wallet.initial_balance;
@@ -3861,6 +3969,15 @@ const AI_AGENTS = [
     isPositionManager: true,
     reasons: { long: 'Scaling into winner — conviction high', short: 'Sector rotation — reallocating capital' },
   },
+  {
+    name: 'Warden',
+    role: 'SIGNAL_INTEGRITY',
+    description: 'Signal data quality verification — validates signal coherence, detects anomalies, cross-validates against macro context',
+    symbols: [], // Warden doesn't trade — it monitors all symbols
+    longBias: 0.50,
+    isIntegrityAgent: true,
+    reasons: { long: 'Signal integrity verified', short: 'Signal integrity verified' },
+  },
 ];
 
 const AUTO_TRADE_CONFIG = {
@@ -3932,10 +4049,26 @@ function updatePerformanceFeedback(agentName, symbol, side, pnl) {
   const recentWins = ap.recentPnl.filter(p => p >= 0).length;
   const recentWinRate = ap.recentPnl.length > 5 ? recentWins / ap.recentPnl.length : 0.5;
 
-  // Agents that are winning get boosted; losing agents get dampened
-  if (recentWinRate > 0.6) ap.adaptiveConfidence = Math.min(1.5, 1.0 + (recentWinRate - 0.5));
-  else if (recentWinRate < 0.35) ap.adaptiveConfidence = Math.max(0.3, recentWinRate + 0.15);
-  else ap.adaptiveConfidence = 0.8 + recentWinRate * 0.4;
+  // Enhanced adaptive confidence with streak awareness
+  if (recentWinRate > 0.65) {
+    ap.adaptiveConfidence = Math.min(1.8, 1.0 + (recentWinRate - 0.5) * 1.5);
+  } else if (recentWinRate > 0.55) {
+    ap.adaptiveConfidence = Math.min(1.5, 1.0 + (recentWinRate - 0.5));
+  } else if (recentWinRate < 0.30) {
+    ap.adaptiveConfidence = Math.max(0.2, recentWinRate * 0.8);
+  } else if (recentWinRate < 0.40) {
+    ap.adaptiveConfidence = Math.max(0.4, recentWinRate + 0.1);
+  } else {
+    ap.adaptiveConfidence = 0.85 + recentWinRate * 0.3;
+  }
+  // Hot streak bonus: 4+ consecutive wins = extra conviction
+  if (ap.streak >= 6) ap.adaptiveConfidence *= 1.25;
+  else if (ap.streak >= 4) ap.adaptiveConfidence *= 1.12;
+  // Cold streak penalty: 4+ consecutive losses = heavy dampen
+  if (ap.streak <= -6) ap.adaptiveConfidence *= 0.5;
+  else if (ap.streak <= -4) ap.adaptiveConfidence *= 0.7;
+  // Hard cap
+  ap.adaptiveConfidence = Math.max(0.15, Math.min(2.0, ap.adaptiveConfidence));
 
   // ─── Feed into learning engine + circuit breaker ───
   updateCircuitBreaker(agentName, pnl);
@@ -3960,7 +4093,7 @@ const LEARNABLE_INDICATORS = [
 ];
 
 const DEFAULT_INDICATOR_WEIGHT = 1.0;
-const WEIGHT_LEARN_RATE = 0.08;       // How fast weights adapt (higher = faster learning)
+const WEIGHT_LEARN_RATE = 0.12;       // Faster learning — agents adapt quicker to changing conditions
 const WEIGHT_MIN = 0.2;               // Never fully zero-out an indicator
 const WEIGHT_MAX = 2.5;               // Cap runaway positive feedback
 const WEIGHT_DECAY_RATE = 0.005;      // Slow regression to mean over time
@@ -4491,6 +4624,46 @@ function computeSignal(symbol, agentStyle, agentName) {
     score *= (0.75 * w('correlation')); indicators_used.push('correlation'); reasons.push('Risk-on regime — dampened shorts');
   }
 
+  // ─── MACRO INTELLIGENCE INTEGRATION ───
+  // VIX regime adjustment — crisis VIX dampens longs, boosts hedges
+  if (macroIntel.vix.regime === 'crisis') {
+    if (score > 0) { score *= 0.5; reasons.push(`VIX crisis (${macroIntel.vix.value.toFixed(0)}) — longs heavily dampened`); }
+    else { score *= 1.3; reasons.push(`VIX crisis — bearish/hedge signals boosted`); }
+  } else if (macroIntel.vix.regime === 'elevated') {
+    if (score > 0) { score *= 0.8; reasons.push(`VIX elevated (${macroIntel.vix.value.toFixed(0)}) — caution`); }
+  } else if (macroIntel.vix.regime === 'complacent') {
+    // Complacent VIX = potential for surprise correction
+    if (score > 0.5) { score *= 0.9; reasons.push('VIX complacent — contrarian caution'); }
+  }
+
+  // Fear & Greed contrarian signal
+  if (macroIntel.fearGreed.value > 85 && score > 0) {
+    score *= 0.7; reasons.push(`Extreme Greed (${macroIntel.fearGreed.value.toFixed(0)}) — contrarian dampen`);
+  } else if (macroIntel.fearGreed.value < 15 && score < 0) {
+    score *= 0.7; reasons.push(`Extreme Fear (${macroIntel.fearGreed.value.toFixed(0)}) — contrarian dampen shorts`);
+  }
+
+  // DXY (Dollar strength) impact on international/commodity assets
+  if (macroIntel.dxy.trend === 'strong') {
+    const dxyAffected = ['GC=F', 'SI=F', 'EEM', 'BTC', 'ETH'].includes(symbol);
+    if (dxyAffected && score > 0) {
+      score *= 0.85; reasons.push('Strong USD headwind — dampened');
+    }
+  } else if (macroIntel.dxy.trend === 'weak') {
+    const dxyBeneficiary = ['GC=F', 'SI=F', 'EEM', 'BTC', 'ETH'].includes(symbol);
+    if (dxyBeneficiary && score > 0) {
+      score *= 1.15; reasons.push('Weak USD tailwind — boosted');
+    }
+  }
+
+  // Yield curve context — inverted curve dampens cyclicals
+  if (macroIntel.treasuryYield.curve === 'deeply_inverted') {
+    const cyclicals = ['XLF', 'BAC', 'JPM', 'F', 'GE', 'IWM'].includes(symbol);
+    if (cyclicals && score > 0) {
+      score *= 0.75; reasons.push(`Inverted yield curve (${macroIntel.treasuryYield.spread}bp) — cyclical risk`);
+    }
+  }
+
   // ─── MARKET SESSION VOLATILITY ADJUSTMENT ───
   if (session.volMultiplier < 0.8) {
     score *= 0.85; reasons.push(`Off-hours — reduced conviction (${session.session})`);
@@ -4646,7 +4819,12 @@ function computeSignal(symbol, agentStyle, agentName) {
   else if (confluence >= 5) { score *= 1.6; reasons.push(`Strong confluence (${confluence} indicators)`); }
   else if (confluence >= 4) { score *= 1.3; reasons.push(`Good confluence (${confluence} indicators)`); }
   else if (confluence >= 3) { score *= 0.8; reasons.push(`Moderate confluence (${confluence}) — below precision threshold`); }
-  else { score *= 0.3; reasons.push(`Weak confluence (${confluence}) — signal heavily dampened`); }
+  else {
+    // In ranging markets, accept slightly lower confluence since indicators naturally conflict
+    const rangingBonus = regime === 'ranging' ? 1.5 : 1.0;
+    score *= 0.3 * rangingBonus;
+    reasons.push(`Weak confluence (${confluence}) — signal dampened${regime === 'ranging' ? ' (ranging adjustment)' : ''}`);
+  }
 
   // ─── HISTORICAL PERFORMANCE BIAS ───
   const sp = getSymbolPerf(symbol);
@@ -4947,34 +5125,40 @@ function adaptivePositionManagement(userId, openPositions) {
       continue;
     }
 
-    // ─── PROFIT TARGET: Take profit at target to lock in wins (high win-rate strategy) ───
+    // ─── DYNAMIC TRAILING STOP — Ratchets tighter as profit grows ───
     const profitTarget = (AUTO_TRADE_CONFIG.profitTargetPct || 1.5) * assetProfitMultiplier;
-    if (pnlPct >= profitTarget) {
-      closePosition(userId, pos.id);
-      updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
-      logAutoTrade(userId, 'Titan', pos.symbol, 'CLOSE', pos.quantity,
-        `Profit target hit — ${pnlPct.toFixed(2)}% gain (target: ${profitTarget}%)`);
-      continue;
+    const maxLossLimit = (AUTO_TRADE_CONFIG.maxLossPct || 0.6) * assetStopMultiplier;
+
+    // Initialize trailing high-water mark on position
+    if (!pos._trailingHigh || pnlPct > pos._trailingHigh) {
+      pos._trailingHigh = pnlPct;
     }
 
-    // ─── TRAILING STOP: Activates at +0.6%, tighter trail to protect gains ───
-    if (pnlPct > 0.6) {
-      const trailDist = pnlPct < 1.0 ? 0.25 : pnlPct < 2.0 ? 0.4 : pnlPct < 4.0 ? 0.6 : 1.0;
+    // Ratcheting trailing stop: the more profit, the tighter the stop
+    let trailingStopPct;
+    if (pos._trailingHigh >= profitTarget * 2.0) {
+      trailingStopPct = 0.25; // Lock in most of a 2x+ winner
+    } else if (pos._trailingHigh >= profitTarget * 1.5) {
+      trailingStopPct = 0.35; // Tighter trail on 1.5x+ winners
+    } else if (pos._trailingHigh >= profitTarget) {
+      trailingStopPct = 0.50; // Standard trail once profitable
+    } else if (pos._trailingHigh >= profitTarget * 0.5) {
+      trailingStopPct = 0.65; // Loose trail on partial winners
+    } else {
+      trailingStopPct = maxLossLimit; // Use standard stop for non-winners
+    }
 
-      const trendAligned = (pos.side === 'LONG' && mom > 0.05) || (pos.side === 'SHORT' && mom < -0.05);
-      const regimeAligned = (pos.side === 'LONG' && regime === 'trending_up') || (pos.side === 'SHORT' && regime === 'trending_down');
+    const drawdownFromHigh = pos._trailingHigh - pnlPct;
 
-      // Let winners run ONLY when both trend AND regime strongly aligned
-      if (trendAligned && regimeAligned && pnlPct < profitTarget) continue;
-
-      // Take profit when momentum fading or in ranging market
-      if (!trendAligned || pnlPct > 3 || (pnlPct > 1.0 && regime === 'ranging')) {
-        closePosition(userId, pos.id);
+    if (pos._trailingHigh >= profitTarget * 0.5 && drawdownFromHigh >= trailingStopPct) {
+      // Trailing stop triggered — lock in profit
+      const result = closePosition(userId, pos.id);
+      if (result.success) {
         updatePerformanceFeedback(pos.agent, pos.symbol, pos.side, pos.unrealized_pnl || pnlPct);
         logAutoTrade(userId, 'Sentinel', pos.symbol, 'CLOSE', pos.quantity,
-          `Trailing profit — ${pnlPct.toFixed(2)}% gain${!trendAligned ? ' (momentum fading)' : ''}`);
-        continue;
+          `Trailing stop: peak ${pos._trailingHigh.toFixed(2)}% → now ${pnlPct.toFixed(2)}% (trail ${trailingStopPct.toFixed(2)}%)`);
       }
+      continue;
     }
 
     // ─── EARLY EXIT: Cut losers immediately when both momentum + regime are against us ───
@@ -5034,10 +5218,10 @@ function logAutoTrade(userId, agent, symbol, side, quantity, reason) {
     user_id: userId, agent, symbol, side, quantity, reason,
     timestamp: new Date().toISOString(),
   });
-  // Trim log to last 500 entries per user
+  // Trim log to last 10000 entries per user
   const logs = db.findMany('auto_trade_log', l => l.user_id === userId);
-  if (logs.length > 500) {
-    const toRemove = logs.slice(0, logs.length - 500);
+  if (logs.length > 10000) {
+    const toRemove = logs.slice(0, logs.length - 10000);
     toRemove.forEach(l => db.remove('auto_trade_log', r => r.id === l.id));
   }
 }
@@ -5091,10 +5275,10 @@ function persistSignal(signal, userId, context) {
   signalBuffer.push(record);
   if (signalBuffer.length > SIGNAL_BUFFER_MAX) signalBuffer.shift();
 
-  // Trim DB to last 2000 signals per user
+  // Trim DB to last 10000 signals per user
   const userSignals = db.findMany('signals', s => s.user_id === userId);
-  if (userSignals.length > 2000) {
-    const toRemove = userSignals.slice(0, userSignals.length - 2000);
+  if (userSignals.length > 10000) {
+    const toRemove = userSignals.slice(0, userSignals.length - 10000);
     toRemove.forEach(s => db.remove('signals', r => r.id === s.id));
   }
 
@@ -5494,6 +5678,156 @@ function qaCheckSignals() {
   return fixes;
 }
 
+// ─── CHECK 3.5: WARDEN — Signal Integrity Verification ───
+// Cross-validates signal quality against macro context, detects false positives,
+// verifies data source consistency, and flags anomalous signal patterns
+function wardenSignalIntegrity() {
+  const fixes = [];
+  const allSymbols = Object.keys(marketPrices);
+  let anomaliesDetected = 0;
+  let signalsVerified = 0;
+  let signalsCorrected = 0;
+
+  for (const symbol of allSymbols) {
+    const hist = priceHistory[symbol];
+    if (!hist || hist.length < 30) continue;
+    signalsVerified++;
+
+    const price = marketPrices[symbol];
+    const anchor = DEFAULT_PRICES[symbol];
+    if (!anchor) continue;
+
+    const driftPct = ((price - anchor) / anchor) * 100;
+    const absDrift = Math.abs(driftPct);
+
+    // ─── CHECK A: Price-Signal Coherence ───
+    // If price has drifted significantly, signals on that symbol may be unreliable
+    if (absDrift > 15) {
+      anomaliesDetected++;
+      // Force price correction toward anchor
+      const correctionTarget = anchor * (1 + Math.sign(driftPct) * 0.10);
+      const correctionSteps = 20;
+      const stepSize = (correctionTarget - price) / correctionSteps;
+      // Inject gradual correction into price history
+      const recentLen = Math.min(correctionSteps, hist.length);
+      for (let i = hist.length - recentLen; i < hist.length; i++) {
+        hist[i] = roundTo(hist[i] + stepSize * (i - (hist.length - recentLen)) / recentLen, price < 10 ? 4 : 2);
+      }
+      marketPrices[symbol] = roundTo(correctionTarget, price < 10 ? 4 : 2);
+      signalsCorrected++;
+      fixes.push({
+        issue: 'PRICE_DRIFT_CORRECTION',
+        symbol,
+        detail: `Drift ${driftPct.toFixed(1)}% — corrected toward anchor ($${anchor})`,
+        autoFixed: true,
+      });
+    }
+
+    // ─── CHECK B: Macro-Signal Alignment ───
+    // Verify that bullish signals aren't firing during extreme fear / crisis VIX
+    if (macroIntel.vix.regime === 'crisis') {
+      // In crisis mode, dampen all bullish signal confidence
+      const sig = computeSignal(symbol, 'SIGNAL_SCANNER', 'Warden');
+      if (sig.score > 0.5) {
+        anomaliesDetected++;
+        fixes.push({
+          issue: 'MACRO_MISALIGNMENT',
+          symbol,
+          detail: `Bullish signal (${sig.score.toFixed(2)}) during VIX crisis (${macroIntel.vix.value.toFixed(1)}) — flagged`,
+          autoFixed: false,
+        });
+      }
+    }
+
+    // ─── CHECK C: Yield Curve Signal Context ───
+    // Deeply inverted curve + bullish equity signals = warning
+    if (macroIntel.treasuryYield.curve === 'deeply_inverted') {
+      const isCyclical = ['XLF', 'BAC', 'JPM', 'F', 'GE'].includes(symbol);
+      if (isCyclical) {
+        const sig = computeSignal(symbol, 'FUNDAMENTAL_ANALYST', 'Warden');
+        if (sig.score > 0.3) {
+          anomaliesDetected++;
+          fixes.push({
+            issue: 'YIELD_CURVE_WARNING',
+            symbol,
+            detail: `Bullish cyclical signal during inverted curve (spread: ${macroIntel.treasuryYield.spread}bp)`,
+            autoFixed: false,
+          });
+        }
+      }
+    }
+
+    // ─── CHECK D: Volume-Price Divergence ───
+    // OBV diverging from price trend = potential false signal
+    const obvArr = obv(hist);
+    if (obvArr.length > 20) {
+      const priceDir = hist[hist.length - 1] > hist[hist.length - 20] ? 1 : -1;
+      const obvDir = obvArr[obvArr.length - 1] > obvArr[obvArr.length - 20] ? 1 : -1;
+      if (priceDir !== obvDir) {
+        anomaliesDetected++;
+        fixes.push({
+          issue: 'OBV_DIVERGENCE',
+          symbol,
+          detail: `Price ${priceDir > 0 ? 'rising' : 'falling'} but OBV ${obvDir > 0 ? 'rising' : 'falling'} — divergence detected`,
+          autoFixed: false,
+        });
+      }
+    }
+
+    // ─── CHECK E: Stale Sentiment Detection ───
+    const sent = sentimentStore[symbol];
+    if (sent && (Date.now() - sent.lastUpdated > 15 * 60 * 1000)) {
+      // Sentiment older than 15 minutes — decay it toward neutral
+      sent.score *= 0.7;
+      if (Math.abs(sent.score) < 0.05) sent.score = 0;
+      fixes.push({
+        issue: 'STALE_SENTIMENT_DECAY',
+        symbol,
+        detail: `Sentiment decayed to ${sent.score.toFixed(2)} — data ${((Date.now() - sent.lastUpdated) / 60000).toFixed(0)}min old`,
+        autoFixed: true,
+      });
+    }
+  }
+
+  // ─── CHECK F: Cross-Agent Signal Consistency ───
+  // If all 4 signal agents agree on direction for a symbol, verify it's not groupthink on bad data
+  const signalAgents = AI_AGENTS.filter(a => !a.isRiskManager && !a.isPositionManager && !a.isIntegrityAgent);
+  const symbolAgreement = {};
+  for (const agent of signalAgents) {
+    for (const sym of agent.symbols) {
+      if (!priceHistory[sym] || priceHistory[sym].length < 30) continue;
+      const sig = computeSignal(sym, agent.role, agent.name);
+      if (!symbolAgreement[sym]) symbolAgreement[sym] = { bullish: 0, bearish: 0, total: 0 };
+      symbolAgreement[sym].total++;
+      if (sig.score > 0.3) symbolAgreement[sym].bullish++;
+      else if (sig.score < -0.3) symbolAgreement[sym].bearish++;
+    }
+  }
+  for (const [sym, agreement] of Object.entries(symbolAgreement)) {
+    if (agreement.total >= 3 && (agreement.bullish === agreement.total || agreement.bearish === agreement.total)) {
+      // Unanimous agreement — check if macro supports it
+      const direction = agreement.bullish > 0 ? 'bullish' : 'bearish';
+      const macroConflict = (direction === 'bullish' && macroIntel.fearGreed.value < 25) ||
+                            (direction === 'bearish' && macroIntel.fearGreed.value > 75);
+      if (macroConflict) {
+        anomaliesDetected++;
+        fixes.push({
+          issue: 'GROUPTHINK_MACRO_CONFLICT',
+          symbol: sym,
+          detail: `All ${agreement.total} agents ${direction} but Fear/Greed=${macroIntel.fearGreed.value.toFixed(0)} (${macroIntel.fearGreed.label}) contradicts`,
+          autoFixed: false,
+        });
+      }
+    }
+  }
+
+  if (anomaliesDetected > 0 || signalsCorrected > 0) {
+    console.log(`[Warden] Signal integrity scan: ${signalsVerified} symbols verified, ${anomaliesDetected} anomalies, ${signalsCorrected} auto-corrected`);
+  }
+
+  return fixes;
+}
+
 // ─── CHECK 4: Trade Flow ───
 // Detects: no trades despite active users with balance, zero executable signals
 function qaCheckTradeFlow() {
@@ -5810,6 +6144,10 @@ function runQAAgent(isFullAudit = false) {
   checks.push({ name: 'signals', fixes: signalFixes.length, status: signalFixes.length === 0 ? 'PASS' : 'FIXED' });
   allFixes.push(...signalFixes);
 
+  const wardenFixes = wardenSignalIntegrity();
+  checks.push({ name: 'Warden Signal Integrity', result: wardenFixes.length === 0 ? 'PASS' : `${wardenFixes.length} anomalies detected`, fixes: wardenFixes.length });
+  allFixes.push(...wardenFixes);
+
   const dataFixes = qaCheckDataIntegrity();
   checks.push({ name: 'data_integrity', fixes: dataFixes.length, status: dataFixes.length === 0 ? 'PASS' : 'FIXED' });
   allFixes.push(...dataFixes);
@@ -5960,10 +6298,12 @@ if (SELF_URL) {
 
 // Get live auto-trade activity feed (recent trades by AI agents)
 api.get('/api/auto-trades', auth, (req, res) => {
-  const logs = db.findMany('auto_trade_log', l => l.user_id === req.userId)
-    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
-    .slice(0, 50);
-  json(res, 200, logs);
+  const limit = Math.min(parseInt(req.query?.limit) || 500, 5000);
+  const offset = parseInt(req.query?.offset) || 0;
+  const allLogs = db.findMany('auto_trade_log', l => l.user_id === req.userId)
+    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+  const logs = allLogs.slice(offset, offset + limit);
+  json(res, 200, { total: allLogs.length, offset, limit, logs });
 });
 
 // Trading health — watchdog status (no auth required for monitoring)
@@ -6093,6 +6433,99 @@ api.post('/api/qa/run', (req, res) => {
     issuesFound: result.fixes.length,
     report: result.report,
   });
+});
+
+// ─── MACRO INTELLIGENCE API ───
+api.get('/api/macro', auth, (req, res) => {
+  json(res, 200, {
+    vix: macroIntel.vix,
+    fearGreed: macroIntel.fearGreed,
+    dxy: macroIntel.dxy,
+    treasuryYield: macroIntel.treasuryYield,
+    sectorRotation: macroIntel.sectorRotation,
+    updatedAt: new Date().toISOString(),
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//   TRADE AUDIT API — Full history validation & integrity checks
+// ═══════════════════════════════════════════════════════════════════
+api.get('/api/admin/trade-audit', (req, res) => {
+  const allTrades = db.findMany('trades');
+  const allPositions = db.findMany('positions');
+  const auditResults = {
+    totalTrades: allTrades.length,
+    totalPositions: allPositions.length,
+    closedPositions: allPositions.filter(p => p.status === 'CLOSED').length,
+    openPositions: allPositions.filter(p => p.status === 'OPEN').length,
+    pnlErrors: [],
+    priceAnomalies: [],
+    driftReport: [],
+    summary: { clean: 0, errors: 0, warnings: 0 },
+  };
+
+  // 1. P&L Math Validation — verify every closed position
+  const closedPositions = allPositions.filter(p => p.status === 'CLOSED');
+  for (const pos of closedPositions) {
+    const dir = pos.side === 'LONG' ? 1 : -1;
+    const expectedPnl = roundTo((pos.close_price - pos.entry_price) * pos.quantity * dir, 2);
+    const recordedPnl = pos.realized_pnl || 0;
+    const diff = Math.abs(expectedPnl - recordedPnl);
+    if (diff > 0.02) {
+      auditResults.pnlErrors.push({
+        positionId: pos.id,
+        symbol: pos.symbol,
+        side: pos.side,
+        entry: pos.entry_price,
+        exit: pos.close_price,
+        qty: pos.quantity,
+        expectedPnl,
+        recordedPnl,
+        diff,
+      });
+      auditResults.summary.errors++;
+    } else {
+      auditResults.summary.clean++;
+    }
+  }
+
+  // 2. Price Drift Analysis — compare current simulated prices vs anchors
+  for (const [symbol, anchor] of Object.entries(DEFAULT_PRICES)) {
+    const current = marketPrices[symbol];
+    if (!current) continue;
+    const driftPct = ((current - anchor) / anchor * 100);
+    auditResults.driftReport.push({
+      symbol,
+      anchorPrice: anchor,
+      currentPrice: current,
+      driftPct: +driftPct.toFixed(2),
+      source: priceDataSource[symbol] || 'unknown',
+      status: Math.abs(driftPct) > 20 ? 'CRITICAL' : Math.abs(driftPct) > 10 ? 'WARNING' : 'OK',
+    });
+    if (Math.abs(driftPct) > 20) auditResults.summary.warnings++;
+  }
+
+  // 3. Price Anomaly Detection — trades at unrealistic prices
+  for (const trade of allTrades) {
+    const anchor = DEFAULT_PRICES[trade.symbol];
+    if (!anchor) continue;
+    const tradeDrift = Math.abs((trade.price - anchor) / anchor * 100);
+    if (tradeDrift > 30) {
+      auditResults.priceAnomalies.push({
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        tradePrice: trade.price,
+        anchorPrice: anchor,
+        driftPct: +tradeDrift.toFixed(2),
+        timestamp: trade.timestamp || trade.opened_at,
+      });
+    }
+  }
+
+  // Sort drift report by absolute drift
+  auditResults.driftReport.sort((a, b) => Math.abs(b.driftPct) - Math.abs(a.driftPct));
+
+  json(res, 200, auditResults);
 });
 
 // ═══════════════════════════════════════════════════════════════════

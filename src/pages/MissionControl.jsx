@@ -107,8 +107,11 @@ const glassStyle = {
 
 const glassCardStyle = {
   ...glassStyle,
-  padding: "24px",
+  padding: "16px",
   transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+  "@media (min-width: 768px)": {
+    padding: "24px"
+  }
 };
 
 const glassCardHoverStyle = {
@@ -139,7 +142,7 @@ function MetricCard({ label, value, change, prefix = "", suffix = "", color = "#
   const safeValue = typeof value === "number" ? (isNaN(value) ? 0 : value) : (value || '—');
   const safeChange = typeof change === "number" ? (isNaN(change) ? 0 : change) : change;
   return (
-    <GlassCard style={{ minWidth: isMobile ? 140 : 200, flex: "1 1 140px" }}>
+    <GlassCard style={{ minWidth: isMobile ? 120 : 200, flex: "1 1 120px", minHeight: isMobile ? 100 : 120 }}>
       <div style={{ fontSize: isMobile ? 10 : 12, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{label}</div>
       <div style={{ fontSize: isMobile ? 20 : 32, fontWeight: 700, color, lineHeight: 1.1 }}>
         {prefix}{typeof safeValue === "number" ? safeValue.toLocaleString() : safeValue}{suffix}
@@ -307,12 +310,12 @@ function TradeLog({ trades, isMobile = false }) {
       {trades.length === 0 ? (
         <div style={{ padding: 24, textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>No trades recorded yet — agents are generating signals...</div>
       ) : (
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
+      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", marginBottom: isMobile ? -10 : 0, paddingBottom: isMobile ? 10 : 0 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12, minWidth: isMobile ? 800 : "auto" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
               {["Time", "Asset", "Side", "Qty", "Entry", "Close", "P&L", "Agent", "Investor"].map(h => (
-                <th key={h} style={{ padding: "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 500, textTransform: "uppercase", letterSpacing: 1, fontSize: 10 }}>{h}</th>
+                <th key={h} style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 500, textTransform: "uppercase", letterSpacing: 1, fontSize: isMobile ? 9 : 10, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -322,23 +325,24 @@ function TradeLog({ trades, isMobile = false }) {
               const timeStr = t.time ? new Date(t.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--';
               return (
                 <tr key={t.id || i} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: 11 }}>{timeStr}</td>
-                  <td style={{ padding: "10px 12px", color: "#fff", fontWeight: 600 }}>{t.symbol}</td>
-                  <td style={{ padding: "10px 12px" }}>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: isMobile ? 10 : 11, whiteSpace: "nowrap" }}>{timeStr}</td>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "#fff", fontWeight: 600, whiteSpace: "nowrap" }}>{t.symbol}</td>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px" }}>
                     <span style={{
-                      padding: "2px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                      padding: "2px 8px", borderRadius: 6, fontSize: isMobile ? 9 : 10, fontWeight: 700,
                       background: t.side === "LONG" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
                       color: t.side === "LONG" ? "#10B981" : "#EF4444",
+                      whiteSpace: "nowrap"
                     }}>{t.side}</span>
                   </td>
-                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>{t.quantity}</td>
-                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>${(t.entry_price || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace" }}>${(t.close_price || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                  <td style={{ padding: "10px 12px", fontFamily: "monospace", fontWeight: 600, color: pnl >= 0 ? "#10B981" : "#EF4444" }}>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: isMobile ? 10 : 11, whiteSpace: "nowrap" }}>{t.quantity}</td>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: isMobile ? 10 : 11, whiteSpace: "nowrap" }}>${(t.entry_price || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "rgba(255,255,255,0.6)", fontFamily: "monospace", fontSize: isMobile ? 10 : 11, whiteSpace: "nowrap" }}>${(t.close_price || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", fontFamily: "monospace", fontWeight: 600, color: pnl >= 0 ? "#10B981" : "#EF4444", fontSize: isMobile ? 10 : 11, whiteSpace: "nowrap" }}>
                     {pnl >= 0 ? "+" : ""}${pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </td>
-                  <td style={{ padding: "10px 12px", color: "#A855F7", fontSize: 11 }}>{t.agent || '—'}</td>
-                  <td style={{ padding: "10px 12px", color: "rgba(255,255,255,0.5)", fontSize: 11, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.investor || '—'}</td>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "#A855F7", fontSize: isMobile ? 10 : 11, whiteSpace: "nowrap" }}>{t.agent || '—'}</td>
+                  <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "rgba(255,255,255,0.5)", fontSize: isMobile ? 10 : 11, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.investor || '—'}</td>
                 </tr>
               );
             })}
@@ -421,14 +425,15 @@ function RiskPanel({ isMobile = false, isTablet = false }) {
   return (
     <GlassCard>
       <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Risk Command Center</div>
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : isTablet ? "repeat(3, 1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: isMobile ? 8 : 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : isTablet ? "repeat(3, 1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: isMobile ? 10 : 10 }}>
         {metrics.map(m => (
           <div key={m.label} style={{
-            padding: isMobile ? 10 : 12, borderRadius: 14,
+            padding: isMobile ? 12 : 12, borderRadius: 14, minHeight: isMobile ? 80 : 90,
             background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+            display: "flex", flexDirection: "column", justifyContent: "space-between"
           }}>
-            <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{m.label}</div>
-            <div style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, color: statusColors[m.status] }}>{m.value}</div>
+            <div style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{m.label}</div>
+            <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 700, color: statusColors[m.status] }}>{m.value}</div>
           </div>
         ))}
       </div>
@@ -482,8 +487,8 @@ function GrowthTable({ isMobile = false, totalAUM = 0 }) {
   return (
     <GlassCard>
       <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Capital Growth Matrix (${initial.toLocaleString()} Current AUM)</div>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12 }}>
+      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch", marginBottom: isMobile ? -10 : 0, paddingBottom: isMobile ? 10 : 0 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12, minWidth: isMobile ? 500 : "auto" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
               <th style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontSize: isMobile ? 9 : 10, letterSpacing: 1 }}>TIMEFRAME</th>
@@ -732,18 +737,19 @@ export default function TwelveTribes_MissionControl() {
           </div>
         </div>
 
-        <nav style={{ display: "flex", gap: 4, overflowX: isMobile ? "auto" : "visible", flex: isMobile ? "1 1 100%" : "0 1 auto", minWidth: 0 }}>
+        <nav style={{ display: "flex", gap: isMobile ? 6 : 4, overflowX: isMobile ? "auto" : "visible", flex: isMobile ? "1 1 100%" : "0 1 auto", minWidth: 0, WebkitOverflowScrolling: "touch" }}>
           {navItems.map(item => (
             <button
               key={item.id}
               onClick={() => { haptics.light(); setActiveView(item.id); }}
               style={{
-                padding: isMobile ? "10px 14px" : "8px 20px", borderRadius: 14, border: "none", cursor: "pointer", minHeight: 44,
+                padding: isMobile ? "12px 16px" : "8px 20px", borderRadius: 14, border: "none", cursor: "pointer", minHeight: isMobile ? 48 : 44, minWidth: isMobile ? 48 : "auto",
                 fontSize: isMobile ? 12 : 13, fontWeight: 500, transition: "all 0.2s",
                 background: activeView === item.id ? "rgba(0,212,255,0.15)" : "transparent",
                 color: activeView === item.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
                 whiteSpace: "nowrap",
                 flexShrink: 0,
+                touchAction: "manipulation"
               }}
             >
               {!isMobile && <span style={{ marginRight: 6 }}>{item.icon}</span>}{isMobile ? item.icon : item.label}
@@ -772,7 +778,7 @@ export default function TwelveTribes_MissionControl() {
       </div>
 
       {/* Content */}
-      <div style={{ padding: isMobile ? "16px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto" }}>
+      <div style={{ padding: isMobile ? "12px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto" }}>
         {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={liveTrades} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
         {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} totalAUM={totalAUM} />}
         {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} liveAgents={liveAgents} />}
