@@ -2747,11 +2747,24 @@ api.put('/api/admin/withdrawals/:requestId', auth, async (req, res) => {
   }
   if (body.status === 'completed' && prevStatus !== 'completed') {
     wr.completedAt = new Date().toISOString();
-    // Deduct from wallet
+    // Deduct from wallet — adjust initial_balance proportionally so drawdown math stays correct
     const wallet = db.findOne('wallets', w => w.user_id === wr.userId);
     if (wallet) {
       wallet.balance = Math.max(0, (wallet.balance || 0) - wr.amount);
       wallet.equity = Math.max(0, (wallet.equity || 0) - wr.amount);
+      // Track total withdrawals for drawdown adjustment
+      wallet.total_withdrawals = (wallet.total_withdrawals || 0) + wr.amount;
+      // Adjust initial_balance so withdrawal doesn't look like a trading loss
+      wallet.initial_balance = Math.max(1000, (wallet.initial_balance || 100000) - wr.amount);
+      // Adjust peak_equity to account for withdrawal
+      if (wallet.peak_equity) {
+        wallet.peak_equity = Math.max(wallet.equity, (wallet.peak_equity || 0) - wr.amount);
+      }
+      // Reset kill switch if it was incorrectly triggered by withdrawal
+      if (wallet.kill_switch_active && wallet.balance > 0) {
+        wallet.kill_switch_active = false;
+        console.log(`[Withdrawal] Reset kill switch for user ${wr.userId} after withdrawal — balance: $${wallet.balance.toFixed(2)}`);
+      }
       db._save('wallets');
     }
 
@@ -4489,11 +4502,13 @@ function runAllAgents(userId, fundData) {
     const equity = wallet.equity || wallet.balance || 100000;
 
     // Drawdown protection — reduce size when in drawdown
-    const drawdownPct = wallet.initial_balance > 0
-      ? ((equity / wallet.initial_balance) - 1) * 100 : 0;
+    // Use withdrawal-adjusted initial balance so withdrawals don't trigger false drawdown
+    const adjustedInitial = Math.max(1000, (wallet.initial_balance || 100000));
+    const drawdownPct = adjustedInitial > 0
+      ? ((equity / adjustedInitial) - 1) * 100 : 0;
     const drawdownMultiplier = drawdownPct < -10 ? 0.5 : drawdownPct < -5 ? 0.75 : 1.0;
 
-    // Kill switch check
+    // Kill switch check — only for genuine trading losses, not withdrawals
     if (drawdownPct < -AUTO_TRADE_CONFIG.maxDrawdownPct) {
       wallet.kill_switch_active = true;
       db._save('wallets');
@@ -6747,6 +6762,23 @@ function ensureAutoTradingActive() {
       console.log(`[Boot] Backfilled initial_balance for user ${user.id}`);
     }
 
+    // Reconcile withdrawals with initial_balance — prevents false kill switch triggers
+    const userWithdrawals = db.findMany('withdrawal_requests', w => w.userId === user.id && w.status === 'completed');
+    const totalWithdrawn = userWithdrawals.reduce((s, w) => s + (w.amount || 0), 0);
+    if (totalWithdrawn > 0) {
+      wallet.total_withdrawals = totalWithdrawn;
+      // Ensure initial_balance reflects withdrawals
+      const expectedInitial = Math.max(1000, 100000 - totalWithdrawn);
+      if (wallet.initial_balance > expectedInitial + 100) {
+        wallet.initial_balance = expectedInitial;
+        console.log(`[Boot] Adjusted initial_balance for user ${user.id} to $${expectedInitial} (withdrew $${totalWithdrawn})`);
+      }
+      // Adjust peak_equity if it's unreasonably high relative to current state
+      if (wallet.peak_equity && wallet.peak_equity > wallet.equity + totalWithdrawn) {
+        wallet.peak_equity = wallet.equity;
+      }
+    }
+
     // Reset kill switch on boot — allows trading to resume after restart
     if (wallet.kill_switch_active) {
       wallet.kill_switch_active = false;
@@ -6930,6 +6962,25 @@ function backfillZeroPnlTrades() {
     }
     db._save('wallets');
     console.log(`[Boot] Recalculated wallet P&L from corrected trades`);
+
+    // ─── Fix tax_ledger entries with zero gain/loss from frozen prices ───
+    const zeroLedger = db.findMany('tax_ledger', e => e.gain_loss === 0 && e.proceeds === e.cost_basis);
+    let ledgerFixed = 0;
+    for (const entry of zeroLedger) {
+      // Find the corrected trade for this position
+      const trade = db.findOne('trades', t => t.position_id === entry.position_id);
+      if (trade && trade.close_price !== trade.entry_price) {
+        const dir = entry.side === 'LONG' ? 1 : -1;
+        const newProceeds = roundTo(trade.close_price * entry.quantity, 2);
+        entry.proceeds = newProceeds;
+        entry.gain_loss = roundTo((newProceeds - entry.cost_basis) * dir, 2);
+        ledgerFixed++;
+      }
+    }
+    if (ledgerFixed > 0) {
+      db._save('tax_ledger');
+      console.log(`[Boot] Fixed ${ledgerFixed} tax ledger entries with zero gain/loss from frozen prices`);
+    }
   }
 
   return fixed;

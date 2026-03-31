@@ -1042,7 +1042,7 @@ const SIDEBAR_ITEMS = [
   { id: "settings", label: "Settings", icon: "◇" },
 ];
 
-function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onToggle, isMobile }) {
+function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onToggle, isMobile, adminNotifCount = 0 }) {
   const sidebarWidth = 260;
 
   // Desktop: permanent sidebar. Mobile: slide-out drawer.
@@ -1118,6 +1118,13 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
                 }}>
                 <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{item.icon}</span>
                 {item.label}
+                {item.id === 'admin' && adminNotifCount > 0 && (
+                  <span style={{
+                    marginLeft: 'auto', padding: '2px 7px', borderRadius: 10,
+                    background: 'rgba(239,68,68,0.25)', color: '#EF4444',
+                    fontSize: 10, fontWeight: 800, minWidth: 18, textAlign: 'center',
+                  }}>{adminNotifCount}</span>
+                )}
               </button>
             );
           })}
@@ -1557,6 +1564,21 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
   const allTimePnL = currentEquity - initialBalance;
   const allTimeReturn = initialBalance > 0 ? (allTimePnL / initialBalance * 100) : 0;
 
+  // Server-backed risk metrics (fallback when local snapshots are sparse)
+  const serverSharpe = perf.sharpeRatio || serverPerf?.sharpeRatio || 0;
+  const serverMaxDD = Math.abs(perf.maxDrawdown) || serverPerf?.maxDrawdown || 0;
+  const serverVolatility = perf.volatility || (() => {
+    const snaps = serverPerf?.snapshots;
+    if (!snaps || snaps.length < 3) return 0;
+    const r = [];
+    for (let i = 1; i < snaps.length; i++) {
+      if (snaps[i - 1].equity > 0) r.push((snaps[i].equity - snaps[i - 1].equity) / snaps[i - 1].equity * 100);
+    }
+    if (r.length < 2) return 0;
+    const m = r.reduce((a, b) => a + b, 0) / r.length;
+    return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / r.length);
+  })();
+
   // Override perf periods with server-computed data when snapshots are sparse
   const hasGoodHistory = perf.equityHistory.length >= 7;
   const periods = hasGoodHistory ? [
@@ -1751,9 +1773,10 @@ function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }
         {/* Risk Metrics */}
         <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Risk Metrics</div>
-          <RiskBar label="Sharpe Ratio" value={perf.sharpeRatio} max={3} color="#00D4FF" />
-          <RiskBar label="Daily Volatility" value={perf.volatility} max={5} color="#F59E0B" suffix="%" />
-          <RiskBar label="Max Drawdown" value={perf.maxDrawdown} max={25} color="#EF4444" suffix="%" />
+          <RiskBar label="Sharpe Ratio" value={serverSharpe} max={3} color="#00D4FF" />
+          <RiskBar label="CAGR" value={serverPerf?.cagr || allTimeReturn} max={100} color="#10B981" suffix="%" />
+          <RiskBar label="Daily Volatility" value={serverVolatility} max={5} color="#F59E0B" suffix="%" />
+          <RiskBar label="Max Drawdown" value={serverMaxDD} max={25} color="#EF4444" suffix="%" />
           <div style={{ marginTop: 8, padding: "12px 14px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>Win / Loss Streak</span>
@@ -1893,7 +1916,7 @@ function ResearchView({ isMobile }) {
   useEffect(() => {
     if (!selectedSymbol) return;
     const interval = setInterval(() => {
-      fetch(`${API_BASE}/market/research/${selectedSymbol}`)
+      fetch(`${API_BASE}/market/research/${encodeURIComponent(selectedSymbol)}`)
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (data) { setResearch(data); setRefreshError(false); }
@@ -1913,7 +1936,7 @@ function ResearchView({ isMobile }) {
     setQuery(sym);
     setSearchResults([]);
     try {
-      const res = await fetch(`${API_BASE}/market/research/${sym}`);
+      const res = await fetch(`${API_BASE}/market/research/${encodeURIComponent(sym)}`);
       const data = await res.json();
       if (res.ok) {
         setResearch(data);
@@ -2003,7 +2026,7 @@ function ResearchView({ isMobile }) {
       <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: '#fff', marginBottom: 4 }}>Market Research</div>
         <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', marginBottom: 16 }}>
-          AI-powered technical analysis across stocks, crypto, forex & ETFs
+          AI-powered technical analysis across stocks, crypto, forex, ETFs, futures, options & cash
         </div>
 
         {/* Search Bar */}
@@ -2056,9 +2079,12 @@ function ResearchView({ isMobile }) {
         <div style={{ marginTop: 14 }}>
           {[
             { label: 'Stocks', symbols: ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'META', 'AMZN', 'GOOGL'] },
-            { label: 'Crypto', symbols: ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'] },
-            { label: 'Forex', symbols: ['EUR/USD', 'GBP/USD', 'USD/JPY'] },
-            { label: 'ETFs', symbols: ['SPY', 'QQQ', 'GLD'] },
+            { label: 'Crypto', symbols: ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'DOT', 'LINK'] },
+            { label: 'Forex', symbols: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD'] },
+            { label: 'ETFs', symbols: ['SPY', 'QQQ', 'GLD', 'TLT', 'XLF', 'XLE', 'ARKK'] },
+            { label: 'Futures', symbols: ['CL=F', 'GC=F', 'SI=F', 'NG=F', 'ES=F', 'NQ=F'] },
+            { label: 'Options', symbols: ['TQQQ', 'SOXL', 'UVXY', 'SPXS', 'SQQQ'] },
+            { label: 'Cash', symbols: ['BIL', 'SHV', 'SGOV'] },
           ].map(cat => (
             <div key={cat.label} style={{ marginBottom: 8 }}>
               <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1, marginRight: 8 }}>{cat.label}</span>
@@ -2584,6 +2610,34 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
           </button>
         </div>
       )}
+
+      {/* ═══ WITHDRAWAL SUMMARY KPI CARDS ═══ */}
+      {requests.length > 0 && (() => {
+        const completed = requests.filter(r => r.status === 'completed');
+        const pending = requests.filter(r => r.status === 'pending' || r.status === 'processing');
+        const totalWithdrawn = completed.reduce((s, r) => s + (r.amount || 0), 0);
+        const totalPending = pending.reduce((s, r) => s + (r.amount || 0), 0);
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+            <div style={{ padding: "14px 16px", borderRadius: 14, background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.12)" }}>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Total Withdrawn</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#22C55E" }}>${totalWithdrawn.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+            </div>
+            <div style={{ padding: "14px 16px", borderRadius: 14, background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.12)" }}>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Pending</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#F59E0B" }}>${totalPending.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+            </div>
+            <div style={{ padding: "14px 16px", borderRadius: 14, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Completed</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>{completed.length}</div>
+            </div>
+            <div style={{ padding: "14px 16px", borderRadius: 14, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Total Requests</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>{requests.length}</div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Withdrawal Request History */}
       {loadingRequests ? (
@@ -3256,6 +3310,27 @@ function PortfolioDashboard({ investor, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tick, setTick] = useState(0);
   const { isMobile, isTablet } = useResponsive();
+  const [adminNotifCount, setAdminNotifCount] = useState(0);
+
+  // Fetch admin notification count (only for admins)
+  useEffect(() => {
+    if (investor?.role !== 'admin') return;
+    const API_BASE = (() => {
+      if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+      if (window.location.hostname === 'localhost') return 'http://localhost:3001/api';
+      return 'https://one2-tribes-api.onrender.com/api';
+    })();
+    const token = localStorage.getItem('auth_token');
+    const fetchNotifCount = () => {
+      fetch(`${API_BASE}/admin/notifications/count`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setAdminNotifCount(data.total || 0); })
+        .catch(() => {});
+    };
+    fetchNotifCount();
+    const interval = setInterval(fetchNotifCount, 30000); // Poll every 30s
+    return () => clearInterval(interval);
+  }, [investor?.role, investor?.id]);
 
   // Live wallet data — refreshes every 3 seconds + records equity snapshots
   // Sync from server every 30s to keep local wallet data fresh
@@ -3295,14 +3370,86 @@ function PortfolioDashboard({ investor, onLogout }) {
   const firstName = investor.firstName || investor.name?.split(' ')[0] || 'Investor';
   const sidebarWidth = isMobile ? 0 : 260;
 
-  const allocation = [
-    { name: "Stocks", value: 25, color: "#00D4FF" },
-    { name: "Crypto", value: 15, color: "#A855F7" },
-    { name: "Forex", value: 20, color: "#10B981" },
-    { name: "Options", value: 15, color: "#F59E0B" },
-    { name: "Futures", value: 10, color: "#EF4444" },
-    { name: "Cash", value: 15, color: "#6B7280" },
-  ];
+  // Dynamic allocation from open positions + trade history (all 7 asset classes)
+  const allocation = useMemo(() => {
+    const classColors = {
+      stock: "#00D4FF", crypto: "#A855F7", forex: "#10B981",
+      options: "#F59E0B", futures: "#EF4444", etf: "#3B82F6", cash: "#6B7280",
+    };
+    const classNames = {
+      stock: "Stocks", crypto: "Crypto", forex: "Forex",
+      options: "Options", futures: "Futures", etf: "ETFs", cash: "Cash",
+    };
+    const classifySymbol = (sym) => {
+      if (['BTC','ETH','SOL','AVAX','DOGE','XRP','ADA','DOT','MATIC','LINK'].includes(sym)) return 'crypto';
+      if (sym && sym.includes('/')) return 'forex';
+      if (sym && sym.endsWith('=F')) return 'futures';
+      if (['BIL','SHV','SGOV'].includes(sym)) return 'cash';
+      if (['SPY','QQQ','GLD','TLT','IWM','EEM','VOO','DIA','VTI','XLF','XLE','XLK','ARKK','HYG'].includes(sym)) return 'etf';
+      if (['TQQQ','SOXL','UVXY','SPXS','SQQQ','TNA'].includes(sym)) return 'options';
+      return 'stock';
+    };
+
+    const totalEquity = wallet?.equity || wallet?.balance || 100000;
+    const positionsAll = positions || [];
+    const trades = tradeHistory || [];
+
+    // 1. Current open position values by asset class
+    const openTotals = {};
+    positionsAll.forEach(p => {
+      const cls = classifySymbol(p.symbol);
+      const posValue = Math.abs((p.quantity || 0) * (p.currentPrice || p.current_price || p.entryPrice || p.entry_price || 0));
+      openTotals[cls] = (openTotals[cls] || 0) + posValue;
+    });
+    const totalOpenValue = Object.values(openTotals).reduce((s, v) => s + v, 0);
+
+    // 2. Trade volume by asset class (from closed trade history)
+    // This shows where the fund has been deploying capital across all 7 classes
+    const tradeVolume = {};
+    trades.forEach(t => {
+      const cls = classifySymbol(t.symbol);
+      const vol = Math.abs((t.quantity || 0) * (t.entryPrice || t.entry_price || 0));
+      tradeVolume[cls] = (tradeVolume[cls] || 0) + vol;
+    });
+    const totalTradeVol = Object.values(tradeVolume).reduce((s, v) => s + v, 0);
+
+    // 3. Blend: 60% weight on open positions, 40% on historical trade volume
+    // This ensures all actively traded asset classes appear in the allocation
+    const blended = {};
+    const allClasses = new Set([...Object.keys(openTotals), ...Object.keys(tradeVolume)]);
+    const openWeight = totalOpenValue > 0 ? 0.6 : 0;
+    const histWeight = totalTradeVol > 0 ? (1 - openWeight) : 0;
+
+    allClasses.forEach(cls => {
+      const openPct = totalOpenValue > 0 ? (openTotals[cls] || 0) / totalOpenValue : 0;
+      const histPct = totalTradeVol > 0 ? (tradeVolume[cls] || 0) / totalTradeVol : 0;
+      blended[cls] = (openPct * openWeight) + (histPct * histWeight);
+    });
+
+    // 4. Cash = remaining equity not in open positions, scaled into the blend
+    const cashFromEquity = Math.max(0, totalEquity - totalOpenValue);
+    const cashPct = totalEquity > 0 ? cashFromEquity / totalEquity : 1;
+    // Scale invested allocation down to make room for cash
+    const investedPct = 1 - cashPct;
+    const finalAlloc = {};
+    Object.entries(blended).forEach(([cls, pct]) => {
+      finalAlloc[cls] = pct * investedPct;
+    });
+    finalAlloc['cash'] = (finalAlloc['cash'] || 0) + cashPct;
+
+    // Normalize to 100%
+    const total = Object.values(finalAlloc).reduce((s, v) => s + v, 0);
+    if (total <= 0) return [{ name: "Cash", value: 100, color: "#6B7280" }];
+
+    return Object.entries(finalAlloc)
+      .filter(([, v]) => v / total > 0.005) // Exclude < 0.5%
+      .map(([cls, v]) => ({
+        name: classNames[cls] || cls,
+        value: parseFloat((v / total * 100).toFixed(1)),
+        color: classColors[cls] || "#6B7280",
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [positions, wallet, tradeHistory]);
 
   return (
     <div style={{
@@ -3319,6 +3466,7 @@ function PortfolioDashboard({ investor, onLogout }) {
         investor={investor} onLogout={onLogout}
         isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)}
         isMobile={isMobile}
+        adminNotifCount={adminNotifCount}
       />
 
       {/* Main Content (offset by sidebar width on desktop) */}
@@ -4832,16 +4980,21 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
     return `http://${window.location.hostname}:4000/api`;
   })();
 
+  const [error, setError] = useState('');
+
   const fetchFundSummary = async () => {
     setLoading(true);
+    setError('');
     try {
       const [sumRes, allocRes] = await Promise.all([
         fetch(`${API}/admin/tax/fund-summary/${taxYear}`, { headers: authHeaders }),
         fetch(`${API}/admin/tax/allocations/${taxYear}`, { headers: authHeaders }),
       ]);
       if (sumRes.ok) { const d = await sumRes.json(); setFundSummary(d.summary || null); }
+      else { console.warn('[TaxAdmin] Fund summary fetch failed:', sumRes.status); }
       if (allocRes.ok) { const d = await allocRes.json(); setAllocations(d.allocations || []); }
-    } catch {}
+      else { console.warn('[TaxAdmin] Allocations fetch failed:', allocRes.status); }
+    } catch (err) { console.error('[TaxAdmin] Fetch error:', err); setError(err.message); }
     setLoading(false);
   };
 
@@ -4850,6 +5003,7 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
   const computeAllocations = async () => {
     setComputing(true);
     setMsg('');
+    setError('');
     try {
       const r = await fetch(`${API}/admin/tax/allocations/${taxYear}`, { method: 'POST', headers: authHeaders });
       if (r.ok) {
@@ -4858,8 +5012,11 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
         setFundSummary(d.fundTotals || fundSummary);
         setMsg(`K-1 allocations computed for ${d.allocations?.length || 0} investors`);
         setTimeout(() => setMsg(''), 4000);
+      } else {
+        const errData = await r.json().catch(() => ({}));
+        setError(errData.error || `Server returned ${r.status}`);
       }
-    } catch {}
+    } catch (err) { setError(`Network error: ${err.message}`); }
     setComputing(false);
   };
 
@@ -4888,6 +5045,7 @@ function AdminTaxSection({ isMobile, glass, authHeaders }) {
       </div>
 
       {msg && <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(34,197,94,0.1)', color: '#22C55E', fontSize: 12 }}>{msg}</div>}
+      {error && <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(239,68,68,0.1)', color: '#EF4444', fontSize: 12 }}>⚠ {error}</div>}
 
       {loading && <div style={{ textAlign: 'center', padding: 30, color: 'rgba(255,255,255,0.3)' }}>Loading fund tax data...</div>}
 
@@ -4990,6 +5148,7 @@ function AdminPanel({ investor, isMobile }) {
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [adminWithdrawals, setAdminWithdrawals] = useState([]);
   const [withdrawalsLoading, setWithdrawalsLoading] = useState(false);
+  const [selectedWithdrawalUser, setSelectedWithdrawalUser] = useState(null);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [createForm, setCreateForm] = useState({ email: '', firstName: '', lastName: '', role: 'investor' });
   const [createLoading, setCreateLoading] = useState(false);
@@ -5283,7 +5442,7 @@ function AdminPanel({ investor, isMobile }) {
           QA Reports {qaReports.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(168,85,247,0.3)', color: '#A855F7', fontSize: 10, fontWeight: 800 }}>{qaReports.length}</span>}
         </button>
         <button onClick={() => { setActiveSection('feedback'); fetchAdminFeedback(); }} style={tabStyle(activeSection === 'feedback')}>
-          Feedback {adminFeedback.length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(0,212,255,0.2)', color: '#00D4FF', fontSize: 10, fontWeight: 800 }}>{adminFeedback.length}</span>}
+          Feedback {adminFeedback.filter(f => f.status === 'new').length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(239,68,68,0.25)', color: '#EF4444', fontSize: 10, fontWeight: 800 }}>{adminFeedback.filter(f => f.status === 'new').length} new</span>}
         </button>
         <button onClick={() => { setActiveSection('withdrawals'); fetchAdminWithdrawals(); }} style={tabStyle(activeSection === 'withdrawals')}>
           Withdrawals {adminWithdrawals.filter(w => w.status === 'pending').length > 0 && <span style={{ marginLeft: 6, padding: '2px 8px', borderRadius: 8, background: 'rgba(245,158,11,0.3)', color: '#F59E0B', fontSize: 10, fontWeight: 800 }}>{adminWithdrawals.filter(w => w.status === 'pending').length}</span>}
@@ -5725,89 +5884,211 @@ function AdminPanel({ investor, isMobile }) {
           )}
 
           {/* Summary Stats */}
-          {adminWithdrawals.length > 0 && (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
-                {[
-                  { label: 'Pending', count: adminWithdrawals.filter(w => w.status === 'pending').length, total: adminWithdrawals.filter(w => w.status === 'pending').reduce((s, w) => s + w.amount, 0), color: '#F59E0B' },
-                  { label: 'Processing', count: adminWithdrawals.filter(w => w.status === 'processing').length, total: adminWithdrawals.filter(w => w.status === 'processing').reduce((s, w) => s + w.amount, 0), color: '#A855F7' },
-                  { label: 'Completed', count: adminWithdrawals.filter(w => w.status === 'completed').length, total: adminWithdrawals.filter(w => w.status === 'completed').reduce((s, w) => s + w.amount, 0), color: '#22C55E' },
-                  { label: 'Denied', count: adminWithdrawals.filter(w => w.status === 'denied').length, total: adminWithdrawals.filter(w => w.status === 'denied').reduce((s, w) => s + w.amount, 0), color: '#EF4444' },
-                ].map(s => (
-                  <div key={s.label} style={{ ...glass, padding: 14, textAlign: 'center' }}>
-                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>{s.label}</div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: s.color, marginTop: 4 }}>{s.count}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>${s.total.toLocaleString()}</div>
-                  </div>
-                ))}
-              </div>
+          {adminWithdrawals.length > 0 && (() => {
+            const statusColors = {
+              pending: { bg: 'rgba(245,158,11,0.1)', color: '#F59E0B' },
+              approved: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF' },
+              processing: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7' },
+              completed: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E' },
+              denied: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444' },
+            };
 
-              {adminWithdrawals.map(wr => {
-                const statusColors = {
-                  pending: { bg: 'rgba(245,158,11,0.1)', color: '#F59E0B' },
-                  approved: { bg: 'rgba(0,212,255,0.1)', color: '#00D4FF' },
-                  processing: { bg: 'rgba(168,85,247,0.1)', color: '#A855F7' },
-                  completed: { bg: 'rgba(34,197,94,0.1)', color: '#22C55E' },
-                  denied: { bg: 'rgba(239,68,68,0.1)', color: '#EF4444' },
+            // Group withdrawals by investor
+            const byInvestor = {};
+            adminWithdrawals.forEach(wr => {
+              const key = wr.userId;
+              if (!byInvestor[key]) {
+                byInvestor[key] = {
+                  userId: key,
+                  userName: wr.userName || 'Unknown',
+                  userEmail: wr.userEmail || '',
+                  requests: [],
+                  totalWithdrawn: 0,
+                  totalPending: 0,
+                  completedCount: 0,
+                  pendingCount: 0,
                 };
-                const sc = statusColors[wr.status] || statusColors.pending;
-                return (
-                  <div key={wr.id} style={{ ...glass, padding: 20, marginBottom: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                      <div>
-                        <div style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>${wr.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>{wr.userName} · {wr.userEmail}</div>
-                      </div>
-                      <span style={{ padding: '4px 12px', borderRadius: 8, background: sc.bg, color: sc.color, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{wr.status}</span>
+              }
+              byInvestor[key].requests.push(wr);
+              if (wr.status === 'completed') {
+                byInvestor[key].totalWithdrawn += wr.amount;
+                byInvestor[key].completedCount++;
+              }
+              if (wr.status === 'pending' || wr.status === 'processing' || wr.status === 'approved') {
+                byInvestor[key].totalPending += wr.amount;
+                byInvestor[key].pendingCount++;
+              }
+            });
+            const investorList = Object.values(byInvestor).sort((a, b) => b.totalWithdrawn - a.totalWithdrawn);
+            const grandTotal = investorList.reduce((s, inv) => s + inv.totalWithdrawn, 0);
+
+            return (
+              <>
+                {/* Top-level stats */}
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+                  {[
+                    { label: 'Pending', count: adminWithdrawals.filter(w => w.status === 'pending').length, total: adminWithdrawals.filter(w => w.status === 'pending').reduce((s, w) => s + w.amount, 0), color: '#F59E0B' },
+                    { label: 'Processing', count: adminWithdrawals.filter(w => w.status === 'processing').length, total: adminWithdrawals.filter(w => w.status === 'processing').reduce((s, w) => s + w.amount, 0), color: '#A855F7' },
+                    { label: 'Completed', count: adminWithdrawals.filter(w => w.status === 'completed').length, total: adminWithdrawals.filter(w => w.status === 'completed').reduce((s, w) => s + w.amount, 0), color: '#22C55E' },
+                    { label: 'Total Withdrawn', count: investorList.length + ' investors', total: grandTotal, color: '#00D4FF' },
+                  ].map(s => (
+                    <div key={s.label} style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                      <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>{s.label}</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: s.color, marginTop: 4 }}>{typeof s.count === 'number' ? s.count : s.count}</div>
+                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>${s.total.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
                     </div>
+                  ))}
+                </div>
 
-                    <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'rgba(255,255,255,0.35)', marginBottom: 10 }}>
-                      <span>Method: {(wr.method || '').replace(/_/g, ' ')}</span>
-                      <span>Requested: {new Date(wr.createdAt).toLocaleString()}</span>
-                      <span>Balance at request: ${(wr.walletEquityAtRequest || 0).toLocaleString()}</span>
-                    </div>
-
-                    {wr.notes && (
-                      <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 10, fontStyle: 'italic', padding: '8px 12px', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
-                        "{wr.notes}"
+                {/* ── INVESTOR DETAIL VIEW ── */}
+                {selectedWithdrawalUser && (() => {
+                  const inv = byInvestor[selectedWithdrawalUser];
+                  if (!inv) return null;
+                  const sorted = [...inv.requests].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                  return (
+                    <div style={{ marginBottom: 16 }}>
+                      {/* Back button + header */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                        <button onClick={() => setSelectedWithdrawalUser(null)} style={{
+                          padding: '8px 16px', borderRadius: 10, cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                          border: '1px solid rgba(0,212,255,0.2)', background: 'rgba(0,212,255,0.06)', color: '#00D4FF',
+                        }}>← Back</button>
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>{inv.userName}</div>
+                          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{inv.userEmail}</div>
+                        </div>
                       </div>
-                    )}
 
-                    {wr.adminNotes && (
-                      <div style={{ padding: '8px 12px', borderRadius: 10, background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.12)', marginBottom: 10 }}>
-                        <div style={{ fontSize: 10, color: '#A855F7', fontWeight: 600, marginBottom: 2 }}>Admin Notes</div>
-                        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{wr.adminNotes}</div>
+                      {/* Investor withdrawal summary */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
+                        <div style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>Total Withdrawn</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: '#22C55E', marginTop: 4 }}>${inv.totalWithdrawn.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>{inv.completedCount} completed</div>
+                        </div>
+                        <div style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>Pending</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: '#F59E0B', marginTop: 4 }}>${inv.totalPending.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>{inv.pendingCount} requests</div>
+                        </div>
+                        <div style={{ ...glass, padding: 14, textAlign: 'center' }}>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: 1 }}>All Requests</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginTop: 4 }}>{inv.requests.length}</div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 2 }}>total</div>
+                        </div>
                       </div>
-                    )}
 
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {['pending', 'approved', 'processing', 'completed', 'denied'].map(s => (
-                        <button key={s} onClick={() => {
-                          if (s === 'completed' && wr.status !== 'completed') {
-                            if (!confirm(`Mark as completed? This will deduct $${wr.amount.toLocaleString()} from the investor's wallet.`)) return;
-                          }
-                          updateWithdrawalStatus(wr.id, s);
-                        }} style={{
-                          padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                          border: wr.status === s ? `1px solid ${(statusColors[s] || statusColors.pending).color}40` : '1px solid rgba(255,255,255,0.06)',
-                          background: wr.status === s ? (statusColors[s] || statusColors.pending).bg : 'rgba(30,30,34,0.6)',
-                          color: wr.status === s ? (statusColors[s] || statusColors.pending).color : 'rgba(255,255,255,0.4)',
-                          textTransform: 'capitalize',
-                        }}>{s}</button>
-                      ))}
-                      <button onClick={() => {
-                        const notes = prompt('Enter admin notes for this withdrawal:');
-                        if (notes !== null) updateWithdrawalStatus(wr.id, wr.status, notes);
-                      }} style={{
-                        padding: '6px 12px', borderRadius: 10, cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                        border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(30,30,34,0.6)', color: 'rgba(255,255,255,0.4)',
-                      }}>Add Notes</button>
+                      {/* Individual withdrawal history */}
+                      <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Withdrawal History</div>
+                      {sorted.map(wr => {
+                        const sc = statusColors[wr.status] || statusColors.pending;
+                        return (
+                          <div key={wr.id} style={{ ...glass, padding: 16, marginBottom: 8 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <div style={{ fontSize: 20, fontWeight: 800, color: '#fff' }}>${wr.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                                <span style={{ padding: '3px 10px', borderRadius: 8, background: sc.bg, color: sc.color, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>{wr.status}</span>
+                              </div>
+                              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{new Date(wr.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'rgba(255,255,255,0.3)', marginBottom: 8, flexWrap: 'wrap' }}>
+                              <span>Method: {(wr.method || '').replace(/_/g, ' ')}</span>
+                              <span>Requested: {new Date(wr.createdAt).toLocaleTimeString()}</span>
+                              {wr.completedAt && <span>Completed: {new Date(wr.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>}
+                              <span>Balance at request: ${(wr.walletEquityAtRequest || 0).toLocaleString()}</span>
+                            </div>
+
+                            {wr.notes && (
+                              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 8, fontStyle: 'italic', padding: '6px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.02)' }}>
+                                "{wr.notes}"
+                              </div>
+                            )}
+
+                            {wr.adminNotes && (
+                              <div style={{ padding: '6px 10px', borderRadius: 8, background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.12)', marginBottom: 8 }}>
+                                <div style={{ fontSize: 10, color: '#A855F7', fontWeight: 600, marginBottom: 2 }}>Admin Notes</div>
+                                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>{wr.adminNotes}</div>
+                              </div>
+                            )}
+
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {['pending', 'approved', 'processing', 'completed', 'denied'].map(s => (
+                                <button key={s} onClick={() => {
+                                  if (s === 'completed' && wr.status !== 'completed') {
+                                    if (!confirm(`Mark as completed? This will deduct $${wr.amount.toLocaleString()} from ${inv.userName}'s wallet.`)) return;
+                                  }
+                                  updateWithdrawalStatus(wr.id, s);
+                                }} style={{
+                                  padding: '5px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                                  border: wr.status === s ? `1px solid ${(statusColors[s] || statusColors.pending).color}40` : '1px solid rgba(255,255,255,0.06)',
+                                  background: wr.status === s ? (statusColors[s] || statusColors.pending).bg : 'rgba(30,30,34,0.6)',
+                                  color: wr.status === s ? (statusColors[s] || statusColors.pending).color : 'rgba(255,255,255,0.4)',
+                                  textTransform: 'capitalize',
+                                }}>{s}</button>
+                              ))}
+                              <button onClick={() => {
+                                const notes = prompt('Enter admin notes for this withdrawal:');
+                                if (notes !== null) updateWithdrawalStatus(wr.id, wr.status, notes);
+                              }} style={{
+                                padding: '5px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                                border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(30,30,34,0.6)', color: 'rgba(255,255,255,0.4)',
+                              }}>Add Notes</button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
+                  );
+                })()}
+
+                {/* ── INVESTOR LIST VIEW (when no user selected) ── */}
+                {!selectedWithdrawalUser && (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Withdrawals by Investor</div>
+                    {investorList.map(inv => {
+                      const hasPending = inv.pendingCount > 0;
+                      return (
+                        <div key={inv.userId} onClick={() => setSelectedWithdrawalUser(inv.userId)} style={{
+                          ...glass, padding: 18, marginBottom: 8, cursor: 'pointer',
+                          border: hasPending ? '1px solid rgba(245,158,11,0.15)' : '1px solid rgba(255,255,255,0.04)',
+                          transition: 'all 0.2s',
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(0,212,255,0.3)'; e.currentTarget.style.background = 'rgba(0,212,255,0.03)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = hasPending ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.04)'; e.currentTarget.style.background = ''; }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                              <div style={{
+                                width: 40, height: 40, borderRadius: 12,
+                                background: 'linear-gradient(135deg, rgba(0,212,255,0.15), rgba(168,85,247,0.15))',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: 16, fontWeight: 800, color: '#00D4FF',
+                              }}>{(inv.userName || '?')[0].toUpperCase()}</div>
+                              <div>
+                                <div style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>{inv.userName}</div>
+                                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginTop: 1 }}>{inv.userEmail}</div>
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontSize: 18, fontWeight: 800, color: '#22C55E' }}>${inv.totalWithdrawn.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 3 }}>
+                                <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>{inv.completedCount} completed</span>
+                                {hasPending && (
+                                  <span style={{ fontSize: 10, color: '#F59E0B', fontWeight: 700 }}>{inv.pendingCount} pending · ${inv.totalPending.toLocaleString()}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 8 }}>{inv.requests.length} total requests · Click to view history →</div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            );
+          })()}
         </>
       )}
 
