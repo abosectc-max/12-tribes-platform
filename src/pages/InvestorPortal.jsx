@@ -3368,7 +3368,7 @@ function PortfolioDashboard({ investor, onLogout }) {
       if (window.location.hostname === 'localhost') return 'http://localhost:3001/api';
       return 'https://one2-tribes-api.onrender.com/api';
     })();
-    const token = localStorage.getItem('auth_token');
+    const token = localStorage.getItem('12tribes_auth_token');
     const fetchNotifCount = () => {
       fetch(`${API_BASE}/admin/notifications/count`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.ok ? r.json() : null)

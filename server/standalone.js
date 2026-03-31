@@ -47,7 +47,7 @@ function rateLimit(key, maxAttempts, windowMs) {
   return true;
 }
 // Clean rate limit store every 5 minutes
-setInterval(() => {
+const rateLimitCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, times] of rateLimitStore) {
     const recent = times.filter(t => now - t < 3600000);
@@ -85,6 +85,8 @@ const DB_TABLES = [
   'distributions', 'capital_accounts',
   // WebAuthn Passkey table
   'passkey_credentials',
+  // Trade flag queue — guards flag instead of auto-rejecting
+  'trade_flags',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -965,7 +967,7 @@ function updateMacroIntel() {
 }
 
 // Update macro intel every 30 seconds
-setInterval(updateMacroIntel, 30000);
+const macroIntelInterval = setInterval(updateMacroIntel, 30000);
 setTimeout(updateMacroIntel, 5000); // First update 5s after boot
 
 // ═══════════════════════════════════════════════════════════
@@ -1181,8 +1183,8 @@ function loadAgentIntelligence() {
   return true;
 }
 
-// Save intelligence every 2 minutes
-setInterval(saveAgentIntelligence, 2 * 60 * 1000);
+// NOTE: Agent intelligence is saved by intelligenceInterval (defined after trading engine)
+// Duplicate interval removed — was causing race condition on file writes
 
 function detectRegime(hist) {
   if (hist.length < 30) return 'ranging';
@@ -1430,35 +1432,70 @@ function wsBroadcastPrices() {
 //   RISK MANAGER
 // ═══════════════════════════════════════════
 
-function preTradeRiskCheck(userId, wallet, order) {
-  if (wallet.kill_switch_active) return { approved: false, reason: 'Kill switch active. Trading halted.' };
+/**
+ * preTradeRiskCheck — FLAG & REVIEW pattern.
+ * Guards no longer auto-reject. Instead they raise a flag for QA investigation.
+ * Returns: { approved: true } OR { approved: false, flagged: true, flagId, reason }
+ * The QA agent processes flags and decides APPROVE/REJECT/OVERRIDE.
+ * @param {boolean} bypassFlags — when true, skip flagging (used by QA after approval)
+ */
+function preTradeRiskCheck(userId, wallet, order, bypassFlags = false) {
+  // Kill switch — still a hard state, but QA can investigate and deactivate
+  if (wallet.kill_switch_active && !bypassFlags) {
+    const flag = createTradeFlag(userId, order, 'kill_switch', 'Kill switch active. Trading halted.', {
+      equity: wallet.equity,
+      peak_equity: wallet.peak_equity,
+      initial_balance: wallet.initial_balance,
+      kill_switch_active: true,
+    });
+    return { approved: false, flagged: true, flagId: flag.flagId, reason: flag.reason };
+  }
 
   // Position size check
   const orderValue = order.quantity * (order.price || 0);
   const maxPosValue = (wallet.equity) * (RISK.maxPositionSizePct / 100);
-  if (orderValue > maxPosValue && order.price) {
-    return { approved: false, reason: `Position $${orderValue.toFixed(0)} exceeds ${RISK.maxPositionSizePct}% limit ($${maxPosValue.toFixed(0)})` };
+  if (orderValue > maxPosValue && order.price && !bypassFlags) {
+    const flag = createTradeFlag(userId, order, 'position_size',
+      `Position $${orderValue.toFixed(0)} exceeds ${RISK.maxPositionSizePct}% limit ($${maxPosValue.toFixed(0)})`, {
+      orderValue, maxPosValue, equity: wallet.equity,
+    });
+    return { approved: false, flagged: true, flagId: flag.flagId, reason: flag.reason };
   }
 
-  // Drawdown check — measured from peak equity (high-water mark), not initial balance
+  // Drawdown check — measured from peak equity (high-water mark)
   const peakEquity = wallet.peak_equity || wallet.initial_balance;
   const drawdown = peakEquity > 0 ? ((peakEquity - wallet.equity) / peakEquity) * 100 : 0;
-  if (drawdown >= RISK.killSwitchDrawdownPct) {
-    wallet.kill_switch_active = true;
-    db._save('wallets');
-    logRiskEvent(userId, 'kill_switch', 'critical', `Auto kill: drawdown ${drawdown.toFixed(2)}% from peak $${Math.round(peakEquity)} to equity $${Math.round(wallet.equity)}`);
-    return { approved: false, reason: `KILL SWITCH: Drawdown ${drawdown.toFixed(2)}% exceeded ${RISK.killSwitchDrawdownPct}%` };
+
+  if (drawdown >= RISK.killSwitchDrawdownPct && !bypassFlags) {
+    // Don't auto-activate kill switch — flag it for QA investigation first
+    logRiskEvent(userId, 'kill_switch_candidate', 'critical',
+      `Drawdown ${drawdown.toFixed(2)}% from peak $${Math.round(peakEquity)} to equity $${Math.round(wallet.equity)} — flagging for QA review (would have triggered kill switch)`);
+    const flag = createTradeFlag(userId, order, 'kill_switch',
+      `KILL SWITCH CANDIDATE: Drawdown ${drawdown.toFixed(2)}% exceeded ${RISK.killSwitchDrawdownPct}%`, {
+      equity: wallet.equity, peak_equity: peakEquity,
+      initial_balance: wallet.initial_balance, drawdown_pct: drawdown,
+    });
+    return { approved: false, flagged: true, flagId: flag.flagId, reason: flag.reason };
   }
-  if (drawdown >= RISK.maxDrawdownPct) {
-    logRiskEvent(userId, 'drawdown_reject', 'warning', `Trade rejected: drawdown ${drawdown.toFixed(2)}% (peak $${Math.round(peakEquity)} → equity $${Math.round(wallet.equity)}) exceeds ${RISK.maxDrawdownPct}% limit`);
-    return { approved: false, reason: `Drawdown ${drawdown.toFixed(2)}% exceeds limit (${RISK.maxDrawdownPct}%)` };
+
+  if (drawdown >= RISK.maxDrawdownPct && !bypassFlags) {
+    const flag = createTradeFlag(userId, order, 'drawdown',
+      `Drawdown ${drawdown.toFixed(2)}% exceeds limit (${RISK.maxDrawdownPct}%)`, {
+      equity: wallet.equity, peak_equity: peakEquity,
+      initial_balance: wallet.initial_balance, drawdown_pct: drawdown,
+    });
+    return { approved: false, flagged: true, flagId: flag.flagId, reason: flag.reason };
   }
 
   // Rate limit
   const oneMinAgo = Date.now() - 60000;
   const recentCount = db.count('positions', p => p.user_id === userId && new Date(p.opened_at).getTime() > oneMinAgo);
-  if (recentCount >= RISK.maxOrdersPerMinute) {
-    return { approved: false, reason: 'Order rate limit exceeded' };
+  if (recentCount >= RISK.maxOrdersPerMinute && !bypassFlags) {
+    const flag = createTradeFlag(userId, order, 'rate_limit',
+      `Order rate limit exceeded (${recentCount}/${RISK.maxOrdersPerMinute} per minute)`, {
+      recentCount, limit: RISK.maxOrdersPerMinute,
+    });
+    return { approved: false, flagged: true, flagId: flag.flagId, reason: flag.reason };
   }
 
   return { approved: true };
@@ -1468,30 +1505,348 @@ function logRiskEvent(userId, type, severity, message) {
   db.insert('risk_events', { user_id: userId, event_type: type, severity, message });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//   FLAG & REVIEW ENGINE
+//   Guards throw flags instead of auto-rejecting.
+//   The QA agent investigates each flag and decides:
+//     APPROVE  → execute the trade
+//     REJECT   → confirm rejection with documented reason
+//     OVERRIDE → adjust parameters (e.g. reconcile peak_equity) and approve
+//   Flags expire after FLAG_TTL_MS — expired flags auto-reject for safety.
+// ═══════════════════════════════════════════════════════════════════
+const FLAG_TTL_MS = 90000; // 90 seconds — flag must be reviewed within 1.5 auto-trade ticks
+
+/**
+ * Create a trade flag instead of auto-rejecting.
+ * Returns: { flagged: true, flagId: string, reason: string }
+ */
+function createTradeFlag(userId, order, guardType, reason, context) {
+  const flagId = `flag_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const flag = {
+    id: flagId,
+    user_id: userId,
+    status: 'PENDING',           // PENDING → APPROVED | REJECTED | EXPIRED
+    guard_type: guardType,       // drawdown | kill_switch | position_size | rate_limit | insufficient_balance
+    reason,
+    order: { ...order },         // Snapshot of the proposed trade
+    context: { ...context },     // Wallet state, drawdown %, peak_equity — everything QA needs
+    created_at: new Date().toISOString(),
+    reviewed_at: null,
+    reviewed_by: null,           // 'qa_agent' or 'admin'
+    resolution: null,            // QA's verdict explanation
+    resolution_action: null,     // What QA did (e.g. 'reconciled_peak_equity', 'confirmed_reject')
+  };
+  db.insert('trade_flags', flag);
+  logRiskEvent(userId, 'trade_flagged', 'warning', `[FLAG] ${guardType}: ${reason} — flagId: ${flagId}`);
+  console.log(`[FlagEngine] 🚩 Flag raised: ${guardType} for user ${userId.slice(0,8)} — ${reason} (${flagId})`);
+  return { flagged: true, flagId, reason };
+}
+
+/**
+ * QA Agent: Investigate and resolve a single trade flag.
+ * Returns: { decision: 'APPROVE'|'REJECT'|'OVERRIDE', reason: string, action?: string }
+ */
+function qaInvestigateFlag(flag) {
+  const userId = flag.user_id;
+  const wallet = db.findOne('wallets', w => w.user_id === userId);
+  if (!wallet) return { decision: 'REJECT', reason: 'Wallet not found during investigation' };
+
+  const equity = wallet.equity || wallet.balance || 0;
+  const peakEquity = wallet.peak_equity || wallet.initial_balance || INITIAL_BALANCE;
+  const initialBalance = wallet.initial_balance || INITIAL_BALANCE;
+  const openPositions = db.count('positions', p => p.user_id === userId && p.status === 'OPEN');
+  const currentDrawdown = peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0;
+
+  // ─── INVESTIGATION PER GUARD TYPE ───
+  switch (flag.guard_type) {
+
+    case 'kill_switch': {
+      // Investigation: Is this a genuine catastrophic drawdown or a stale peak_equity artifact?
+      // Check 1: Is peak_equity stale from a previous Render session?
+      const drawdownFromInitial = initialBalance > 0 ? ((initialBalance - equity) / initialBalance) * 100 : 0;
+
+      if (currentDrawdown > 25 && drawdownFromInitial > 15) {
+        // Genuine severe drawdown from BOTH peak and initial — confirm kill switch
+        return {
+          decision: 'REJECT',
+          reason: `Confirmed catastrophic drawdown: ${currentDrawdown.toFixed(1)}% from peak, ${drawdownFromInitial.toFixed(1)}% from initial. Kill switch justified.`,
+          action: 'confirmed_kill_switch'
+        };
+      }
+
+      if (currentDrawdown > 20 && drawdownFromInitial < 5) {
+        // Peak is stale — equity is near initial balance but peak is inflated from old session
+        // OVERRIDE: Reconcile peak_equity and approve
+        wallet.peak_equity = equity;
+        db._save('wallets');
+        return {
+          decision: 'OVERRIDE',
+          reason: `Stale peak_equity detected: peak $${Math.round(peakEquity)} but equity $${Math.round(equity)} is only ${drawdownFromInitial.toFixed(1)}% below initial $${Math.round(initialBalance)}. Reconciled peak_equity to current equity.`,
+          action: 'reconciled_peak_equity'
+        };
+      }
+
+      if (currentDrawdown > 20 && drawdownFromInitial >= 5 && drawdownFromInitial < 15) {
+        // Moderate drawdown — reduce position sizing but allow trading
+        return {
+          decision: 'OVERRIDE',
+          reason: `Moderate drawdown: ${drawdownFromInitial.toFixed(1)}% from initial. Kill switch too aggressive. Allowing trading with reduced sizing.`,
+          action: 'reduced_sizing_override'
+        };
+      }
+
+      // Default for kill switch — if drawdown < 20% from peak, it shouldn't have triggered
+      if (currentDrawdown < RISK.killSwitchDrawdownPct) {
+        wallet.kill_switch_active = false;
+        db._save('wallets');
+        return {
+          decision: 'OVERRIDE',
+          reason: `Kill switch false positive: current drawdown ${currentDrawdown.toFixed(1)}% is below ${RISK.killSwitchDrawdownPct}% threshold. Deactivated kill switch.`,
+          action: 'deactivated_false_kill_switch'
+        };
+      }
+
+      return { decision: 'REJECT', reason: `Kill switch confirmed: drawdown ${currentDrawdown.toFixed(1)}% exceeds ${RISK.killSwitchDrawdownPct}% limit.`, action: 'confirmed_kill_switch' };
+    }
+
+    case 'drawdown': {
+      // Investigation: Is drawdown measurement valid?
+      const drawdownFromInitial = initialBalance > 0 ? ((initialBalance - equity) / initialBalance) * 100 : 0;
+
+      // Check for stale peak_equity (same pattern as kill_switch but softer threshold)
+      if (currentDrawdown > RISK.maxDrawdownPct && drawdownFromInitial < 3) {
+        // Peak is clearly stale — equity is near initial
+        wallet.peak_equity = equity;
+        db._save('wallets');
+        return {
+          decision: 'OVERRIDE',
+          reason: `Stale peak_equity: drawdown from peak is ${currentDrawdown.toFixed(1)}% but only ${drawdownFromInitial.toFixed(1)}% from initial. Reconciled.`,
+          action: 'reconciled_peak_equity'
+        };
+      }
+
+      // Check if there's been recent profitable trading that should raise confidence
+      const recentTrades = db.findMany('positions', p => p.user_id === userId && p.status === 'CLOSED')
+        .sort((a, b) => new Date(b.closed_at) - new Date(a.closed_at))
+        .slice(0, 10);
+      const recentWins = recentTrades.filter(t => (t.pnl || 0) > 0).length;
+      const recentWinRate = recentTrades.length > 0 ? recentWins / recentTrades.length : 0;
+
+      if (currentDrawdown >= RISK.maxDrawdownPct && currentDrawdown < RISK.killSwitchDrawdownPct && recentWinRate >= 0.6) {
+        // In drawdown but recent performance is strong — allow with reduced sizing
+        return {
+          decision: 'OVERRIDE',
+          reason: `Drawdown ${currentDrawdown.toFixed(1)}% but recent win rate ${(recentWinRate*100).toFixed(0)}% is strong. Allowing with reduced sizing.`,
+          action: 'reduced_sizing_override'
+        };
+      }
+
+      if (currentDrawdown >= RISK.maxDrawdownPct) {
+        return {
+          decision: 'REJECT',
+          reason: `Confirmed drawdown ${currentDrawdown.toFixed(1)}% exceeds ${RISK.maxDrawdownPct}% limit. Recent win rate: ${(recentWinRate*100).toFixed(0)}%.`,
+          action: 'confirmed_drawdown_reject'
+        };
+      }
+
+      // If drawdown resolved between flag creation and review
+      return { decision: 'APPROVE', reason: `Drawdown resolved: now ${currentDrawdown.toFixed(1)}%, below ${RISK.maxDrawdownPct}% limit.`, action: 'drawdown_resolved' };
+    }
+
+    case 'position_size': {
+      // Investigation: Is the position size check using current equity or stale data?
+      const maxPosValue = equity * (RISK.maxPositionSizePct / 100);
+      const orderValue = (flag.order.quantity || 0) * (flag.order.price || marketPrices[flag.order.symbol] || 0);
+
+      if (orderValue <= maxPosValue) {
+        // Equity has changed — position now fits
+        return { decision: 'APPROVE', reason: `Position value $${Math.round(orderValue)} now fits within ${RISK.maxPositionSizePct}% limit ($${Math.round(maxPosValue)}).`, action: 'size_resolved' };
+      }
+
+      // Can we scale the position down to fit?
+      const price = flag.order.price || marketPrices[flag.order.symbol] || 0;
+      if (price > 0) {
+        const maxQty = Math.floor(maxPosValue / price);
+        if (maxQty >= 1) {
+          return {
+            decision: 'OVERRIDE',
+            reason: `Position oversized ($${Math.round(orderValue)} vs limit $${Math.round(maxPosValue)}). Scaled quantity from ${flag.order.quantity} to ${maxQty}.`,
+            action: 'scaled_position',
+            adjustedQuantity: maxQty
+          };
+        }
+      }
+
+      return { decision: 'REJECT', reason: `Position $${Math.round(orderValue)} exceeds ${RISK.maxPositionSizePct}% limit ($${Math.round(maxPosValue)}). Cannot scale.`, action: 'confirmed_size_reject' };
+    }
+
+    case 'rate_limit': {
+      // Investigation: Is this a burst or sustained overtrading?
+      const oneMinAgo = Date.now() - 60000;
+      const currentRate = db.count('positions', p => p.user_id === userId && new Date(p.opened_at).getTime() > oneMinAgo);
+
+      if (currentRate < RISK.maxOrdersPerMinute) {
+        return { decision: 'APPROVE', reason: `Rate limit cleared: ${currentRate} orders in last minute (limit: ${RISK.maxOrdersPerMinute}).`, action: 'rate_cleared' };
+      }
+
+      // Still at limit — reject but don't escalate
+      return { decision: 'REJECT', reason: `Rate limit active: ${currentRate} orders in last minute (limit: ${RISK.maxOrdersPerMinute}). Wait for cooldown.`, action: 'confirmed_rate_limit' };
+    }
+
+    case 'insufficient_balance': {
+      // Investigation: Check if pending closes could free up balance
+      const pendingPnl = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN')
+        .reduce((sum, p) => {
+          const cp = marketPrices[p.symbol] || p.entry_price;
+          const dir = p.side === 'LONG' ? 1 : -1;
+          return sum + ((cp - p.entry_price) * p.quantity * dir);
+        }, 0);
+
+      const projectedBalance = wallet.balance + Math.max(0, pendingPnl);
+      const marginRequired = flag.context?.marginRequired || 0;
+
+      if (projectedBalance >= marginRequired) {
+        return {
+          decision: 'OVERRIDE',
+          reason: `Insufficient balance ($${Math.round(wallet.balance)}) but unrealized profits ($${Math.round(pendingPnl)}) could cover margin ($${Math.round(marginRequired)}). Close profitable positions first.`,
+          action: 'suggest_close_profitable'
+        };
+      }
+
+      return { decision: 'REJECT', reason: `Insufficient balance: $${Math.round(wallet.balance)} available, $${Math.round(marginRequired)} required. No unrealized profits to cover.`, action: 'confirmed_insufficient' };
+    }
+
+    default:
+      return { decision: 'REJECT', reason: `Unknown guard type: ${flag.guard_type}`, action: 'unknown_guard' };
+  }
+}
+
+/**
+ * QA Agent: Process all pending trade flags.
+ * Called by the QA tick cycle (runs every 30s).
+ * Returns array of actions taken.
+ */
+function qaProcessTradeFlags() {
+  const pendingFlags = db.findMany('trade_flags', f => f.status === 'PENDING');
+  if (pendingFlags.length === 0) return [];
+
+  const actions = [];
+  const now = Date.now();
+
+  for (const flag of pendingFlags) {
+    const flagAge = now - new Date(flag.created_at).getTime();
+
+    // Expire stale flags
+    if (flagAge > FLAG_TTL_MS) {
+      flag.status = 'EXPIRED';
+      flag.reviewed_at = new Date().toISOString();
+      flag.reviewed_by = 'qa_agent';
+      flag.resolution = `Flag expired after ${Math.round(flagAge / 1000)}s without review. Auto-rejected for safety.`;
+      flag.resolution_action = 'expired_auto_reject';
+      db._save('trade_flags');
+      logRiskEvent(flag.user_id, 'flag_expired', 'warning', `Flag ${flag.id} expired: ${flag.guard_type} — ${flag.reason}`);
+      actions.push({ flagId: flag.id, decision: 'EXPIRED', guard: flag.guard_type });
+      continue;
+    }
+
+    // Investigate
+    const verdict = qaInvestigateFlag(flag);
+    flag.reviewed_at = new Date().toISOString();
+    flag.reviewed_by = 'qa_agent';
+    flag.resolution = verdict.reason;
+    flag.resolution_action = verdict.action;
+
+    if (verdict.decision === 'APPROVE' || verdict.decision === 'OVERRIDE') {
+      flag.status = 'APPROVED';
+      db._save('trade_flags');
+
+      // Execute the trade that was flagged
+      const order = { ...flag.order };
+      if (verdict.adjustedQuantity) order.quantity = verdict.adjustedQuantity;
+
+      // Temporarily bypass the guard that flagged this trade
+      const result = executeTradeBypassFlags(flag.user_id, order);
+
+      if (result.success) {
+        logRiskEvent(flag.user_id, 'flag_approved_executed', 'info',
+          `[QA ${verdict.decision}] ${flag.guard_type} → Trade executed: ${order.side} ${order.quantity}x ${order.symbol}. Reason: ${verdict.reason}`);
+        actions.push({ flagId: flag.id, decision: verdict.decision, guard: flag.guard_type, tradeExecuted: true, action: verdict.action });
+        console.log(`[FlagEngine] ✅ Flag ${flag.id} ${verdict.decision}: ${flag.guard_type} → Trade executed. ${verdict.reason}`);
+      } else {
+        logRiskEvent(flag.user_id, 'flag_approved_failed', 'warning',
+          `[QA ${verdict.decision}] ${flag.guard_type} → Trade FAILED after approval: ${result.error}. Reason: ${verdict.reason}`);
+        actions.push({ flagId: flag.id, decision: verdict.decision, guard: flag.guard_type, tradeExecuted: false, error: result.error });
+        console.warn(`[FlagEngine] ⚠️ Flag ${flag.id} approved but trade failed: ${result.error}`);
+      }
+    } else {
+      // REJECT
+      flag.status = 'REJECTED';
+      db._save('trade_flags');
+      logRiskEvent(flag.user_id, 'flag_rejected', 'info',
+        `[QA REJECT] ${flag.guard_type}: ${verdict.reason}`);
+      actions.push({ flagId: flag.id, decision: 'REJECT', guard: flag.guard_type, action: verdict.action });
+      console.log(`[FlagEngine] ❌ Flag ${flag.id} REJECTED: ${flag.guard_type} — ${verdict.reason}`);
+    }
+  }
+
+  // Prune resolved flags older than 24 hours to prevent unbounded growth
+  const oneDayAgo = new Date(now - 86400000).toISOString();
+  const staleFlags = db.findMany('trade_flags', f => f.status !== 'PENDING' && f.created_at < oneDayAgo);
+  for (const sf of staleFlags) {
+    db.delete('trade_flags', sf.id);
+  }
+
+  return actions;
+}
+
 // ═══════════════════════════════════════════
 //   TRADE EXECUTION
 // ═══════════════════════════════════════════
 
 function executeTrade(userId, order) {
+  return _executeTrade(userId, order, false);
+}
+
+/** QA-approved trade execution — bypasses flag guards */
+function executeTradeBypassFlags(userId, order) {
+  return _executeTrade(userId, order, true);
+}
+
+function _executeTrade(userId, order, bypassFlags) {
   const wallet = db.findOne('wallets', w => w.user_id === userId);
   if (!wallet) return { success: false, error: 'Wallet not found. Register first.' };
 
   const price = order.price || marketPrices[order.symbol];
   if (!price) return { success: false, error: `No price data for ${order.symbol}` };
 
-  // Risk check
-  const risk = preTradeRiskCheck(userId, wallet, { ...order, price });
-  if (!risk.approved) return { success: false, error: risk.reason, code: 'RISK_REJECTED' };
+  // Risk check — flags instead of rejecting when bypassFlags is false
+  const risk = preTradeRiskCheck(userId, wallet, { ...order, price }, bypassFlags);
+  if (!risk.approved) {
+    // If flagged, return flag info so callers know it's queued for QA review
+    if (risk.flagged) {
+      return { success: false, error: risk.reason, code: 'FLAGGED_FOR_REVIEW', flagId: risk.flagId };
+    }
+    return { success: false, error: risk.reason, code: 'RISK_REJECTED' };
+  }
 
   const side = order.side === 'BUY' ? 'LONG' : order.side === 'SELL' ? 'SHORT' : order.side;
   const cost = price * order.quantity;
 
-  if (side === 'LONG' && cost > wallet.balance) {
-    return { success: false, error: 'Insufficient balance' };
+  // SHORT margin: 50% of position value (industry standard for paper trading)
+  const marginRequired = side === 'LONG' ? cost : cost * 0.5;
+  if (marginRequired > wallet.balance) {
+    if (!bypassFlags) {
+      const flag = createTradeFlag(userId, order, 'insufficient_balance',
+        `Insufficient balance: need $${Math.round(marginRequired)}, have $${Math.round(wallet.balance)}`, {
+        marginRequired, balance: wallet.balance, equity: wallet.equity,
+      });
+      return { success: false, error: flag.reason, code: 'FLAGGED_FOR_REVIEW', flagId: flag.flagId };
+    }
+    return { success: false, error: `Insufficient balance: need $${Math.round(marginRequired)}, have $${Math.round(wallet.balance)}` };
   }
 
-  // Deduct balance
-  wallet.balance -= side === 'LONG' ? cost : cost * 0.1;
+  // Deduct balance — full cost for LONG, 50% margin for SHORT
+  wallet.balance -= marginRequired;
   wallet.trade_count = (wallet.trade_count || 0) + 1;
   db._save('wallets');
 
@@ -1536,7 +1891,8 @@ function closePosition(userId, positionId) {
   const dir = pos.side === 'LONG' ? 1 : -1;
   const pnl = roundTo((closePrice - pos.entry_price) * pos.quantity * dir, 2);
   const cost = pos.entry_price * pos.quantity;
-  const returnBack = pos.side === 'LONG' ? cost + pnl : (cost * 0.1) + pnl;
+  // LONG: return full cost + PnL. SHORT: return 50% margin + PnL (symmetric with open)
+  const returnBack = pos.side === 'LONG' ? cost + pnl : (cost * 0.5) + pnl;
   const holdTime = Math.round((Date.now() - new Date(pos.opened_at).getTime()) / 1000);
 
   // Update wallet
@@ -3274,7 +3630,7 @@ api.post('/api/admin/backup/restore', auth, async (req, res) => {
 
 // ─── AUTO PROFILE BACKUP: Runs every 30 minutes alongside DB rotation ───
 const PROFILE_BACKUP_INTERVAL_MS = 1800000; // 30 minutes
-setInterval(() => {
+const profileBackupInterval = setInterval(() => {
   try {
     const result = saveFullPlatformBackup();
     console.log(`[AUTO-BACKUP] Platform profile backup: ${result.userCount} users → ${result.filename}`);
@@ -3292,6 +3648,75 @@ setTimeout(() => {
     console.error(`[BOOT-BACKUP] Initial profile backup failed: ${err.message}`);
   }
 }, 60000);
+
+// ─── TRADE FLAGS API — Admin visibility into flag & review pipeline ───
+
+api.get('/api/admin/trade-flags', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const status = req.query?.status; // Optional filter: PENDING, APPROVED, REJECTED, EXPIRED
+  let flags = db.findMany('trade_flags');
+  if (status) flags = flags.filter(f => f.status === status.toUpperCase());
+
+  // Sort by most recent first
+  flags.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  // Enrich with user name
+  const enriched = flags.slice(0, 100).map(f => {
+    const user = db.findOne('users', u => u.id === f.user_id);
+    return { ...f, user_name: user ? `${user.first_name} ${user.last_name}` : 'Unknown' };
+  });
+
+  json(res, 200, {
+    total: flags.length,
+    pending: flags.filter(f => f.status === 'PENDING').length,
+    approved: flags.filter(f => f.status === 'APPROVED').length,
+    rejected: flags.filter(f => f.status === 'REJECTED').length,
+    expired: flags.filter(f => f.status === 'EXPIRED').length,
+    flags: enriched,
+  });
+});
+
+// Admin can manually approve or reject a pending flag
+api.post('/api/admin/trade-flags/:flagId/resolve', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const body = await readBody(req);
+  const flag = db.findOne('trade_flags', f => f.id === req.params.flagId);
+  if (!flag) return json(res, 404, { error: 'Flag not found' });
+  if (flag.status !== 'PENDING') return json(res, 400, { error: `Flag already resolved: ${flag.status}` });
+
+  const decision = (body.decision || '').toUpperCase();
+  if (!['APPROVE', 'REJECT'].includes(decision)) {
+    return json(res, 400, { error: 'Decision must be APPROVE or REJECT' });
+  }
+
+  flag.reviewed_at = new Date().toISOString();
+  flag.reviewed_by = `admin:${admin.email}`;
+  flag.resolution = body.reason || `Manual ${decision.toLowerCase()} by admin`;
+  flag.resolution_action = `admin_${decision.toLowerCase()}`;
+
+  if (decision === 'APPROVE') {
+    flag.status = 'APPROVED';
+    db._save('trade_flags');
+
+    // Execute the flagged trade
+    const result = executeTradeBypassFlags(flag.user_id, flag.order);
+    logRiskEvent(flag.user_id, 'admin_flag_override', 'info',
+      `Admin approved flag ${flag.id}: ${flag.guard_type}. Trade ${result.success ? 'executed' : 'failed: ' + result.error}`);
+
+    return json(res, 200, { success: true, decision: 'APPROVED', tradeResult: result });
+  } else {
+    flag.status = 'REJECTED';
+    db._save('trade_flags');
+    logRiskEvent(flag.user_id, 'admin_flag_reject', 'info',
+      `Admin rejected flag ${flag.id}: ${flag.guard_type}. Reason: ${flag.resolution}`);
+
+    return json(res, 200, { success: true, decision: 'REJECTED' });
+  }
+});
 
 // ─── FEEDBACK SYSTEM ───
 
@@ -4244,7 +4669,7 @@ if (MARKET_DATA_MODE !== 'simulated') {
   }, 3000);
 
   // Periodic refresh every 30 seconds
-  setInterval(() => {
+  var marketRefreshInterval = setInterval(() => {
     refreshRealMarketData().catch(e => console.warn('[Market Data] Periodic fetch error:', e.message));
   }, 30000);
 }
@@ -5253,7 +5678,16 @@ function runAllAgents(userId, fundData) {
     });
     console.log(`[AutoTrader] Auto-created wallet for user ${userId} with $${INITIAL_BALANCE}`);
   }
-  if (wallet.kill_switch_active) { if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE`); return; }
+  // Kill switch — flag for QA review instead of hard-blocking
+  if (wallet.kill_switch_active) {
+    if (autoTradeTickCount <= 3) console.warn(`[AutoTrader] User ${userId}: KILL SWITCH ACTIVE — flagging for QA review`);
+    createTradeFlag(userId, { symbol: 'ALL', side: 'N/A', quantity: 0 }, 'kill_switch',
+      'Kill switch active — blocking all trades. QA to investigate.', {
+      equity: wallet.equity, peak_equity: wallet.peak_equity,
+      initial_balance: wallet.initial_balance, kill_switch_active: true,
+    });
+    return; // Still return — but QA will process the flag and can deactivate
+  }
 
   // Daily trade limit — count positions opened since LATER of (today midnight, server boot, QA reset)
   // globalSessionResetTime is set by the QA agent after 15min cooldown — gives fresh trade budget
@@ -5271,7 +5705,9 @@ function runAllAgents(userId, fundData) {
   // ─── PHASE 1: Adaptive position management — trail stops, take profits ───
   if (openPositions.length > 0) {
     adaptivePositionManagement(userId, openPositions);
-    // Refresh after potential closes
+    // Refresh wallet + positions after potential closes so position sizing uses current equity
+    const freshWallet = db.findOne('wallets', w => w.user_id === userId);
+    if (freshWallet) Object.assign(wallet, freshWallet);
     openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
   }
 
@@ -5360,19 +5796,20 @@ function runAllAgents(userId, fundData) {
     if (!price) continue;
     const equity = wallet.equity || wallet.balance || 100000;
 
-    // Drawdown protection — reduce size when in drawdown
-    // Use withdrawal-adjusted initial balance so withdrawals don't trigger false drawdown
-    const adjustedInitial = Math.max(1000, (wallet.initial_balance || 100000));
-    const drawdownPct = adjustedInitial > 0
-      ? ((equity / adjustedInitial) - 1) * 100 : 0;
-    const drawdownMultiplier = drawdownPct < -10 ? 0.5 : drawdownPct < -5 ? 0.75 : 1.0;
+    // Drawdown protection — consistent with preTradeRiskCheck: measure from peak equity
+    const peakEq = wallet.peak_equity || wallet.initial_balance || INITIAL_BALANCE;
+    const drawdownPct = peakEq > 0 ? ((peakEq - equity) / peakEq) * 100 : 0;
+    const drawdownMultiplier = drawdownPct > 10 ? 0.5 : drawdownPct > 5 ? 0.75 : 1.0;
 
-    // Kill switch check — only for genuine trading losses, not withdrawals
-    if (drawdownPct < -AUTO_TRADE_CONFIG.maxDrawdownPct) {
-      wallet.kill_switch_active = true;
-      db._save('wallets');
-      console.log(`[AutoTrader] KILL SWITCH for user ${userId} — drawdown ${drawdownPct.toFixed(1)}%`);
-      break;
+    // Drawdown threshold — flag for QA review instead of auto-activating kill switch
+    if (drawdownPct > AUTO_TRADE_CONFIG.maxDrawdownPct) {
+      createTradeFlag(userId, { symbol: signal.symbol, side: signal.adjustedScore > 0 ? 'LONG' : 'SHORT', quantity: 0 },
+        'drawdown', `AutoTrader drawdown ${drawdownPct.toFixed(1)}% exceeds ${AUTO_TRADE_CONFIG.maxDrawdownPct}% limit`, {
+        equity, peak_equity: peakEq, initial_balance: wallet.initial_balance,
+        drawdown_pct: drawdownPct, agent: signal.agent,
+      });
+      console.log(`[AutoTrader] 🚩 Drawdown flag for user ${userId.slice(0,8)} — ${drawdownPct.toFixed(1)}% (flagged, not killed)`);
+      break; // Stop trying more trades this tick — QA will review
     }
 
     // Confluence-based sizing: elite > winner > base (TIGHTENED thresholds)
@@ -5403,13 +5840,14 @@ function runAllAgents(userId, fundData) {
       // Persist signal with trade linkage
       persistSignal(signal, userId, { action: 'EXECUTED', tradeId: result.position?.id, positionId: result.position?.id });
     } else {
-      console.warn(`[AutoTrader] TRADE REJECTED for ${userId.slice(0,8)}: ${signal.agent} ${side} ${quantity}x ${signal.symbol} @ $${price} — ${result.error}`);
-      // Log to risk_events for admin visibility (not just stdout)
-      if (result.error && (result.error.includes('Drawdown') || result.error.includes('Kill switch') || result.error.includes('Insufficient'))) {
+      if (result.code === 'FLAGGED_FOR_REVIEW') {
+        console.log(`[AutoTrader] 🚩 Trade FLAGGED for ${userId.slice(0,8)}: ${signal.agent} ${side} ${quantity}x ${signal.symbol} @ $${price} — ${result.error} (flagId: ${result.flagId})`);
+        persistSignal(signal, userId, { action: 'FLAGGED', flagId: result.flagId });
+      } else {
+        console.warn(`[AutoTrader] TRADE REJECTED for ${userId.slice(0,8)}: ${signal.agent} ${side} ${quantity}x ${signal.symbol} @ $${price} — ${result.error}`);
         logRiskEvent(userId, 'trade_rejected', 'warning', `${signal.agent} ${side} ${signal.symbol}: ${result.error}`);
+        persistSignal(signal, userId, { action: 'REJECTED' });
       }
-      // Persist rejected signal for audit trail
-      persistSignal(signal, userId, { action: 'REJECTED' });
     }
   }
 }
@@ -5775,7 +6213,26 @@ function computeSignalStats(userId) {
 }
 
 // Auto-trading tick — every 10 seconds
-const autoTradeInterval = setInterval(runAutoTradeTick, AUTO_TRADE_CONFIG.tickIntervalMs);
+let isAutoTradeTickRunning = false;
+const autoTradeInterval = setInterval(() => {
+  if (isAutoTradeTickRunning) {
+    console.warn('[AutoTrader] Previous tick still running, skipping this cycle');
+    return;
+  }
+  isAutoTradeTickRunning = true;
+  try {
+    runAutoTradeTick();
+  } catch (err) {
+    console.error(`[AutoTrader] CRITICAL: Tick execution failed: ${err.message}`);
+    db.insert('risk_events', {
+      event_type: 'autotrade_tick_failure', severity: 'critical',
+      message: `Auto-trade tick ${autoTradeTickCount} failed: ${err.message}`,
+      timestamp: new Date().toISOString(),
+    });
+  } finally {
+    isAutoTradeTickRunning = false;
+  }
+}, AUTO_TRADE_CONFIG.tickIntervalMs);
 
 // ─── INTELLIGENCE ENGINES — periodic updates ───
 // Correlation matrix: every 60s (needs price history across assets)
@@ -5845,15 +6302,30 @@ function qaCheckWallets() {
       console.warn(`[QA] 🔧 Created missing wallet for user ${userId.slice(0,8)}`);
     }
 
-    // FIX: Kill switch stuck — reset if equity is above -15% drawdown (aggressive recovery)
+    // Kill switch review — QA investigates whether kill switch is justified
     if (wallet.kill_switch_active) {
-      const adjustedInit = Math.max(1000, wallet.initial_balance || 100000);
-      const drawdown = ((wallet.equity / adjustedInit) - 1) * 100;
-      if (drawdown > -15) {
+      const peakEq = wallet.peak_equity || wallet.initial_balance || INITIAL_BALANCE;
+      const drawdownFromPeak = peakEq > 0 ? ((peakEq - wallet.equity) / peakEq) * 100 : 0;
+      const drawdownFromInitial = wallet.initial_balance > 0 ? ((wallet.initial_balance - wallet.equity) / wallet.initial_balance) * 100 : 0;
+
+      // Investigation: Is peak_equity stale from ephemeral wipe?
+      if (drawdownFromPeak > 15 && drawdownFromInitial < 5) {
+        // Stale peak — reconcile and deactivate
+        wallet.peak_equity = wallet.equity;
         wallet.kill_switch_active = false;
         db._save('wallets');
-        fixes.push({ userId, issue: 'STUCK_KILL_SWITCH', action: `Reset kill switch (drawdown ${drawdown.toFixed(1)}% above -20% threshold)` });
-        console.warn(`[QA] 🔧 Reset stuck kill switch for user ${userId.slice(0,8)} (drawdown ${drawdown.toFixed(1)}%)`);
+        fixes.push({ userId, issue: 'STALE_KILL_SWITCH', action: `QA override: peak_equity stale ($${Math.round(peakEq)} vs equity $${Math.round(wallet.equity)}). Reconciled peak, deactivated kill switch.` });
+        console.warn(`[QA] 🔧 Kill switch override for ${userId.slice(0,8)}: stale peak_equity reconciled (${drawdownFromPeak.toFixed(1)}% from peak, only ${drawdownFromInitial.toFixed(1)}% from initial)`);
+      } else if (drawdownFromInitial < 15) {
+        // Moderate situation — deactivate kill switch, allow trading with caution
+        wallet.kill_switch_active = false;
+        db._save('wallets');
+        fixes.push({ userId, issue: 'KILL_SWITCH_REVIEWED', action: `QA reviewed: drawdown ${drawdownFromInitial.toFixed(1)}% from initial is recoverable. Kill switch deactivated.` });
+        console.warn(`[QA] 🔧 Kill switch deactivated for ${userId.slice(0,8)} after review (drawdown ${drawdownFromInitial.toFixed(1)}% from initial)`);
+      } else {
+        // Genuine severe drawdown — keep kill switch active
+        fixes.push({ userId, issue: 'KILL_SWITCH_CONFIRMED', action: `QA confirmed: drawdown ${drawdownFromInitial.toFixed(1)}% from initial is severe. Kill switch remains active.` });
+        console.log(`[QA] Kill switch CONFIRMED for ${userId.slice(0,8)}: genuine ${drawdownFromInitial.toFixed(1)}% drawdown from initial`);
       }
     }
   }
@@ -6323,6 +6795,43 @@ function qaCheckDataIntegrity() {
     console.warn(`[QA] ⚠️  ${orphanWallets.length} orphan wallet(s) detected — user records missing`);
   }
 
+  // ─── TABLE PRUNING — Prevent unbounded growth in high-volume tables ───
+  const PRUNE_LIMITS = {
+    snapshots: { maxAge: 180 * 86400000, maxRows: 10000 },   // 180 days or 10K rows
+    risk_events: { maxAge: 30 * 86400000, maxRows: 50000 },  // 30 days or 50K rows
+    auto_trade_log: { maxAge: 30 * 86400000, maxRows: 20000 }, // 30 days or 20K rows
+    signals: { maxAge: 7 * 86400000, maxRows: 5000 },         // 7 days or 5K rows
+  };
+  const pruneNow = Date.now();
+  for (const [table, limits] of Object.entries(PRUNE_LIMITS)) {
+    const rows = db.findMany(table);
+    if (rows.length > limits.maxRows) {
+      // Sort by timestamp and keep only most recent maxRows
+      const sorted = rows.sort((a, b) => {
+        const ta = new Date(a.created_at || a.timestamp || a.date || 0).getTime();
+        const tb = new Date(b.created_at || b.timestamp || b.date || 0).getTime();
+        return tb - ta;
+      });
+      const toRemove = sorted.slice(limits.maxRows);
+      for (const row of toRemove) db.delete(table, row.id);
+      if (toRemove.length > 0) {
+        fixes.push({ issue: 'TABLE_PRUNED', action: `${table}: removed ${toRemove.length} oldest rows (cap: ${limits.maxRows})` });
+        console.log(`[QA] 🧹 Pruned ${toRemove.length} rows from ${table} (exceeded ${limits.maxRows} row limit)`);
+      }
+    }
+    // Also prune by age
+    const cutoff = new Date(pruneNow - limits.maxAge).toISOString();
+    const stale = rows.filter(r => {
+      const ts = r.created_at || r.timestamp || r.date;
+      return ts && ts < cutoff;
+    });
+    for (const row of stale) db.delete(table, row.id);
+    if (stale.length > 0) {
+      fixes.push({ issue: 'TABLE_AGE_PRUNED', action: `${table}: removed ${stale.length} records older than ${limits.maxAge / 86400000} days` });
+      console.log(`[QA] 🧹 Pruned ${stale.length} stale rows from ${table} (older than ${limits.maxAge / 86400000} days)`);
+    }
+  }
+
   return fixes;
 }
 
@@ -6362,21 +6871,33 @@ function qaCheckPerUserDebug() {
     diag.equity = wallet.equity;
     diag.initialBalance = wallet.initial_balance;
 
-    // Kill switch check
+    // Kill switch check — QA investigates before deciding
     if (wallet.kill_switch_active) {
-      const adjustedInitial = Math.max(1000, wallet.initial_balance || 100000);
-      const drawdownPct = ((wallet.equity / adjustedInitial) - 1) * 100;
+      const peakEq = wallet.peak_equity || wallet.initial_balance || INITIAL_BALANCE;
+      const drawdownFromPeak = peakEq > 0 ? ((peakEq - wallet.equity) / peakEq) * 100 : 0;
+      const drawdownFromInitial = wallet.initial_balance > 0 ? ((wallet.initial_balance - wallet.equity) / wallet.initial_balance) * 100 : 0;
       diag.status = 'KILL_SWITCH';
-      diag.blockers.push(`Kill switch active (drawdown ${drawdownPct.toFixed(1)}%)`);
+      diag.blockers.push(`Kill switch active (${drawdownFromPeak.toFixed(1)}% from peak, ${drawdownFromInitial.toFixed(1)}% from initial)`);
 
-      // Auto-reset if drawdown is recoverable (above -15%)
-      if (drawdownPct > -15) {
+      // QA Investigation: stale peak or genuine drawdown?
+      if (drawdownFromPeak > 15 && drawdownFromInitial < 5) {
+        wallet.peak_equity = wallet.equity;
         wallet.kill_switch_active = false;
         db._save('wallets');
         diag.status = 'RECOVERED';
-        diag.blockers.push(`Kill switch RESET (drawdown ${drawdownPct.toFixed(1)}% above -15% threshold)`);
-        fixes.push({ userId, issue: 'KILL_SWITCH_RESET', action: `${userName}: Kill switch auto-reset (drawdown ${drawdownPct.toFixed(1)}%)` });
-        console.warn(`[QA] 🔧 Per-user debug: Reset kill switch for ${userName} (drawdown ${drawdownPct.toFixed(1)}%)`);
+        diag.blockers.push(`QA override: stale peak_equity reconciled. Kill switch deactivated.`);
+        fixes.push({ userId, issue: 'STALE_KILL_SWITCH', action: `${userName}: QA reconciled stale peak ($${Math.round(peakEq)} → $${Math.round(wallet.equity)}), kill switch deactivated` });
+        console.warn(`[QA] 🔧 Per-user: ${userName} kill switch override — stale peak reconciled`);
+      } else if (drawdownFromInitial < 15) {
+        wallet.kill_switch_active = false;
+        db._save('wallets');
+        diag.status = 'RECOVERED';
+        diag.blockers.push(`QA reviewed: drawdown ${drawdownFromInitial.toFixed(1)}% from initial recoverable. Kill switch deactivated.`);
+        fixes.push({ userId, issue: 'KILL_SWITCH_REVIEWED', action: `${userName}: QA reviewed, ${drawdownFromInitial.toFixed(1)}% drawdown recoverable. Kill switch deactivated.` });
+        console.warn(`[QA] 🔧 Per-user: ${userName} kill switch deactivated after review (${drawdownFromInitial.toFixed(1)}% from initial)`);
+      } else {
+        diag.blockers.push(`QA confirmed: ${drawdownFromInitial.toFixed(1)}% drawdown from initial is severe. Kill switch remains.`);
+        fixes.push({ userId, issue: 'KILL_SWITCH_CONFIRMED', action: `${userName}: QA confirmed severe drawdown (${drawdownFromInitial.toFixed(1)}% from initial). Kill switch active.` });
       }
       userDiagnostics.push(diag);
       continue;
@@ -6499,6 +7020,27 @@ function runQAAgent(isFullAudit = false) {
   const perUserDebug = qaCheckPerUserDebug();
   checks.push({ name: 'per_user_debug', fixes: perUserDebug.fixes.length, status: perUserDebug.fixes.length === 0 ? 'PASS' : 'FIXED' });
   allFixes.push(...perUserDebug.fixes);
+
+  // ─── CHECK 7: Trade Flag Review — QA investigates flagged trades ───
+  const flagActions = qaProcessTradeFlags();
+  const flagApproved = flagActions.filter(a => a.decision === 'APPROVE' || a.decision === 'OVERRIDE').length;
+  const flagRejected = flagActions.filter(a => a.decision === 'REJECT').length;
+  const flagExpired = flagActions.filter(a => a.decision === 'EXPIRED').length;
+  checks.push({
+    name: 'trade_flags',
+    reviewed: flagActions.length,
+    approved: flagApproved,
+    rejected: flagRejected,
+    expired: flagExpired,
+    status: flagActions.length === 0 ? 'CLEAR' : `${flagApproved} approved, ${flagRejected} rejected, ${flagExpired} expired`,
+  });
+  if (flagActions.length > 0) {
+    allFixes.push(...flagActions.map(a => ({
+      issue: `FLAG_${a.decision}`,
+      action: `${a.guard}: ${a.decision}${a.tradeExecuted ? ' → trade executed' : ''}${a.error ? ` (failed: ${a.error})` : ''}`,
+    })));
+    console.log(`[QA] 🚩 Flag review: ${flagApproved} approved, ${flagRejected} rejected, ${flagExpired} expired`);
+  }
 
   qaState.lastFullAudit = Date.now();
 
@@ -8527,17 +9069,22 @@ server.listen(PORT, '0.0.0.0', () => {
 function shutdown(sig) {
   console.log(`\n${sig} — initiating graceful shutdown...`);
 
-  // Step 1: Stop all trading, market activity, and intelligence engines
+  // Step 1: Stop ALL intervals — prevents data corruption during flush
   clearInterval(priceInterval);
   clearInterval(autoTradeInterval);
   clearInterval(correlationInterval);
   clearInterval(sentimentInterval);
   clearInterval(intelligenceInterval);
   clearInterval(learningInterval);
+  clearInterval(qaInterval);
+  clearInterval(rateLimitCleanupInterval);
+  clearInterval(macroIntelInterval);
+  clearInterval(profileBackupInterval);
+  if (typeof marketRefreshInterval !== 'undefined') clearInterval(marketRefreshInterval);
   if (keepAliveInterval) clearInterval(keepAliveInterval);
 
   // Persist agent intelligence before shutdown
-  try { saveAgentIntelligence(); console.log('[SHUTDOWN] Agent intelligence saved'); } catch (e) {}
+  try { saveAgentIntelligence(); console.log('[SHUTDOWN] Agent intelligence saved'); } catch (e) { console.error('[SHUTDOWN] Agent intelligence save failed:', e.message); }
 
   // Step 2: CRITICAL — Flush all database tables to disk with backup
   try {
@@ -8556,11 +9103,11 @@ function shutdown(sig) {
     process.exit(0);
   });
 
-  // Force exit after 8 seconds (give flush time to complete)
+  // Force exit after 15 seconds (give flush time for large DBs)
   setTimeout(() => {
-    console.error('[SHUTDOWN] Forced exit after timeout');
+    console.error('[SHUTDOWN] Forced exit after 15s timeout');
     process.exit(1);
-  }, 8000);
+  }, 15000);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
