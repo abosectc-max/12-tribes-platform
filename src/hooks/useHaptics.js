@@ -158,4 +158,68 @@ export function useHaptics() {
   return { fire };
 }
 
+// ─── STATIC API (backward-compatible) ───
+// Used by pages that import { haptics } directly without the React hook
+// Auto-initializes on first user gesture via global listener
+function _staticFire(intensity = 'medium') {
+  // Ensure AudioContext is initialized
+  if (!_initAttempted) {
+    _initAttempted = true;
+    _initAudio();
+  }
+
+  // Vibration API (Android/Chrome)
+  if (navigator.vibrate) {
+    const patterns = {
+      light: [8], medium: [15], heavy: [30],
+      success: [10, 30, 10], error: [20, 10, 20, 10, 20],
+      select: [10], refresh: [8, 20, 8],
+    };
+    try {
+      navigator.vibrate(patterns[intensity] || patterns.medium);
+      return;
+    } catch (e) {}
+  }
+
+  // AudioContext micro-click (iOS)
+  if (_playMicroClick(intensity)) return;
+
+  // Visual micro-pulse fallback
+  try {
+    const el = document.activeElement || document.body;
+    el.style.transition = 'transform 0.05s ease-out';
+    el.style.transform = 'scale(0.985)';
+    requestAnimationFrame(() => {
+      setTimeout(() => { el.style.transform = 'scale(1)'; }, 50);
+    });
+  } catch (e) {}
+}
+
+// Register global gesture listener for iOS AudioContext unlock
+if (typeof document !== 'undefined') {
+  const _unlockStatic = () => {
+    if (!_initAttempted) { _initAttempted = true; _initAudio(); }
+    else if (_audioCtx && _audioCtx.state === 'suspended') { _audioCtx.resume().catch(() => {}); }
+    if (_audioReady) {
+      document.removeEventListener('touchstart', _unlockStatic, true);
+      document.removeEventListener('touchend', _unlockStatic, true);
+      document.removeEventListener('click', _unlockStatic, true);
+    }
+  };
+  document.addEventListener('touchstart', _unlockStatic, { capture: true, passive: true });
+  document.addEventListener('touchend', _unlockStatic, { capture: true, passive: true });
+  document.addEventListener('click', _unlockStatic, { capture: true, passive: true });
+}
+
+export const haptics = {
+  light:   () => _staticFire('light'),
+  medium:  () => _staticFire('medium'),
+  heavy:   () => _staticFire('heavy'),
+  success: () => _staticFire('success'),
+  error:   () => _staticFire('error'),
+  select:  () => _staticFire('select'),
+  refresh: () => _staticFire('refresh'),
+  fire:    _staticFire,
+};
+
 export default useHaptics;
