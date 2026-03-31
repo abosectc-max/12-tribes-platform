@@ -7,6 +7,16 @@
 //
 //   Run: node standalone.js
 //   Production: swap JsonDB for PostgreSQL adapter (schema in db/schema.sql)
+//
+//   DATABASE MIGRATION PATH (from QA audit):
+//   Current: JSON file DB + jsonblob cloud sync (suitable for MVP/beta, ≤50 users)
+//   Target:  PostgreSQL via DATABASE_URL env var (config/database.js has pool setup)
+//   Steps:   1. Provision PostgreSQL (Render, Supabase, Neon, or Railway)
+//            2. Set DATABASE_URL env var on Render
+//            3. Run db/schema.sql to create tables
+//            4. Use cloudSyncPull() to export current data, then bulk-insert into PG
+//            5. Switch server.js (Express) to primary, standalone.js to fallback
+//   Benefits: ACID transactions, concurrent writes, indexed queries, proper backups
 // ═══════════════════════════════════════════════════════════════════════
 
 import { createServer } from 'node:http';
@@ -2384,6 +2394,7 @@ function json(res, status, data) {
     'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Expose-Headers': 'X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Strict-Transport-Security, Referrer-Policy, X-RateLimit-Remaining',
     ...SECURITY_HEADERS,
   });
   res.end(JSON.stringify(data));
@@ -4558,12 +4569,48 @@ async function bootCloudRestore() {
   }
 }
 
-// ─── Cloud sync periodic interval ───
+// ─── Cloud sync periodic interval with retry + health monitoring ───
 let cloudSyncInterval = null;
+let cloudSyncHealth = {
+  consecutiveFailures: 0,
+  lastSuccess: null,
+  lastFailure: null,
+  lastFailureReason: null,
+  totalPushes: 0,
+  totalFailures: 0,
+};
+
+async function cloudSyncWithRetry(maxRetries = 3) {
+  cloudSyncHealth.totalPushes++;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const result = await cloudSyncPush();
+    if (result.success) {
+      cloudSyncHealth.consecutiveFailures = 0;
+      cloudSyncHealth.lastSuccess = new Date().toISOString();
+      return result;
+    }
+    cloudSyncHealth.lastFailureReason = result.reason || 'Unknown';
+    if (attempt < maxRetries) {
+      const backoffMs = Math.min(attempt * 5000, 15000); // 5s, 10s, 15s
+      console.warn(`[CLOUD-SYNC] ⚠️ Push failed (attempt ${attempt}/${maxRetries}): ${result.reason}. Retrying in ${backoffMs / 1000}s...`);
+      await new Promise(r => setTimeout(r, backoffMs));
+    }
+  }
+  // All retries exhausted
+  cloudSyncHealth.consecutiveFailures++;
+  cloudSyncHealth.totalFailures++;
+  cloudSyncHealth.lastFailure = new Date().toISOString();
+  console.error(`[CLOUD-SYNC] 🔴 All ${maxRetries} push attempts failed. Consecutive failures: ${cloudSyncHealth.consecutiveFailures}`);
+  if (cloudSyncHealth.consecutiveFailures >= 3) {
+    console.error('[CLOUD-SYNC] 🔴 CRITICAL: 3+ consecutive sync failures. Data may not be backed up.');
+  }
+  return { success: false, reason: 'All retries exhausted', consecutiveFailures: cloudSyncHealth.consecutiveFailures };
+}
+
 if (CLOUD_SYNC_ENABLED) {
   cloudSyncInterval = setInterval(async () => {
     try {
-      await cloudSyncPush();
+      await cloudSyncWithRetry(3);
     } catch (err) {
       console.error(`[CLOUD-SYNC] Periodic push error: ${err.message}`);
     }
@@ -4589,6 +4636,7 @@ api.get('/api/admin/cloud-sync/status', auth, (req, res) => {
     snapshotSizeKB: (payloadSize / 1024).toFixed(1),
     tablesTracked: CLOUD_SYNC_TABLES.length,
     tableManifest: snapshot._meta.tableManifest,
+    health: cloudSyncHealth,
     instructions: !CLOUD_SYNC_ENABLED ? {
       option1: 'AUTOMATIC: Server auto-creates jsonblob.com storage on boot. Copy the CLOUD_BACKUP_ID from logs to Render env vars.',
       option2: 'MANUAL: Create free JSONBin.io account → Set CLOUD_BACKUP_KEY + CLOUD_BACKUP_BIN on Render.',
@@ -5666,6 +5714,7 @@ const server = createServer(async (req, res) => {
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Max-Age': '86400',
+      'Access-Control-Expose-Headers': 'X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Strict-Transport-Security, Referrer-Policy, X-RateLimit-Remaining',
       ...SECURITY_HEADERS,
     });
     return res.end();
@@ -8594,16 +8643,32 @@ setTimeout(() => {
 }, 15000);
 
 // Keep-alive self-ping — prevents Render free tier from sleeping
-const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.EXTERNAL_URL;
+// Hardcoded fallback ensures keep-alive works even if env var is missing
+const SELF_URL = process.env.RENDER_EXTERNAL_URL
+  || process.env.EXTERNAL_URL
+  || 'https://one2-tribes-api.onrender.com';
 let keepAliveInterval = null;
-if (SELF_URL) {
-  // Use built-in http/https based on URL protocol
+let keepAliveFailCount = 0;
+{
   const pingFn = SELF_URL.startsWith('https')
     ? (await import('node:https')).get
     : (await import('node:http')).get;
+  const KEEP_ALIVE_INTERVAL = 3 * 60 * 1000; // Every 3 minutes (increased frequency)
   keepAliveInterval = setInterval(() => {
-    pingFn(`${SELF_URL}/api/health`, (res) => { res.resume(); }).on('error', () => {});
-  }, 4 * 60 * 1000); // Every 4 minutes
+    const start = Date.now();
+    pingFn(`${SELF_URL}/api/health`, (res) => {
+      res.resume();
+      const elapsed = Date.now() - start;
+      keepAliveFailCount = 0; // Reset on success
+      if (elapsed > 2000) {
+        console.warn(`[KEEP-ALIVE] ⚠️ Slow self-ping: ${elapsed}ms`);
+      }
+    }).on('error', (err) => {
+      keepAliveFailCount++;
+      console.error(`[KEEP-ALIVE] ❌ Ping failed (${keepAliveFailCount}x): ${err.message}`);
+    });
+  }, KEEP_ALIVE_INTERVAL);
+  console.log(`[KEEP-ALIVE] ✅ Active — pinging ${SELF_URL}/api/health every ${KEEP_ALIVE_INTERVAL / 1000}s`);
 }
 
 // ─── AUTO-TRADE LOG API ENDPOINTS ───
@@ -9951,10 +10016,14 @@ api.get('/api/tax/export/:year', auth, (req, res) => {
   if (isNaN(taxYear)) return json(res, 400, { error: 'Invalid tax year' });
 
   const csv = generateTaxCSV(req.userId, taxYear);
+  const csvOrigin = res._corsOrigin || ALLOWED_ORIGINS[0];
   res.writeHead(200, {
     'Content-Type': 'text/csv',
     'Content-Disposition': `attachment; filename="12tribes_tax_${taxYear}_form8949.csv"`,
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': csvOrigin,
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Expose-Headers': 'Content-Disposition',
+    ...SECURITY_HEADERS,
   });
   res.end(csv);
 });
