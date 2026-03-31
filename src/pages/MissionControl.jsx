@@ -142,9 +142,9 @@ function MetricCard({ label, value, change, prefix = "", suffix = "", color = "#
   const safeValue = typeof value === "number" ? (isNaN(value) ? 0 : value) : (value || '—');
   const safeChange = typeof change === "number" ? (isNaN(change) ? 0 : change) : change;
   return (
-    <GlassCard style={{ minWidth: isMobile ? 120 : 200, flex: "1 1 120px", minHeight: isMobile ? 100 : 120 }}>
+    <GlassCard style={{ minWidth: 0, flex: isMobile ? "unset" : "1 1 120px", minHeight: isMobile ? 90 : 120 }}>
       <div style={{ fontSize: isMobile ? 10 : 12, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: isMobile ? 20 : 32, fontWeight: 700, color, lineHeight: 1.1 }}>
+      <div style={{ fontSize: isMobile ? 22 : 32, fontWeight: 700, color, lineHeight: 1.1 }}>
         {prefix}{typeof safeValue === "number" ? safeValue.toLocaleString() : safeValue}{suffix}
       </div>
       {safeChange !== undefined && (
@@ -573,7 +573,11 @@ function OverviewView({ growthData, pnlData, trades, groupData, isMobile, isTabl
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
-      <div style={{ display: "flex", gap: isMobile ? 12 : 16, flexWrap: "wrap" }}>
+      {/* Metric cards: 2-col grid on mobile, flex row on desktop */}
+      <div style={isMobile
+        ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }
+        : { display: "flex", gap: 16, flexWrap: "wrap" }
+      }>
         <MetricCard label="Total AUM" value={Math.round(totalAUM)} prefix="$" change={returnPct} color="#00D4FF" isMobile={isMobile} />
         <MetricCard label="Total P&L" value={Math.round(totalPnL)} prefix={totalPnL >= 0 ? "+$" : "-$"} color={totalPnL >= 0 ? "#10B981" : "#EF4444"} isMobile={isMobile} />
         <MetricCard label="Investors" value={memberCount} color="#A855F7" isMobile={isMobile} />
@@ -627,7 +631,10 @@ function InvestorsView({ groupData, serverUsers, isMobile, isTablet }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
-      <div style={{ display: "flex", gap: isMobile ? 12 : 16, flexWrap: "wrap" }}>
+      <div style={isMobile
+        ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }
+        : { display: "flex", gap: 16, flexWrap: "wrap" }
+      }>
         <MetricCard label="Total AUM" value={Math.round(totalAUM)} prefix="$" color="#00D4FF" isMobile={isMobile} />
         <MetricCard label="Per Investor" value={Math.round(perInvestor)} prefix="$" color="#A855F7" isMobile={isMobile} />
         <MetricCard label="Avg Return" value={avgGain.toFixed(1)} suffix="%" color="#10B981" isMobile={isMobile} />
@@ -723,36 +730,37 @@ export default function TwelveTribes_MissionControl() {
         ...glassStyle,
         borderRadius: 0,
         borderTop: "none", borderLeft: "none", borderRight: "none",
-        padding: isMobile ? "12px 16px" : isTablet ? "14px 24px" : "16px 32px",
+        padding: isMobile ? "10px 12px" : isTablet ? "14px 24px" : "16px 32px",
         display: "flex", alignItems: "center", justifyContent: "space-between",
         position: "sticky", top: 0, zIndex: 100,
-        flexWrap: isMobile ? "wrap" : "nowrap",
         gap: isMobile ? 8 : 16,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <BrandLogo size={40} />
-          <div>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 10 : 16, flexShrink: 0 }}>
+          <BrandLogo size={isMobile ? 30 : 40} />
+          {!isMobile && <div>
             <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 2 }}>12 TRIBES</div>
             <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", letterSpacing: 3, textTransform: "uppercase" }}>Mission Control</div>
-          </div>
+          </div>}
         </div>
 
-        <nav style={{ display: "flex", gap: isMobile ? 6 : 4, overflowX: isMobile ? "auto" : "visible", flex: isMobile ? "1 1 100%" : "0 1 auto", minWidth: 0, WebkitOverflowScrolling: "touch" }}>
+        <nav style={{ display: "flex", gap: isMobile ? 2 : 4, flex: 1, justifyContent: "center", minWidth: 0 }}>
           {navItems.map(item => (
             <button
               key={item.id}
               onClick={() => { haptics.light(); setActiveView(item.id); }}
               style={{
-                padding: isMobile ? "12px 16px" : "8px 20px", borderRadius: 14, border: "none", cursor: "pointer", minHeight: isMobile ? 48 : 44, minWidth: isMobile ? 48 : "auto",
-                fontSize: isMobile ? 12 : 13, fontWeight: 500, transition: "all 0.2s",
+                padding: isMobile ? "8px 12px" : "8px 20px", borderRadius: 14, border: "none", cursor: "pointer", minHeight: 44, minWidth: isMobile ? 44 : "auto",
+                fontSize: isMobile ? 11 : 13, fontWeight: activeView === item.id ? 600 : 500, transition: "all 0.2s",
                 background: activeView === item.id ? "rgba(0,212,255,0.15)" : "transparent",
                 color: activeView === item.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
                 whiteSpace: "nowrap",
                 flexShrink: 0,
-                touchAction: "manipulation"
+                touchAction: "manipulation",
+                display: "flex", flexDirection: isMobile ? "column" : "row", alignItems: "center", gap: isMobile ? 2 : 6,
               }}
             >
-              {!isMobile && <span style={{ marginRight: 6 }}>{item.icon}</span>}{isMobile ? item.icon : item.label}
+              <span style={{ fontSize: isMobile ? 16 : 13 }}>{item.icon}</span>
+              {isMobile ? <span style={{ fontSize: 9, lineHeight: 1 }}>{item.label}</span> : <span>{item.label}</span>}
             </button>
           ))}
         </nav>
@@ -778,7 +786,7 @@ export default function TwelveTribes_MissionControl() {
       </div>
 
       {/* Content */}
-      <div style={{ padding: isMobile ? "12px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto" }}>
+      <div style={{ padding: isMobile ? "12px 10px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 100 : 24 }}>
         {activeView === "overview" && <OverviewView growthData={growthData} pnlData={pnlData} trades={liveTrades} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}
         {activeView === "capital" && <CapitalView growthData={growthData} isMobile={isMobile} isTablet={isTablet} totalAUM={totalAUM} />}
         {activeView === "agents" && <AgentsView isMobile={isMobile} isTablet={isTablet} liveAgents={liveAgents} />}
@@ -786,7 +794,7 @@ export default function TwelveTribes_MissionControl() {
       </div>
 
       {/* Footer */}
-      <div style={{ padding: isMobile ? "12px 16px" : "16px 32px", textAlign: "center", fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.2)" }}>
+      <div style={{ padding: isMobile ? "12px 16px 32px" : "16px 32px", textAlign: "center", fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.2)" }}>
         12 TRIBES v1.0 | AI-Powered Investment Platform | Mission Control
       </div>
     </div>
