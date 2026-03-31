@@ -5820,7 +5820,7 @@ const AUTO_TRADE_CONFIG = {
   winnerSizePct: 0.06,         // 6% for high-conviction signals
   eliteSizePct: 0.08,          // 8% for multi-indicator confluence trades
   consensusThreshold: 0.45,    // Slightly lower to allow more signal diversity
-  minSignalStrength: 0.48,     // LOWERED from 0.55 — combined with confidence floor 0.45, ensures recovery from stalls
+  minSignalStrength: 0.35,     // STRUCTURAL: Lowered — threshold checks RAW signal quality only. Risk context routes to position sizing.
   minConfluence: 3,            // LOWERED from 4 — 3 confirming indicators is still high quality
   maxCorrelatedPositions: 3,   // Increased from 2 — Sentinel/Titan need room in ETF/forex classes
   maxDrawdownPct: 15,          // Relaxed from 12% — prevents premature kill switch on normal volatility
@@ -5928,7 +5928,7 @@ const LEARNABLE_INDICATORS = [
 
 const DEFAULT_INDICATOR_WEIGHT = 1.0;
 const WEIGHT_LEARN_RATE = 0.12;       // Faster learning — agents adapt quicker to changing conditions
-const WEIGHT_MIN = 0.2;               // Never fully zero-out an indicator
+const WEIGHT_MIN = 0.5;               // STRUCTURAL: Raised from 0.2 — indicators can't be crushed below 50% effectiveness
 const WEIGHT_MAX = 2.5;               // Cap runaway positive feedback
 const WEIGHT_DECAY_RATE = 0.005;      // Slow regression to mean over time
 
@@ -6297,7 +6297,18 @@ function getAgentLearningReport() {
 // Tracks indicator alignment count for position sizing tiers
 function computeSignal(symbol, agentStyle, agentName) {
   const hist = priceHistory[symbol];
-  if (!hist || hist.length < 30) return { score: 0, reason: 'Insufficient data', confluence: 0, indicators_used: [] };
+  if (!hist || hist.length < 30) return { score: 0, riskMultiplier: 1.0, reason: 'Insufficient data', confluence: 0, indicators_used: [] };
+
+  // ─── COOLDOWN CHECK: Wire post-mortem cooldowns into signal pipeline ───
+  // Previously dead code — cooldown_until was SET by runPostMortem but NEVER CHECKED here.
+  try {
+    const spCooldown = db.findOne('symbol_performance', s => s.symbol === symbol);
+    if (spCooldown?.cooldown_until && new Date(spCooldown.cooldown_until) > new Date()) {
+      const cooldownRemainMs = new Date(spCooldown.cooldown_until).getTime() - Date.now();
+      const cooldownRemainMin = Math.round(cooldownRemainMs / 60000);
+      return { score: 0, riskMultiplier: 0.5, reason: `Symbol cooldown active (${cooldownRemainMin}m remaining): ${spCooldown.cooldown_reason || 'post-mortem'}`, confluence: 0, indicators_used: [] };
+    }
+  } catch (e) { /* non-critical — proceed with signal generation */ }
 
   const price = marketPrices[symbol];
   const sma10 = sma(hist, 10);
@@ -6342,6 +6353,20 @@ function computeSignal(symbol, agentStyle, agentName) {
   const w = (ind) => {
     const weight = iw && iw[ind] ? iw[ind].weight : 1.0;
     return weight;
+  };
+
+  // ═══════════════════════════════════════════════════════════════════
+  //   STRUCTURAL FIX: Additive Risk Penalty System
+  //   Context dampeners (VIX, F&G, DXY, session, correlation, asset-class)
+  //   are accumulated ADDITIVELY and capped. They affect POSITION SIZING,
+  //   NOT signal strength. This prevents cascading multiplicative dampening
+  //   from compounding 10+ factors to near-zero and stalling all trades.
+  //   Signal score remains a pure quality metric for threshold checks.
+  // ═══════════════════════════════════════════════════════════════════
+  const riskPenalties = []; // { penalty: 0-1, reason: string }
+  const addRiskPenalty = (penalty, reason) => {
+    riskPenalties.push({ penalty: Math.max(0, Math.min(1, penalty)), reason });
+    reasons.push(reason);
   };
 
   // ─── TREND SIGNALS (enhanced with ADX confirmation) ───
@@ -6429,7 +6454,7 @@ function computeSignal(symbol, agentStyle, agentName) {
     score *= 1.2; reasons.push(`High vol (${vol.toFixed(1)}%, ATR ${atrPct.toFixed(2)}%)`);
   }
   if (vol < 0.15 && (agentStyle === 'SIGNAL_SCANNER' || agentStyle === 'VOLATILITY_TRADER')) {
-    score *= 0.7; reasons.push('Low vol — reduced conviction');
+    addRiskPenalty(0.25, 'Low vol — reduced position size');
   }
 
   // ─── RECOVERY SPECIALIST — oversold bounces with confluence ───
@@ -6531,35 +6556,36 @@ function computeSignal(symbol, agentStyle, agentName) {
 
   // ─── CROSS-ASSET CORRELATION REGIME ───
   if (corrRegime === 'risk_off' && score > 0) {
-    score *= (0.75 * w('correlation')); indicators_used.push('correlation'); reasons.push('Risk-off regime — dampened longs');
+    indicators_used.push('correlation');
+    addRiskPenalty(0.20, 'Risk-off regime — reduced long sizing');
   } else if (corrRegime === 'risk_on' && score < 0) {
-    score *= (0.75 * w('correlation')); indicators_used.push('correlation'); reasons.push('Risk-on regime — dampened shorts');
+    indicators_used.push('correlation');
+    addRiskPenalty(0.20, 'Risk-on regime — reduced short sizing');
   }
 
   // ─── MACRO INTELLIGENCE INTEGRATION ───
-  // VIX regime adjustment — crisis VIX dampens longs, boosts hedges
+  // VIX regime adjustment — crisis VIX adds risk penalty, boosts hedges
   if (macroIntel.vix.regime === 'crisis') {
-    if (score > 0) { score *= 0.5; reasons.push(`VIX crisis (${macroIntel.vix.value.toFixed(0)}) — longs heavily dampened`); }
+    if (score > 0) { addRiskPenalty(0.35, `VIX crisis (${macroIntel.vix.value.toFixed(0)}) — heavy risk reduction`); }
     else { score *= 1.3; reasons.push(`VIX crisis — bearish/hedge signals boosted`); }
   } else if (macroIntel.vix.regime === 'elevated') {
-    if (score > 0) { score *= 0.8; reasons.push(`VIX elevated (${macroIntel.vix.value.toFixed(0)}) — caution`); }
+    if (score > 0) { addRiskPenalty(0.15, `VIX elevated (${macroIntel.vix.value.toFixed(0)}) — caution sizing`); }
   } else if (macroIntel.vix.regime === 'complacent') {
-    // Complacent VIX = potential for surprise correction
-    if (score > 0.5) { score *= 0.9; reasons.push('VIX complacent — contrarian caution'); }
+    if (score > 0.5) { addRiskPenalty(0.08, 'VIX complacent — contrarian caution'); }
   }
 
   // Fear & Greed contrarian signal
   if (macroIntel.fearGreed.value > 85 && score > 0) {
-    score *= 0.7; reasons.push(`Extreme Greed (${macroIntel.fearGreed.value.toFixed(0)}) — contrarian dampen`);
+    addRiskPenalty(0.20, `Extreme Greed (${macroIntel.fearGreed.value.toFixed(0)}) — reduced sizing`);
   } else if (macroIntel.fearGreed.value < 15 && score < 0) {
-    score *= 0.7; reasons.push(`Extreme Fear (${macroIntel.fearGreed.value.toFixed(0)}) — contrarian dampen shorts`);
+    addRiskPenalty(0.20, `Extreme Fear (${macroIntel.fearGreed.value.toFixed(0)}) — reduced short sizing`);
   }
 
   // DXY (Dollar strength) impact on international/commodity assets
   if (macroIntel.dxy.trend === 'strong') {
     const dxyAffected = ['GC=F', 'SI=F', 'EEM', 'BTC', 'ETH'].includes(symbol);
     if (dxyAffected && score > 0) {
-      score *= 0.85; reasons.push('Strong USD headwind — dampened');
+      addRiskPenalty(0.12, 'Strong USD headwind — reduced sizing');
     }
   } else if (macroIntel.dxy.trend === 'weak') {
     const dxyBeneficiary = ['GC=F', 'SI=F', 'EEM', 'BTC', 'ETH'].includes(symbol);
@@ -6568,17 +6594,17 @@ function computeSignal(symbol, agentStyle, agentName) {
     }
   }
 
-  // Yield curve context — inverted curve dampens cyclicals
+  // Yield curve context — inverted curve adds risk to cyclicals
   if (macroIntel.treasuryYield.curve === 'deeply_inverted') {
     const cyclicals = ['XLF', 'BAC', 'JPM', 'F', 'GE', 'IWM'].includes(symbol);
     if (cyclicals && score > 0) {
-      score *= 0.75; reasons.push(`Inverted yield curve (${macroIntel.treasuryYield.spread}bp) — cyclical risk`);
+      addRiskPenalty(0.18, `Inverted yield curve (${macroIntel.treasuryYield.spread}bp) — cyclical risk`);
     }
   }
 
   // ─── MARKET SESSION VOLATILITY ADJUSTMENT ───
   if (session.volMultiplier < 0.8) {
-    score *= 0.85; reasons.push(`Off-hours — reduced conviction (${session.session})`);
+    addRiskPenalty(0.12, `Off-hours — reduced sizing (${session.session})`);
   }
 
   // ─── ASSET-CLASS SPECIFIC SIGNAL TUNING ───
@@ -6592,8 +6618,8 @@ function computeSignal(symbol, agentStyle, agentName) {
 
   // FOREX: Tighter signals, mean-reversion bias, lower noise tolerance
   if (assetClassLocal === 'forex') {
-    // Forex is low-vol — require stronger RSI extremes for entry
-    if (rsiVal > 30 && rsiVal < 70) score *= 0.85; // Dampen neutral RSI — forex needs extremes
+    // Forex is low-vol — neutral RSI reduces position size, not signal
+    if (rsiVal > 30 && rsiVal < 70) addRiskPenalty(0.12, 'Forex neutral RSI — reduced sizing');
     // Carry trade proxy: USD strength matters
     if (symbol.startsWith('USD') && regime === 'trending_up') { score += 0.15; confluenceBullish++; reasons.push('USD strength trend — carry trade favorable'); }
     if (symbol.startsWith('USD') && regime === 'trending_down') { score -= 0.15; confluenceBearish++; reasons.push('USD weakness — carry trade unfavorable'); }
@@ -6602,7 +6628,7 @@ function computeSignal(symbol, agentStyle, agentName) {
     if (bbPercentB > 0.97) { score -= 0.2; confluenceBearish++; reasons.push('Forex extreme overbought — mean reversion sell'); }
     // Tighter session filter — forex off-hours (weekends) are dead
     const hour = new Date().getUTCHours();
-    if (hour >= 21 || hour < 1) { score *= 0.6; reasons.push('Forex low-liquidity window'); }
+    if (hour >= 21 || hour < 1) { addRiskPenalty(0.30, 'Forex low-liquidity window — heavy size reduction'); }
   }
 
   // ETF: Sector rotation signals + relative strength
@@ -6615,10 +6641,10 @@ function computeSignal(symbol, agentStyle, agentName) {
       if (relStrength > 1.0) { score += 0.2; confluenceBullish++; reasons.push(`Relative strength vs SPY: +${relStrength.toFixed(1)}%`); }
       if (relStrength < -1.0) { score -= 0.15; confluenceBearish++; reasons.push(`Relative weakness vs SPY: ${relStrength.toFixed(1)}%`); }
     }
-    // Defensive ETFs (GLD, TLT, HYG) — boost in risk-off, dampen in risk-on
+    // Defensive ETFs (GLD, TLT, HYG) — boost in risk-off, size reduction in risk-on
     if (['GLD', 'TLT', 'HYG'].includes(symbol)) {
       if (corrRegime === 'risk_off') { score += 0.15; reasons.push('Safe-haven ETF — risk-off boost'); }
-      if (corrRegime === 'risk_on') { score *= 0.8; reasons.push('Safe-haven ETF dampened in risk-on'); }
+      if (corrRegime === 'risk_on') { addRiskPenalty(0.15, 'Safe-haven ETF — risk-on size reduction'); }
     }
     // Sector ETFs (XLF, XLE, XLK) — momentum-driven
     if (['XLF', 'XLE', 'XLK', 'ARKK'].includes(symbol) && Math.abs(mom) > 2) {
@@ -6633,14 +6659,14 @@ function computeSignal(symbol, agentStyle, agentName) {
     if (btcHist && btcHist.length >= 20 && symbol !== 'BTC') {
       const btcMom20 = (btcHist[btcHist.length - 1] - btcHist[btcHist.length - 20]) / btcHist[btcHist.length - 20] * 100;
       // BTC dominance proxy: if BTC is surging, alts may lag (capital flows to BTC)
-      if (btcMom20 > 3 && mom < 0) { score *= 0.7; reasons.push(`BTC surging (+${btcMom20.toFixed(1)}%) — alt rotation risk`); }
+      if (btcMom20 > 3 && mom < 0) { addRiskPenalty(0.25, `BTC surging (+${btcMom20.toFixed(1)}%) — alt rotation risk`); }
       // BTC dropping + alt momentum positive = alt season signal
       if (btcMom20 < -2 && mom > 1) { score += 0.2; confluenceBullish++; reasons.push('Alt-season signal — BTC weak, alt strong'); }
       // BTC crash dragging everything
-      if (btcMom20 < -5) { score *= 0.6; reasons.push(`BTC crash (${btcMom20.toFixed(1)}%) — market-wide risk`); }
+      if (btcMom20 < -5) { addRiskPenalty(0.30, `BTC crash (${btcMom20.toFixed(1)}%) — heavy size reduction`); }
     }
-    // Enhanced crypto vol regime: high-vol crypto trades need higher confluence
-    if (vol > 3.0) { score *= 0.8; reasons.push(`Extreme crypto vol (${vol.toFixed(1)}%) — tightened`); }
+    // Enhanced crypto vol regime: high-vol crypto trades reduce size
+    if (vol > 3.0) { addRiskPenalty(0.15, `Extreme crypto vol (${vol.toFixed(1)}%) — reduced sizing`); }
     // Crypto weekend boost — crypto trades 24/7, weekends can be volatile
     const dayOfWeek = new Date().getDay();
     if (dayOfWeek === 0 || dayOfWeek === 6) {
@@ -6652,17 +6678,17 @@ function computeSignal(symbol, agentStyle, agentName) {
   if (assetClassLocal === 'options') {
     // Leveraged ETFs amplify moves 2-3x — require higher confluence for safety
     score *= 1.3; // Amplify signal to reflect leverage
-    // But also require stronger minimum — weak signals on leveraged instruments are dangerous
-    if (Math.abs(score) < 0.5) { score *= 0.4; reasons.push('Leveraged ETF — weak signal heavily dampened'); }
+    // Weak signals on leveraged instruments — reduce size, don't kill signal
+    if (Math.abs(score) < 0.5) { addRiskPenalty(0.35, 'Leveraged ETF — weak signal, heavy size reduction'); }
     // Inverse ETFs (UVXY, SPXS, SQQQ) — natural hedges, boost in risk-off
     if (['UVXY', 'SPXS', 'SQQQ'].includes(symbol)) {
       if (corrRegime === 'risk_off') { score += 0.25; confluenceBullish++; reasons.push('Inverse ETF — risk-off hedge activated'); }
-      if (corrRegime === 'risk_on') { score *= 0.5; reasons.push('Inverse ETF dampened — risk-on market'); }
+      if (corrRegime === 'risk_on') { addRiskPenalty(0.35, 'Inverse ETF — risk-on, heavy size reduction'); }
     }
     // Bull leveraged (TQQQ, SOXL, TNA) — boost in strong trends
     if (['TQQQ', 'SOXL', 'TNA'].includes(symbol)) {
       if (regime === 'trending_up' && adxVal > 25) { score += 0.2; confluenceBullish++; reasons.push('Bull leveraged + strong uptrend — amplified'); }
-      if (regime === 'trending_down') { score *= 0.5; reasons.push('Bull leveraged in downtrend — heavy dampen'); }
+      if (regime === 'trending_down') { addRiskPenalty(0.35, 'Bull leveraged in downtrend — heavy size reduction'); }
     }
   }
 
@@ -6679,7 +6705,7 @@ function computeSignal(symbol, agentStyle, agentName) {
     if (['GC=F', 'SI=F'].includes(symbol)) {
       // Precious metals — safe-haven correlation
       if (corrRegime === 'risk_off') { score += 0.2; confluenceBullish++; reasons.push('Precious metals — risk-off safe haven bid'); }
-      if (corrRegime === 'risk_on' && score > 0) { score *= 0.75; reasons.push('Precious metals dampened — risk-on rotation'); }
+      if (corrRegime === 'risk_on' && score > 0) { addRiskPenalty(0.20, 'Precious metals — risk-on size reduction'); }
       // Gold/silver ratio proxy via relative momentum
       const goldHist = priceHistory['GC=F'];
       if (goldHist && goldHist.length >= 20 && symbol === 'SI=F') {
@@ -6725,6 +6751,7 @@ function computeSignal(symbol, agentStyle, agentName) {
 
   // ─── MULTI-INDICATOR CONFLUENCE BONUS ───
   // Higher confluence = exponentially better win rate. Reward it aggressively.
+  // STRUCTURAL: Confluence floors raised to prevent signal death. Regime-aware gating.
   const confluence = Math.max(confluenceBullish, confluenceBearish);
   if (confluence >= 7) { score *= 2.2; reasons.push(`Elite confluence (${confluence} indicators) — maximum conviction`); }
   else if (confluence >= 6) { score *= 1.9; reasons.push(`Exceptional confluence (${confluence} indicators)`); }
@@ -6732,33 +6759,52 @@ function computeSignal(symbol, agentStyle, agentName) {
   else if (confluence >= 4) { score *= 1.3; reasons.push(`Good confluence (${confluence} indicators)`); }
   else if (confluence >= 3) { score *= 1.1; reasons.push(`Solid confluence (${confluence} indicators)`); }
   else if (confluence >= 2) {
-    const rangingBonus = regime === 'ranging' ? 1.3 : 1.0;
-    score *= 0.6 * rangingBonus;
-    reasons.push(`Moderate confluence (${confluence})${regime === 'ranging' ? ' — ranging adjustment' : ''}`);
+    // STRUCTURAL FIX: Raised floor from 0.6 to 0.75, ranging markets get full pass
+    const rangingBonus = regime === 'ranging' ? 1.2 : 1.0;
+    score *= 0.75 * rangingBonus;
+    reasons.push(`Moderate confluence (${confluence})${regime === 'ranging' ? ' — ranging regime pass' : ''}`);
   } else {
-    score *= 0.3;
-    reasons.push(`Weak confluence (${confluence}) — signal dampened`);
+    // STRUCTURAL FIX: Raised floor from 0.3 to 0.55 — prevents single-factor signal death
+    score *= 0.55;
+    reasons.push(`Weak confluence (${confluence}) — signal reduced but not killed`);
   }
 
   // ─── HISTORICAL PERFORMANCE BIAS ───
+  // STRUCTURAL FIX: Symbol perf floors raised from 0.5 to 0.70 to prevent
+  // symbol blacklisting. Poor symbols get smaller positions, not blocked signals.
   const sp = getSymbolPerf(symbol);
   const totalSymTrades = sp.wins + sp.losses;
   if (totalSymTrades > 5) {
     const symWinRate = sp.wins / totalSymTrades;
     if (symWinRate > 0.6) { score *= 1.15; reasons.push(`High win-rate symbol (${(symWinRate*100).toFixed(0)}%)`); }
-    else if (symWinRate < 0.3) { score *= 0.5; reasons.push(`Poor symbol — heavily reduced`); }
-    else if (symWinRate < 0.4) { score *= 0.75; reasons.push(`Low win-rate — reduced size`); }
+    else if (symWinRate < 0.3) { score *= 0.70; reasons.push(`Poor symbol — reduced (floor 0.70)`); }
+    else if (symWinRate < 0.4) { score *= 0.80; reasons.push(`Low win-rate — reduced size`); }
 
     const longWR = sp.longWins / Math.max(1, sp.longWins + sp.longLosses);
     const shortWR = sp.shortWins / Math.max(1, sp.shortWins + sp.shortLosses);
     if (score > 0 && longWR > 0.55) score *= 1.1;
     if (score < 0 && shortWR > 0.55) score *= 1.1;
-    if (score > 0 && longWR < 0.3 && (sp.longWins + sp.longLosses) > 3) { score *= 0.5; reasons.push('Poor long history — dampened'); }
-    if (score < 0 && shortWR < 0.3 && (sp.shortWins + sp.shortLosses) > 3) { score *= 0.5; reasons.push('Poor short history — dampened'); }
+    if (score > 0 && longWR < 0.3 && (sp.longWins + sp.longLosses) > 3) { score *= 0.70; reasons.push('Poor long history — reduced (floor 0.70)'); }
+    if (score < 0 && shortWR < 0.3 && (sp.shortWins + sp.shortLosses) > 3) { score *= 0.70; reasons.push('Poor short history — reduced (floor 0.70)'); }
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //   STRUCTURAL: Compute capped risk multiplier from additive penalties
+  //   Max total penalty = 0.60 → signal retains AT LEAST 40% sizing power.
+  //   This replaces the old cascading multiplication that could compound
+  //   10+ factors down to 1.7% of raw signal strength.
+  // ═══════════════════════════════════════════════════════════════════
+  const MAX_RISK_PENALTY = 0.60;
+  const totalRiskPenalty = riskPenalties.reduce((sum, p) => sum + p.penalty, 0);
+  const cappedRiskPenalty = Math.min(MAX_RISK_PENALTY, totalRiskPenalty);
+  const riskMultiplier = 1.0 - cappedRiskPenalty;
 
   return {
     score: Math.max(-1, Math.min(1, score)),
+    riskMultiplier,  // STRUCTURAL: Affects position sizing, NOT threshold check
+    riskPenaltyDetail: riskPenalties, // For diagnostics
+    totalRiskPenalty: roundTo(totalRiskPenalty, 3),
+    cappedRiskPenalty: roundTo(cappedRiskPenalty, 3),
     reason: reasons.join(' | ') || 'No clear signal',
     indicators: { sma10, sma30, rsiVal, mom, vol, regime, adx: adxVal, stochK: stoch.k, bbPctB: bbPercentB, obvTrend, vwapDev: vwapVal ? ((price - vwapVal) / vwapVal * 100).toFixed(2) : 0, mtfScore: mtf.score, sentiment: sentiment.score, atrPct },
     confluence,
@@ -6769,24 +6815,57 @@ function computeSignal(symbol, agentStyle, agentName) {
 function runAutoTradeTick() {
   autoTradeTickCount++;
 
-  // ─── STALL RECOVERY: Gradually restore agent confidence if no trades happening ───
-  // Every 20 ticks (~10 min at 30s interval), check if ALL agents are stalled.
-  // If so, nudge confidence upward to break the death spiral.
+  // ═══════════════════════════════════════════════════════════════════
+  //   STRUCTURAL STALL PREVENTION SYSTEM
+  //   Three-tier recovery: confidence, symbol performance, and cooldowns.
+  //   The additive penalty architecture makes hard stalls unlikely,
+  //   but this provides defense-in-depth.
+  // ═══════════════════════════════════════════════════════════════════
   if (autoTradeTickCount % 20 === 0) {
     const openCount = db.count('positions', p => p.status === 'OPEN');
     const recentTradeCount = db.count('trades', t => Date.now() - new Date(t.closed_at || t.opened_at).getTime() < 600000);
+
+    // Tier 1: Confidence recovery — nudge low-confidence agents upward
     if (openCount === 0 && recentTradeCount === 0) {
-      // No positions and no trades in 10 min — stall detected, restore confidence
       for (const ap of Object.values(agentPerformance)) {
         if (ap.adaptiveConfidence < 0.7) {
           ap.adaptiveConfidence = Math.min(0.85, ap.adaptiveConfidence + 0.15);
-          ap.streak = Math.max(-2, ap.streak); // Reduce negative streak severity
+          ap.streak = Math.max(-2, ap.streak);
         }
       }
       if (autoTradeTickCount % 60 === 0) {
-        console.log(`[AutoTrader] STALL RECOVERY: No positions/trades for 10+ min — nudging agent confidence upward`);
+        console.log(`[AutoTrader] STALL RECOVERY T1: Confidence nudge — no trades for 10+ min`);
       }
     }
+
+    // Tier 2: Symbol performance recovery — decay poor symbol stats toward neutral
+    // Prevents permanent symbol blacklisting from early losses
+    for (const [sym, sp] of Object.entries(symbolPerformance)) {
+      const totalTrades = sp.wins + sp.losses;
+      if (totalTrades > 5) {
+        const winRate = sp.wins / totalTrades;
+        if (winRate < 0.35) {
+          // Decay: add a virtual win every 20 ticks to slowly recover
+          sp.wins += 0.1;
+          if (autoTradeTickCount % 60 === 0) {
+            console.log(`[AutoTrader] STALL RECOVERY T2: Symbol ${sym} win rate ${(winRate*100).toFixed(0)}% — decaying toward neutral`);
+          }
+        }
+      }
+    }
+
+    // Tier 3: Clear expired cooldowns
+    try {
+      const cooldownSymbols = db.findMany('symbol_performance', s => s.cooldown_until);
+      const now = new Date();
+      for (const sp of cooldownSymbols) {
+        if (sp.cooldown_until && new Date(sp.cooldown_until) <= now) {
+          sp.cooldown_until = null;
+          sp.cooldown_reason = null;
+          db._save('symbol_performance');
+        }
+      }
+    } catch (e) { /* non-critical */ }
   }
 
   const allFundSettings = db.findMany('fund_settings');
@@ -6945,19 +7024,35 @@ function runAllAgents(userId, fundData) {
         }
         // DON'T continue — let signal proceed, Guardian reviews the flag
       }
-      const adjustedScore = signal.score * agentPerf.adaptiveConfidence;
-      scored.push({ symbol, ...signal, adjustedScore, agent: agent.name, isHeld: heldSymbols.has(symbol) });
+      // ═══════════════════════════════════════════════════════════════════
+      //   STRUCTURAL FIX: Decouple confidence from signal threshold.
+      //   Raw score determines IF we trade (quality gate).
+      //   Confidence + riskMultiplier determine HOW MUCH we trade (sizing).
+      //   Old: adjustedScore = score * confidence → used for threshold → stalls
+      //   New: thresholdScore = score (raw quality) → threshold check
+      //        sizingFactor = riskMultiplier * confidence → position sizing
+      // ═══════════════════════════════════════════════════════════════════
+      const thresholdScore = signal.score; // RAW quality — no confidence dampening
+      const confidenceFloor = 0.50; // Confidence can't reduce sizing below 50%
+      const effectiveConfidence = Math.max(confidenceFloor, agentPerf.adaptiveConfidence);
+      const sizingFactor = (signal.riskMultiplier || 1.0) * effectiveConfidence;
+      scored.push({ symbol, ...signal, adjustedScore: thresholdScore, sizingFactor, effectiveConfidence, agent: agent.name, isHeld: heldSymbols.has(symbol) });
     }
 
     // Sort by absolute adjusted score descending
     scored.sort((a, b) => Math.abs(b.adjustedScore) - Math.abs(a.adjustedScore));
 
     // Pick best unheld signal — must pass BOTH strength threshold AND minimum confluence
-    const bestUnheld = scored.find(s =>
-      !s.isHeld &&
-      Math.abs(s.adjustedScore) >= AUTO_TRADE_CONFIG.minSignalStrength &&
-      (s.confluence >= (AUTO_TRADE_CONFIG.minConfluence || 3))
-    );
+    // STRUCTURAL: Regime-aware confluence — ranging/low-vol markets need only 2 indicators
+    const bestUnheld = scored.find(s => {
+      if (s.isHeld) return false;
+      if (Math.abs(s.adjustedScore) < AUTO_TRADE_CONFIG.minSignalStrength) return false;
+      const symbolRegime = symbolRegimes[s.symbol] || 'unknown';
+      const effectiveMinConfluence = (symbolRegime === 'ranging' || symbolRegime === 'unknown')
+        ? Math.max(2, (AUTO_TRADE_CONFIG.minConfluence || 3) - 1)
+        : (AUTO_TRADE_CONFIG.minConfluence || 3);
+      return s.confluence >= effectiveMinConfluence;
+    });
     if (bestUnheld) {
       allSignals.push(bestUnheld);
     }
@@ -6966,7 +7061,7 @@ function runAllAgents(userId, fundData) {
   // Log signal generation — first 10 ticks detailed, then every 30th tick summary
   if (autoTradeTickCount <= 10 || autoTradeTickCount % 30 === 1) {
     console.log(`[AutoTrader] User ${userId}: ${allSignals.length} signals generated, ${openPositions.length} open positions, VIX=${macroIntel.vix.value.toFixed(1)} (${macroIntel.vix.regime}), realPrices=${Object.keys(REAL_PRICE_CACHE).length}`);
-    allSignals.forEach(s => console.log(`  → ${s.agent} ${s.symbol}: raw=${s.score.toFixed(3)} adj=${s.adjustedScore.toFixed(3)} conf=${s.confluence}`));
+    allSignals.forEach(s => console.log(`  → ${s.agent} ${s.symbol}: raw=${s.score.toFixed(3)} thresh=${Math.abs(s.adjustedScore).toFixed(3)} sizing=${(s.sizingFactor||1).toFixed(2)} riskMul=${(s.riskMultiplier||1).toFixed(2)} conf=${s.confluence}`));
     if (allSignals.length === 0) {
       const agentStatuses = signalAgents.map(a => {
         const perf = getAgentPerf(a.name);
@@ -7037,6 +7132,11 @@ function runAllAgents(userId, fundData) {
     else sizePct = AUTO_TRADE_CONFIG.baseSizePct;
 
     sizePct *= drawdownMultiplier;
+
+    // STRUCTURAL: Apply risk multiplier + confidence to sizing (not to signal threshold)
+    // This is where context dampening lives now — smaller positions, not blocked trades
+    const sizingFactor = signal.sizingFactor || 1.0;
+    sizePct *= sizingFactor;
 
     // Asset-class position sizing adjustment
     const sigAssetClass = getAssetClass(signal.symbol);
