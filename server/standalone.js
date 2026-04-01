@@ -5560,6 +5560,133 @@ api.get('/api/trading/history', auth, (req, res) => {
   json(res, 200, { total: allTrades.length, offset, limit, trades });
 });
 
+// ─── STATEMENTS: Monthly account statements from real trade data ───
+api.get('/api/statements', auth, (req, res) => {
+  const wallet = db.findOne('wallets', w => w.user_id === req.userId);
+  if (!wallet) return json(res, 404, { error: 'Wallet not found' });
+
+  const user = db.findOne('users', u => u.id === req.userId);
+  const allPositions = db.findMany('positions', p => p.user_id === req.userId);
+  const closedPositions = allPositions.filter(p => p.status === 'CLOSED');
+  const openPositions = allPositions.filter(p => p.status === 'OPEN');
+
+  // Group closed positions by month
+  const monthlyData = {};
+  for (const pos of closedPositions) {
+    const closed = new Date(pos.closed_at || pos.opened_at);
+    const key = `${closed.getFullYear()}-${String(closed.getMonth() + 1).padStart(2, '0')}`;
+    if (!monthlyData[key]) monthlyData[key] = { trades: [], pnl: 0, wins: 0, losses: 0, agentStats: {} };
+    const md = monthlyData[key];
+    const pnl = pos.realized_pnl || 0;
+    md.pnl += pnl;
+    if (pnl > 0) md.wins++;
+    else if (pnl < 0) md.losses++;
+    md.trades.push({
+      date: pos.closed_at || pos.opened_at,
+      symbol: pos.symbol,
+      side: pos.side,
+      quantity: pos.quantity,
+      entryPrice: pos.entry_price,
+      closePrice: pos.close_price || pos.current_price,
+      pnl: roundTo(pnl, 2),
+      agent: pos.agent,
+    });
+    // Agent stats
+    const agent = pos.agent || 'Unknown';
+    if (!md.agentStats[agent]) md.agentStats[agent] = { trades: 0, wins: 0, totalPnl: 0 };
+    md.agentStats[agent].trades++;
+    if (pnl > 0) md.agentStats[agent].wins++;
+    md.agentStats[agent].totalPnl += pnl;
+  }
+
+  // Build statements sorted newest first
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+  const initialBalance = wallet.initial_balance || 100000;
+  const statements = [];
+
+  // Compute running balance per month
+  const sortedKeys = Object.keys(monthlyData).sort();
+  let runningBalance = initialBalance;
+
+  for (const key of sortedKeys) {
+    const md = monthlyData[key];
+    const [yr, mo] = key.split('-').map(Number);
+    const startValue = roundTo(runningBalance, 2);
+    const endValue = roundTo(runningBalance + md.pnl, 2);
+    const returnPct = startValue > 0 ? roundTo((md.pnl / startValue) * 100, 2) : 0;
+
+    // Agent performance summary
+    const agentPerformance = {};
+    for (const [agent, stats] of Object.entries(md.agentStats)) {
+      agentPerformance[agent] = {
+        trades: stats.trades,
+        winRate: stats.trades > 0 ? roundTo((stats.wins / stats.trades) * 100, 1) : 0,
+        avgReturn: stats.trades > 0 ? roundTo(stats.totalPnl / stats.trades, 2) : 0,
+      };
+    }
+
+    statements.push({
+      key,
+      month: `${monthNames[mo - 1]} ${yr}`,
+      year: yr,
+      monthNum: mo,
+      startValue,
+      endValue,
+      pnl: roundTo(md.pnl, 2),
+      returnPct,
+      tradeCount: md.trades.length,
+      wins: md.wins,
+      losses: md.losses,
+      winRate: md.trades.length > 0 ? roundTo((md.wins / md.trades.length) * 100, 1) : 0,
+      trades: md.trades.slice(0, 50), // Cap at 50 trades per statement for performance
+      agentPerformance,
+      investorName: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.email : 'Investor',
+      investorId: req.userId.slice(0, 8),
+    });
+
+    runningBalance = endValue;
+  }
+
+  // Current month snapshot (open positions)
+  const now = new Date();
+  const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  if (!monthlyData[currentKey] && openPositions.length > 0) {
+    const unrealizedPnl = openPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0);
+    statements.push({
+      key: currentKey,
+      month: `${monthNames[now.getMonth()]} ${now.getFullYear()}`,
+      year: now.getFullYear(),
+      monthNum: now.getMonth() + 1,
+      startValue: roundTo(runningBalance, 2),
+      endValue: roundTo(runningBalance + unrealizedPnl, 2),
+      pnl: roundTo(unrealizedPnl, 2),
+      returnPct: runningBalance > 0 ? roundTo((unrealizedPnl / runningBalance) * 100, 2) : 0,
+      tradeCount: 0,
+      wins: 0,
+      losses: 0,
+      winRate: 0,
+      trades: [],
+      agentPerformance: {},
+      investorName: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.email : 'Investor',
+      investorId: req.userId.slice(0, 8),
+      isCurrent: true,
+      openPositions: openPositions.length,
+    });
+  }
+
+  json(res, 200, {
+    statements: statements.reverse(),
+    summary: {
+      totalMonths: statements.length,
+      totalPnl: roundTo(closedPositions.reduce((s, p) => s + (p.realized_pnl || 0), 0), 2),
+      totalTrades: closedPositions.length,
+      currentBalance: wallet.balance,
+      currentEquity: wallet.equity,
+    },
+  });
+});
+
 // ─── TRADING: RISK DASHBOARD ───
 api.get('/api/trading/risk', auth, (req, res) => {
   const wallet = db.findOne('wallets', w => w.user_id === req.userId);

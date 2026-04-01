@@ -17,6 +17,7 @@ import {
 } from '../store/fundManager.js';
 import BrandLogo from '../components/BrandLogo.jsx';
 import { haptics } from '../hooks/useHaptics.js';
+import { generateMonthlyStatement, openPrintView } from '../store/pdfGenerator.js';
 
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -174,13 +175,7 @@ function buildActivityFromTrades(positions, tradeHistory, wallet) {
   return txns;
 }
 
-function generateMonthlyStatements() {
-  return [
-    { month: "January 2026", startValue: 100000, endValue: 104680, returnPct: 4.68, fees: 250 },
-    { month: "February 2026", startValue: 104680, endValue: 109952, returnPct: 5.04, fees: 262 },
-    { month: "March 2026", startValue: 109952, endValue: 110667, returnPct: 0.65, fees: 275 },
-  ];
-}
+// Monthly statements now fetched from /api/statements — see StatementsView component
 
 
 // ════════════════════════════════════════
@@ -3453,7 +3448,24 @@ function PortfolioDashboard({ investor, onLogout }) {
   const tradeHistory = getTradeHistory(investor.id);
   const portfolioHistory = useMemo(() => generatePortfolioHistory(initialBalance, 82), [investor]);
   const transactions = useMemo(() => buildActivityFromTrades(positions, tradeHistory, wallet), [positions, tradeHistory, wallet]);
-  const statements = useMemo(() => generateMonthlyStatements(), []);
+  // Statements: fetched from API (real data)
+  const [statements, setStatements] = useState([]);
+  const [statementsLoading, setStatementsLoading] = useState(false);
+  useEffect(() => {
+    if (activeTab !== 'statements') return;
+    setStatementsLoading(true);
+    const API_BASE = (() => {
+      if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+      if (window.location.hostname === 'localhost') return 'http://localhost:3001/api';
+      return 'https://one2-tribes-api.onrender.com/api';
+    })();
+    const token = localStorage.getItem('12tribes_auth_token');
+    fetch(`${API_BASE}/statements`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.statements) setStatements(data.statements); })
+      .catch(() => {})
+      .finally(() => setStatementsLoading(false));
+  }, [activeTab, investor.id]);
 
   const firstName = investor.firstName || investor.name?.split(' ')[0] || 'Investor';
   const sidebarWidth = isMobile ? 0 : 260;
@@ -3749,24 +3761,63 @@ function PortfolioDashboard({ investor, onLogout }) {
           {/* ═══ STATEMENTS VIEW ═══ */}
           {activeTab === "statements" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>Monthly Statements</div>
-              {statements.map(s => (
-                <div key={s.month} style={{ ...glass, padding: 24, display: "flex", alignItems: isMobile ? "stretch" : "center", gap: 20, flexDirection: isMobile ? "column" : "row" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>{s.month}</div>
-                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>Monthly performance report</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>Monthly Statements</div>
+                {statements.length > 0 && (
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>
+                    {statements.length} month{statements.length !== 1 ? 's' : ''} of activity
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-                    {[{ l: "START", v: `$${s.startValue.toLocaleString()}`, c: "rgba(255,255,255,0.7)" }, { l: "END", v: `$${s.endValue.toLocaleString()}`, c: "#fff" }, { l: "RETURN", v: `+${s.returnPct}%`, c: "#10B981" }, { l: "FEES", v: `-$${s.fees}`, c: "#EF4444" }].map(m => (
-                      <div key={m.l} style={{ textAlign: "center" }}>
-                        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", marginBottom: 4 }}>{m.l}</div>
-                        <div style={{ fontSize: 15, fontWeight: 600, color: m.c }}>{m.v}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <button style={{ padding: "10px 20px", borderRadius: 12, border: "1px solid rgba(0,212,255,0.3)", background: "rgba(0,212,255,0.08)", color: "#00D4FF", cursor: "pointer", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}>View PDF</button>
+                )}
+              </div>
+              {statementsLoading && (
+                <div style={{ ...glass, padding: 40, textAlign: "center", color: "rgba(255,255,255,0.5)" }}>
+                  Loading statements...
                 </div>
-              ))}
+              )}
+              {!statementsLoading && statements.length === 0 && (
+                <div style={{ ...glass, padding: 40, textAlign: "center", color: "rgba(255,255,255,0.5)" }}>
+                  No statements available yet. Statements are generated once trading activity begins.
+                </div>
+              )}
+              {statements.map(s => {
+                const pnlPositive = (s.pnl || 0) >= 0;
+                return (
+                  <div key={s.key || s.month} style={{ ...glass, padding: 24, display: "flex", alignItems: isMobile ? "stretch" : "center", gap: 20, flexDirection: isMobile ? "column" : "row" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>
+                        {s.month}
+                        {s.isCurrent && <span style={{ fontSize: 10, color: "#00D4FF", marginLeft: 8, padding: "2px 8px", border: "1px solid rgba(0,212,255,0.3)", borderRadius: 8 }}>CURRENT</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>
+                        {s.tradeCount} trade{s.tradeCount !== 1 ? 's' : ''} | Win rate: {s.winRate || 0}%
+                        {s.openPositions ? ` | ${s.openPositions} open positions` : ''}
+                      </div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 16 }}>
+                      {[
+                        { l: "START", v: `$${(s.startValue || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, c: "rgba(255,255,255,0.7)" },
+                        { l: "END", v: `$${(s.endValue || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, c: "#fff" },
+                        { l: "P&L", v: `${pnlPositive ? '+' : ''}$${(s.pnl || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, c: pnlPositive ? "#10B981" : "#EF4444" },
+                        { l: "RETURN", v: `${pnlPositive ? '+' : ''}${(s.returnPct || 0).toFixed(2)}%`, c: pnlPositive ? "#10B981" : "#EF4444" },
+                      ].map(m => (
+                        <div key={m.l} style={{ textAlign: "center" }}>
+                          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", marginBottom: 4 }}>{m.l}</div>
+                          <div style={{ fontSize: 15, fontWeight: 600, color: m.c }}>{m.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => {
+                        const html = generateMonthlyStatement(s);
+                        openPrintView(html);
+                      }}
+                      style={{ padding: "10px 20px", borderRadius: 12, border: "1px solid rgba(0,212,255,0.3)", background: "rgba(0,212,255,0.08)", color: "#00D4FF", cursor: "pointer", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      View PDF
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
 

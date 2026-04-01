@@ -6,53 +6,60 @@
 
 /**
  * Generate a professional monthly performance statement
- * @param {string} investorId - Investor identifier
- * @param {number} month - Month (1-12)
- * @param {number} year - Year (e.g., 2024)
+ * @param {object} statementData - Real statement data from API
+ * @param {string} statementData.month - "March 2026"
+ * @param {number} statementData.startValue - Opening balance
+ * @param {number} statementData.endValue - Closing balance
+ * @param {number} statementData.pnl - Realized PnL
+ * @param {number} statementData.returnPct - Return percentage
+ * @param {Array} statementData.trades - Trades executed this month
+ * @param {object} statementData.agentPerformance - Per-agent stats
+ * @param {string} statementData.investorName - Investor name
+ * @param {string} statementData.investorId - Investor ID
+ * @param {number} statementData.year - Year
+ * @param {number} statementData.monthNum - Month number 1-12
  * @returns {string} HTML document string
  */
-export function generateMonthlyStatement(investorId, month, year) {
+export function generateMonthlyStatement(statementData) {
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
 
+  const month = statementData.monthNum || 1;
+  const year = statementData.year || new Date().getFullYear();
   const monthName = monthNames[month - 1];
   const startDate = new Date(year, month - 1, 1).toLocaleDateString();
   const endDate = new Date(year, month, 0).toLocaleDateString();
 
-  // Sample data - in production, fetch from store
+  const totalReturn = statementData.pnl || 0;
   const statement = {
-    investorName: 'John Investor',
-    investorId: investorId,
-    openingBalance: 100000,
-    closingBalance: 105750,
-    totalReturn: 5750,
-    returnPercentage: 5.75,
-    totalFees: 150,
-    performanceFee: 50,
-    platformFee: 100,
-    trades: [
-      { date: '2024-03-05', symbol: 'AAPL', type: 'BUY', quantity: 10, price: 180.50, value: 1805.00, agent: 'AlphaAI' },
-      { date: '2024-03-12', symbol: 'MSFT', type: 'SELL', quantity: 5, price: 420.75, value: 2103.75, agent: 'BetaAI' },
-      { date: '2024-03-18', symbol: 'TSLA', type: 'BUY', quantity: 3, price: 242.30, value: 726.90, agent: 'GammaAI' }
-    ],
-    aiPerformance: {
-      alphaAI: { trades: 15, winRate: 62, avgReturn: 3.2 },
-      betaAI: { trades: 12, winRate: 58, avgReturn: 2.8 },
-      gammaAI: { trades: 18, winRate: 65, avgReturn: 3.8 }
-    },
+    investorName: statementData.investorName || 'Investor',
+    investorId: statementData.investorId || '',
+    openingBalance: statementData.startValue || 0,
+    closingBalance: statementData.endValue || 0,
+    totalReturn,
+    returnPercentage: statementData.returnPct || 0,
+    totalFees: 0,
+    performanceFee: 0,
+    platformFee: 0,
+    trades: (statementData.trades || []).map(t => ({
+      date: t.date ? new Date(t.date).toLocaleDateString() : '',
+      symbol: t.symbol || '',
+      type: t.side || 'BUY',
+      quantity: t.quantity || 0,
+      price: t.closePrice || t.entryPrice || 0,
+      value: Math.abs(t.pnl || 0),
+      agent: t.agent || 'Auto',
+    })),
+    aiPerformance: statementData.agentPerformance || {},
     riskMetrics: {
-      maxDrawdown: -8.5,
-      sharpeRatio: 1.24,
-      volatility: 12.3,
-      beta: 1.15
+      maxDrawdown: statementData.maxDrawdown || 0,
+      sharpeRatio: statementData.sharpeRatio || 0,
+      volatility: statementData.volatility || 0,
+      beta: statementData.beta || 0,
     },
-    allocation: {
-      stocks: 65,
-      bonds: 20,
-      cash: 15
-    }
+    allocation: statementData.allocation || { stocks: 0, bonds: 0, cash: 0 },
   };
 
   const html = `
@@ -734,30 +741,18 @@ export function generateTradeConfirmation(trade) {
  * @param {number} year - Tax year
  * @returns {string} HTML document string
  */
-export function generateTaxReport(investorId, year) {
+export function generateTaxReport(taxDataInput) {
+  const investorId = taxDataInput.investorId || '';
+  const year = taxDataInput.year || new Date().getFullYear();
   const taxData = {
-    investorId: investorId,
-    year: year,
-    realizedGains: {
-      shortTerm: 3250,
-      longTerm: 5680,
-      total: 8930
-    },
-    realizedLosses: {
-      shortTerm: -1200,
-      longTerm: -850,
-      total: -2050
-    },
-    netGain: 6880,
-    fees: 500,
-    washSales: [
-      { symbol: 'AAPL', adjustedBasis: 150, date: '2024-03-15' },
-      { symbol: 'MSFT', adjustedBasis: 420, date: '2024-06-22' }
-    ],
-    positions: {
-      longTerm: 12,
-      shortTerm: 8
-    }
+    investorId,
+    year,
+    realizedGains: taxDataInput.realizedGains || { shortTerm: 0, longTerm: 0, total: 0 },
+    realizedLosses: taxDataInput.realizedLosses || { shortTerm: 0, longTerm: 0, total: 0 },
+    netGain: taxDataInput.netGain || 0,
+    fees: taxDataInput.fees || 0,
+    washSales: taxDataInput.washSales || [],
+    positions: taxDataInput.positions || { longTerm: 0, shortTerm: 0 },
   };
 
   const html = `
@@ -1004,22 +999,17 @@ export function openPrintView(htmlContent) {
  * @param {string} investorId - Investor identifier
  * @returns {string} HTML document string
  */
-export function generatePortfolioSnapshot(investorId) {
+export function generatePortfolioSnapshot(snapshotData) {
   const snapshot = {
-    investorId: investorId,
+    investorId: snapshotData.investorId || '',
     snapshotDate: new Date().toLocaleDateString(),
-    totalValue: 105750,
-    totalCost: 100000,
-    unrealizedGain: 5750,
-    gainPercent: 5.75,
-    positions: [
-      { symbol: 'AAPL', shares: 10, price: 185.40, value: 1854.00, gain: 454.00, gainPercent: 32.3 },
-      { symbol: 'MSFT', shares: 5, price: 425.50, value: 2127.50, gain: 327.50, gainPercent: 18.1 },
-      { symbol: 'TSLA', shares: 3, price: 245.20, value: 735.60, gain: 85.60, gainPercent: 13.2 },
-      { symbol: 'CASH', shares: null, price: null, value: 2250.50, gain: 0, gainPercent: 0 }
-    ],
-    cash: 2250.50,
-    invested: 103500.50
+    totalValue: snapshotData.totalValue || 0,
+    totalCost: snapshotData.totalCost || 0,
+    unrealizedGain: snapshotData.unrealizedGain || 0,
+    gainPercent: snapshotData.gainPercent || 0,
+    positions: snapshotData.positions || [],
+    cash: snapshotData.cash || 0,
+    invested: snapshotData.invested || 0,
   };
 
   const html = `
