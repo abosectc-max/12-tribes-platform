@@ -354,7 +354,7 @@ export function generateMonthlyStatement(statementData) {
     </div>
 
     <div style="margin-bottom: 30px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
-      <p><strong>Period:</strong> ${monthName} 1 - ${monthName} 31, ${year} | <strong>Investor ID:</strong> ${investorId}</p>
+      <p><strong>Period:</strong> ${monthName} 1 - ${monthName} 31, ${year} | <strong>Investor ID:</strong> ${statement.investorId}</p>
       <p><strong>Investor:</strong> ${statement.investorName}</p>
     </div>
 
