@@ -93,13 +93,15 @@ export class PostgresAdapter {
       console.log(`[PG-ADAPTER] Connected to PostgreSQL at ${result.rows[0].now}`);
 
       // MEMORY-SAFE: Load tables with row limits for high-volume tables
-      // Only load newest N rows for operational tables to prevent OOM on 512MB Render
+      // Financial tables: load ALL data (critical for audit/compliance/tax accuracy)
+      // Operational tables: capped to prevent OOM on 512MB Render
+      // Memory budget: ~250MB for data + ~130MB for V8/Node overhead = 380MB (under 384MB heap)
       const PG_LOAD_LIMITS = {
-        trades: 2000,
-        positions: 1500,
-        tax_ledger: 1500,
-        tax_lots: 1000,
-        wash_sales: 1000,
+        // ── FINANCIAL TABLES: Full restore (no limits) ──
+        // These are excluded from this map → loaded via unlimited SELECT * FROM table ORDER BY id
+        // trades, positions, tax_ledger, tax_lots, wash_sales — all loaded in full
+
+        // ── OPERATIONAL TABLES: Capped for memory safety ──
         post_mortems: 200,
         signals: 300,
         risk_events: 200,
@@ -137,10 +139,13 @@ export class PostgresAdapter {
             this.tables[table] = [];
             counts[table] = 0;
           } else if (err.message.includes('column "created_at" does not exist')) {
-            // Fallback: no created_at column, load with generic LIMIT
+            // Fallback: no created_at column — load all (financial) or limited (operational)
             try {
-              const limit = PG_LOAD_LIMITS[table] || 5000;
-              const rows = await this.pool.query(`SELECT * FROM ${table} LIMIT ${limit}`);
+              const fallbackLimit = PG_LOAD_LIMITS[table];
+              const fallbackQuery = fallbackLimit
+                ? `SELECT * FROM ${table} LIMIT ${fallbackLimit}`
+                : `SELECT * FROM ${table} ORDER BY id`;
+              const rows = await this.pool.query(fallbackQuery);
               this.tables[table] = rows.rows;
               counts[table] = rows.rows.length;
             } catch (e2) {
