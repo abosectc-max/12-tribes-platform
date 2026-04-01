@@ -9718,10 +9718,11 @@ function recordDistribution(userId, amount, withdrawalRequestId, method) {
  * Uses capital-account-weighted methodology per IRC §704(b).
  */
 function recalculateOwnershipFromCapitalAccounts() {
-  const activeUsers = db.findMany('users', u => u.status === 'active');
+  // ═══ FIX: Include all non-suspended investors (some have status='' instead of 'active') ═══
+  const activeUsers = db.findMany('users', u => u.status !== 'suspended' && u.status !== 'deleted');
   if (activeUsers.length === 0) return;
 
-  // Ensure all active users have capital accounts
+  // Ensure all users have capital accounts
   activeUsers.forEach(u => ensureCapitalAccount(u.id));
 
   const accounts = db.findMany('capital_accounts', a =>
@@ -10067,8 +10068,10 @@ function computeTaxAllocations(taxYear) {
   // Recalculate ownership from capital accounts before allocating
   recalculateOwnershipFromCapitalAccounts();
 
-  // Allocate to each active investor based on capital-account-weighted ownership
-  const investors = db.findMany('users', u => u.status === 'active');
+  // Allocate to each investor based on capital-account-weighted ownership
+  // ═══ FIX: Include all investors — some have status='' (empty) instead of 'active' ═══
+  // Exclude only explicitly suspended/deleted accounts
+  const investors = db.findMany('users', u => u.status !== 'suspended' && u.status !== 'deleted');
   const allocations = [];
 
   // Gather year's distributions per investor for K-1 reporting
@@ -10122,7 +10125,8 @@ function computeTaxAllocations(taxYear) {
 
     const allocation = {
       user_id: investor.id,
-      investor_name: `${investor.first_name} ${investor.last_name}`,
+      // ═══ FIX: Handle both camelCase and snake_case name fields ═══
+      investor_name: `${investor.firstName || investor.first_name || ''} ${investor.lastName || investor.last_name || ''}`.trim() || investor.email,
       investor_email: investor.email,
       tax_year: taxYear,
       ownership_pct: roundTo(ownershipPct, 2),
@@ -10558,8 +10562,8 @@ api.get('/api/admin/capital-accounts', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
 
-  // Ensure all active investors have accounts
-  const activeUsers = db.findMany('users', u => u.status === 'active');
+  // Ensure all investors have accounts (include empty-status users)
+  const activeUsers = db.findMany('users', u => u.status !== 'suspended' && u.status !== 'deleted');
   activeUsers.forEach(u => ensureCapitalAccount(u.id));
 
   const accounts = db.findMany('capital_accounts', () => true);
@@ -11280,6 +11284,32 @@ server.listen(PORT, '0.0.0.0', async () => {
     cloudRestoreResult = await bootCloudRestore();
   } catch (err) {
     console.error(`[BOOT] Cloud restore failed: ${err.message}`);
+  }
+
+  // ═══ BOOT: Normalize user records — ensure all users have valid status and consistent name fields ═══
+  try {
+    const allUsers = db.findMany('users');
+    let normalized = 0;
+    for (const u of allUsers) {
+      let changed = false;
+      // Fix missing/empty status
+      if (!u.status || u.status === '') {
+        u.status = 'active';
+        changed = true;
+      }
+      // Normalize name fields — ensure both camelCase and snake_case exist
+      if (u.first_name && !u.firstName) { u.firstName = u.first_name; changed = true; }
+      if (u.firstName && !u.first_name) { u.first_name = u.firstName; changed = true; }
+      if (u.last_name && !u.lastName) { u.lastName = u.last_name; changed = true; }
+      if (u.lastName && !u.last_name) { u.last_name = u.lastName; changed = true; }
+      if (changed) normalized++;
+    }
+    if (normalized > 0) {
+      db._save('users');
+      console.log(`[BOOT] Normalized ${normalized} user record(s) — status/name fields`);
+    }
+  } catch (err) {
+    console.error(`[BOOT] User normalization failed: ${err.message}`);
   }
 
   // ── Compliance: Restore audit chain hash from DB so chain stays intact across restarts ──
