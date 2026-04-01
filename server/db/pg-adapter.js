@@ -75,6 +75,7 @@ export class PostgresAdapter {
         max: this.options.maxConnections,
         idleTimeoutMillis: this.options.idleTimeoutMillis,
         connectionTimeoutMillis: this.options.connectionTimeoutMillis,
+        ssl: dbUrl.includes('.render.com') ? { rejectUnauthorized: false } : false,
       });
 
       // Test connection

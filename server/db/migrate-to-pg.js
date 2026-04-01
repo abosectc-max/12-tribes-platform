@@ -75,53 +75,6 @@ const JSONB_COLUMNS = {
 };
 
 // ─── STEP 1: Pull cloud snapshot ───
-async function pullCloudSnapshot() {
-  console.log(`[MIGRATE] Pulling cloud snapshot from jsonblob.com (blob: ${BLOB_ID})...`);
-
-  return new Promise((resolve, reject) => {
-    https.get(`https://jsonblob.com/api/jsonBlob/${BLOB_ID}`, {
-      headers: { 'Accept': 'application/json' },
-    }, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => {
-        try {
-          if (res.statusCode !== 200) {
-            reject(new Error(`HTTP ${res.statusCode}: ${body.substring(0, 200)}`));
-            return;
-          }
-
-          let snapshot = JSON.parse(body);
-
-          // Handle compressed envelope
-          if (snapshot._compressed && snapshot._gz) {
-            console.log('[MIGRATE] Decompressing gzip+base64 envelope...');
-            const compressed = Buffer.from(snapshot._gz, 'base64');
-            const { gunzipSync } = await import('node:zlib');
-            // Can't use await in callback, use sync version
-            const zlib = require('node:zlib');
-            const decompressed = zlib.gunzipSync(compressed);
-            snapshot = JSON.parse(decompressed.toString('utf8'));
-          }
-
-          // Handle nested data wrapper
-          if (snapshot.data && snapshot._meta) {
-            console.log(`[MIGRATE] Snapshot has ${Object.keys(snapshot.data).length} tables`);
-            resolve(snapshot.data);
-          } else {
-            // Direct table data
-            resolve(snapshot);
-          }
-        } catch (err) {
-          reject(err);
-        }
-      });
-      res.on('error', reject);
-    }).on('error', reject);
-  });
-}
-
-// Actually, since this is ESM and we can use top-level await, let me restructure:
 async function pullSnapshot() {
   console.log(`[MIGRATE] Pulling cloud snapshot from jsonblob.com (blob: ${BLOB_ID})...`);
   const zlib = await import('node:zlib');
@@ -180,14 +133,13 @@ async function getTableColumns(pool, table) {
   }
 }
 
-// ─── STEP 3: Insert rows into PG ───
+// ─── STEP 3: Bulk insert rows into PG (multi-row VALUES for speed) ───
 async function migrateTable(pool, table, rows) {
   if (!rows || rows.length === 0) {
     console.log(`  [${table}] — empty, skipping`);
     return 0;
   }
 
-  // Get valid columns from PG schema
   const pgColumns = await getTableColumns(pool, table);
   if (pgColumns.size === 0) {
     console.warn(`  [${table}] — table not found in PG schema, skipping`);
@@ -195,47 +147,69 @@ async function migrateTable(pool, table, rows) {
   }
 
   const jsonbCols = JSONB_COLUMNS[table] || new Set();
-  let inserted = 0;
-  let skipped = 0;
-  let errors = 0;
 
-  // Process in batches of 100
-  const BATCH_SIZE = 100;
+  // Determine consistent column set from first row (filtered to PG schema)
+  const allKeys = new Set();
+  for (const row of rows) {
+    for (const k of Object.keys(row)) {
+      if (pgColumns.has(k)) allKeys.add(k);
+    }
+  }
+  const cols = [...allKeys];
+  if (cols.length === 0) return 0;
+
+  let totalInserted = 0;
+  let totalErrors = 0;
+
+  // Multi-row INSERT in batches of 200 (1 query per batch instead of 200)
+  const BATCH_SIZE = 200;
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
+    const values = [];
+    const rowPlaceholders = [];
 
     for (const row of batch) {
-      try {
-        // Filter to only columns that exist in PG schema
-        const cols = Object.keys(row).filter(k => pgColumns.has(k));
-        if (cols.length === 0) continue;
-
-        const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(',');
-        const values = cols.map(col => {
-          let val = row[col];
-          // Stringify JSONB columns if they're objects
-          if (jsonbCols.has(col) && val !== null && typeof val === 'object') {
-            val = JSON.stringify(val);
-          }
-          return val;
-        });
-
-        const query = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders}) ON CONFLICT (id) DO NOTHING`;
-        const result = await pool.query(query, values);
-        if (result.rowCount > 0) inserted++;
-        else skipped++;
-      } catch (err) {
-        errors++;
-        if (errors <= 3) {
-          console.error(`  [${table}] Row error: ${err.message.substring(0, 100)}`);
+      const rowVals = cols.map(col => {
+        let val = row[col] !== undefined ? row[col] : null;
+        if (jsonbCols.has(col) && val !== null && typeof val === 'object') {
+          val = JSON.stringify(val);
         }
+        return val;
+      });
+      const offset = values.length;
+      rowPlaceholders.push(`(${cols.map((_, idx) => `$${offset + idx + 1}`).join(',')})`);
+      values.push(...rowVals);
+    }
+
+    try {
+      const query = `INSERT INTO ${table} (${cols.join(',')}) VALUES ${rowPlaceholders.join(',')} ON CONFLICT (id) DO NOTHING`;
+      const result = await pool.query(query, values);
+      totalInserted += result.rowCount;
+    } catch (err) {
+      totalErrors++;
+      if (totalErrors <= 2) {
+        console.error(`  [${table}] Batch error: ${err.message.substring(0, 120)}`);
+      }
+      // Fallback: try row-by-row for this batch to salvage what we can
+      for (const row of batch) {
+        try {
+          const rowVals = cols.map(col => {
+            let val = row[col] !== undefined ? row[col] : null;
+            if (jsonbCols.has(col) && val !== null && typeof val === 'object') val = JSON.stringify(val);
+            return val;
+          });
+          const ph = cols.map((_, idx) => `$${idx + 1}`).join(',');
+          const r = await pool.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${ph}) ON CONFLICT (id) DO NOTHING`, rowVals);
+          totalInserted += r.rowCount;
+        } catch { /* skip bad rows silently */ }
       }
     }
   }
 
-  const status = errors > 0 ? '⚠️' : '✅';
-  console.log(`  ${status} [${table}] ${inserted} inserted, ${skipped} skipped (duplicate), ${errors} errors (of ${rows.length} total)`);
-  return inserted;
+  const status = totalErrors > 0 ? '⚠️' : '✅';
+  const skipped = rows.length - totalInserted - (totalErrors > 0 ? 1 : 0);
+  console.log(`  ${status} [${table}] ${totalInserted} inserted (of ${rows.length} total)${totalErrors > 0 ? `, ${totalErrors} batch errors` : ''}`);
+  return totalInserted;
 }
 
 // ─── MAIN ───
@@ -252,6 +226,7 @@ async function main() {
   const pool = new Pool({
     connectionString: DATABASE_URL,
     max: 5,
+    ssl: DATABASE_URL.includes('.render.com') ? { rejectUnauthorized: false } : false,
   });
 
   const conn = await pool.connect();
@@ -278,8 +253,24 @@ async function main() {
     console.log(`[MIGRATE] Found ${tableCheck.rows[0].count} existing tables`);
   }
 
-  // Step 4: Migrate each table in FK-safe order
-  console.log('\n[MIGRATE] Starting data migration...');
+  // Step 4: Pre-filter orphan references (remove rows with user_ids not in users table)
+  const validUserIds = new Set((data.users || []).map(u => u.id));
+  console.log(`\n[MIGRATE] Valid user IDs: ${validUserIds.size}`);
+  let totalOrphans = 0;
+  for (const table of MIGRATION_ORDER) {
+    if (table === 'users' || !data[table]) continue;
+    const before = data[table].length;
+    data[table] = data[table].filter(row => !row.user_id || validUserIds.has(row.user_id));
+    const removed = before - data[table].length;
+    if (removed > 0) {
+      console.log(`  [${table}] Filtered ${removed} orphan rows`);
+      totalOrphans += removed;
+    }
+  }
+  if (totalOrphans > 0) console.log(`[MIGRATE] Total orphans removed: ${totalOrphans}`);
+
+  // Step 5: Migrate each table (multi-row bulk INSERT for speed)
+  console.log('\n[MIGRATE] Starting bulk data migration...');
   let totalInserted = 0;
 
   for (const table of MIGRATION_ORDER) {
