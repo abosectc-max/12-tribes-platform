@@ -10564,6 +10564,25 @@ api.get('/api/compliance/dashboard', auth, (req, res) => {
     const pendingFlags = flags.filter(f => f.status === 'PENDING').length;
     const resolvedFlags = flags.filter(f => f.status !== 'PENDING').length;
 
+    // PCI DSS posture assessment
+    let pciPosture = { score: 0, controls: [] };
+    try { pciPosture = compliance.assessPCIDSSPosture(); } catch (e) {
+      console.error('[Compliance] PCI DSS posture error:', e.message);
+    }
+
+    // KYC/AML posture assessment
+    let kycPosture = { score: 0, controls: [] };
+    try {
+      const allUsers = db.findMany('users', () => true);
+      kycPosture = compliance.assessKYCAMLPosture(allUsers);
+    } catch (e) {
+      console.error('[Compliance] KYC posture error:', e.message);
+    }
+
+    // PII access log summary
+    let piiLog = { total: 0, entries: [] };
+    try { piiLog = compliance.getPIIAccessLog(); } catch (e) {}
+
     json(res, 200, {
       health,
       audit: {
@@ -10588,6 +10607,9 @@ api.get('/api/compliance/dashboard', auth, (req, res) => {
         pending: pendingFlags,
         resolved: resolvedFlags,
       },
+      pciDSS: pciPosture,
+      kycAML: kycPosture,
+      piiAccess: piiLog,
       disclaimers: compliance.FTC_DISCLAIMERS,
     });
   } catch (err) {
@@ -10602,6 +10624,92 @@ api.get('/api/compliance/dashboard', auth, (req, res) => {
       disclaimers: compliance.FTC_DISCLAIMERS || {},
       _error: err.message,
     });
+  }
+});
+
+// ═══════════════════════════════════════════
+//   KYC/AML MANAGEMENT API
+// ═══════════════════════════════════════════
+
+// GET /api/compliance/kyc/:userId — Get KYC status for a user
+api.get('/api/compliance/kyc/:userId', auth, (req, res) => {
+  try {
+    const requestor = db.findOne('users', u => u.id === req.userId);
+    if (!requestor) return json(res, 401, { error: 'Unauthorized' });
+    // Users can view own KYC; admins can view any
+    const targetId = req.params.userId === 'me' ? req.userId : req.params.userId;
+    if (targetId !== req.userId && requestor.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+    const user = db.findOne('users', u => u.id === targetId);
+    if (!user) return json(res, 404, { error: 'User not found' });
+    json(res, 200, compliance.checkKYCStatus(user));
+  } catch (err) {
+    json(res, 500, { error: err.message });
+  }
+});
+
+// POST /api/compliance/kyc/document — Submit a verification document
+api.post('/api/compliance/kyc/document', auth, (req, res) => {
+  try {
+    const { docType, metadata } = req.body || {};
+    if (!docType) return json(res, 400, { error: 'docType required' });
+    const result = compliance.submitVerificationDocument(req.userId, docType, metadata || {});
+    json(res, result.success ? 200 : 400, result);
+  } catch (err) {
+    json(res, 500, { error: err.message });
+  }
+});
+
+// POST /api/compliance/kyc/document/review — Admin reviews a document
+api.post('/api/compliance/kyc/document/review', auth, (req, res) => {
+  try {
+    const admin = db.findOne('users', u => u.id === req.userId);
+    if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+    const { docId, userId, approved, reason } = req.body || {};
+    if (!docId || !userId) return json(res, 400, { error: 'docId and userId required' });
+    const result = compliance.reviewVerificationDocument(docId, userId, req.userId, !!approved, reason || '');
+    if (approved) {
+      // Auto-update user verification flags based on doc type
+      const user = db.findOne('users', u => u.id === userId);
+      if (user) {
+        const docResult = result;
+        db.update('users', u => u.id === userId, { identity_verified: true });
+      }
+    }
+    json(res, result.success ? 200 : 400, result);
+  } catch (err) {
+    json(res, 500, { error: err.message });
+  }
+});
+
+// POST /api/compliance/aml/screen/:userId — Run AML screening
+api.post('/api/compliance/aml/screen/:userId', auth, (req, res) => {
+  try {
+    const admin = db.findOne('users', u => u.id === req.userId);
+    if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+    const user = db.findOne('users', u => u.id === req.params.userId);
+    if (!user) return json(res, 404, { error: 'User not found' });
+    const result = compliance.runAMLScreening(user);
+    // If clear, update user's AML status
+    if (result.overall_status === 'CLEAR') {
+      db.update('users', u => u.id === req.params.userId, { aml_cleared: true });
+    }
+    json(res, 200, result);
+  } catch (err) {
+    json(res, 500, { error: err.message });
+  }
+});
+
+// GET /api/compliance/risk-profile/:userId — Get customer risk assessment
+api.get('/api/compliance/risk-profile/:userId', auth, (req, res) => {
+  try {
+    const admin = db.findOne('users', u => u.id === req.userId);
+    if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+    const user = db.findOne('users', u => u.id === req.params.userId);
+    if (!user) return json(res, 404, { error: 'User not found' });
+    const trades = db.findMany('trades', t => t.user_id === req.params.userId);
+    json(res, 200, compliance.assessCustomerRisk(user, trades));
+  } catch (err) {
+    json(res, 500, { error: err.message });
   }
 });
 
