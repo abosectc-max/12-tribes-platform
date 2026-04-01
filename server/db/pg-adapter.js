@@ -342,8 +342,8 @@ export class PostgresAdapter {
       const vals = cols.map((_, i) => `$${i + 1}`).join(',');
       const colNames = cols.join(',');
 
-      // Prepare values, converting JSONB columns
-      const values = cols.map(col => this._serializeValue(table, col, record[col]));
+      // Prepare values — normalize for PG type constraints
+      const values = cols.map(col => this._normalizeForPG(table, col, record[col]));
 
       const query = `INSERT INTO ${table} (${colNames}) VALUES (${vals})`;
       await this.pool.query(query, values);
@@ -359,6 +359,9 @@ export class PostgresAdapter {
   async _persistUpdate(table, record) {
     if (!this.pool || !record.id) return;
 
+    // Skip PG update if record has a non-UUID id (can't match in PG)
+    if (typeof record.id === 'string' && !PostgresAdapter.UUID_RE.test(record.id)) return;
+
     try {
       // Filter to only columns that exist in PG schema (excluding id which is in WHERE clause)
       const validCols = this._pgColumns[table];
@@ -369,7 +372,7 @@ export class PostgresAdapter {
       if (cols.length === 0) return;
 
       const setClauses = cols.map((col, i) => `${col}=$${i + 1}`).join(',');
-      const values = cols.map(col => this._serializeValue(table, col, record[col]));
+      const values = cols.map(col => this._normalizeForPG(table, col, record[col]));
       values.push(record.id); // WHERE id = $n
 
       const query = `UPDATE ${table} SET ${setClauses} WHERE id=$${cols.length + 1}`;
@@ -384,6 +387,8 @@ export class PostgresAdapter {
    */
   async _persistDelete(table, id) {
     if (!this.pool) return;
+    // Skip if non-UUID id (record was never persisted to PG)
+    if (typeof id === 'string' && !PostgresAdapter.UUID_RE.test(id)) return;
 
     try {
       await this.pool.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
@@ -392,26 +397,59 @@ export class PostgresAdapter {
     }
   }
 
-  /**
-   * Serialize a value for PostgreSQL
-   * - Convert JSONB columns to JSON strings
-   * - Pass other values as-is
-   */
-  _serializeValue(table, column, value) {
-    if (value === null || value === undefined) {
-      return null;
-    }
+  // UUID regex for validation
+  static UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-    // Check if this column should be stored as JSONB
+  // Columns known to be UUID type in PG (id + common FK columns)
+  static UUID_COLUMNS = new Set([
+    'id', 'user_id', 'position_id', 'trade_id', 'tax_lot_id', 'wash_sale_id',
+    'withdrawal_request_id',
+  ]);
+
+  // Columns with CHECK constraints requiring specific case
+  static ENUM_NORMALIZERS = {
+    holding_period: v => typeof v === 'string' ? v.toLowerCase() : v,
+  };
+
+  /**
+   * Normalize a value for PostgreSQL type constraints:
+   * - JSONB columns → JSON.stringify
+   * - UUID columns with non-UUID values → NULL (preserve in-memory, skip in PG)
+   * - Enum columns → case normalization
+   * - Non-UUID id → generate a real UUID for PG
+   */
+  _normalizeForPG(table, column, value) {
+    if (value === null || value === undefined) return null;
+
+    // JSONB serialization
     const jsonbCols = JSONB_COLUMNS[table] || [];
     if (jsonbCols.includes(column)) {
-      // If already a string, assume it's JSON and pass through
       if (typeof value === 'string') return value;
-      // Otherwise, stringify it
       return JSON.stringify(value);
     }
 
+    // UUID column validation — if value isn't a valid UUID, use NULL (for FKs) or generate one (for id)
+    if (PostgresAdapter.UUID_COLUMNS.has(column) && typeof value === 'string' && !PostgresAdapter.UUID_RE.test(value)) {
+      if (column === 'id') {
+        // Generate a real UUID for PG persistence; in-memory keeps the original
+        return randomUUID();
+      }
+      // FK references with non-UUID values → NULL to avoid FK constraint errors
+      return null;
+    }
+
+    // Enum case normalization (e.g., 'SHORT_TERM' → 'short_term')
+    const normalizer = PostgresAdapter.ENUM_NORMALIZERS[column];
+    if (normalizer) return normalizer(value);
+
     return value;
+  }
+
+  /**
+   * Serialize a value for PostgreSQL (legacy, now delegates to _normalizeForPG)
+   */
+  _serializeValue(table, column, value) {
+    return this._normalizeForPG(table, column, value);
   }
 
   /**
