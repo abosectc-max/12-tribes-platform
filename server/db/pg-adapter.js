@@ -336,10 +336,13 @@ export class PostgresAdapter {
   }
 
   /**
-   * PRUNE OPERATIONAL TABLES — trim in-memory arrays AND delete old rows from PG
+   * PRUNE OPERATIONAL TABLES — trim in-memory arrays ONLY
    * Critical for staying under Render's 512MB memory limit
+   * IMPORTANT: Never DELETE from PostgreSQL — PG is the permanent historical store.
+   * Memory pruning keeps runtime safe; PG retains all data for audit/compliance.
    */
   pruneOperationalTables() {
+    // In-memory limits for runtime safety (PG retains ALL rows permanently)
     const limits = {
       post_mortems: 200,
       signals: 300,
@@ -354,47 +357,26 @@ export class PostgresAdapter {
       access_requests: 200,
       verification_codes: 100,
       audit_log: 300,
-      trades: 2000,
-      tax_ledger: 1500,
-      tax_lots: 1000,
-      wash_sales: 1000,
-      positions: 1500,
       symbol_performance: 300,
     };
+
+    // FINANCIAL TABLES EXCLUDED — trades, positions, tax_ledger, tax_lots,
+    // wash_sales are never pruned from memory (loaded with PG_LOAD_LIMITS at boot)
 
     let totalPruned = 0;
     for (const [table, maxRows] of Object.entries(limits)) {
       if (!this.tables[table]) continue;
       const excess = this.tables[table].length - maxRows;
       if (excess > 0) {
-        // Remove oldest (front of array) from in-memory cache
-        const removed = this.tables[table].splice(0, excess);
+        // Remove oldest (front of array) from in-memory cache ONLY
+        this.tables[table].splice(0, excess);
         totalPruned += excess;
-
-        // Fire-and-forget: delete from PG too (keep PG in sync)
-        if (this.pool && removed.length > 0) {
-          const ids = removed.filter(r => r.id).map(r => r.id);
-          if (ids.length > 0) {
-            // Batch delete in chunks of 500 to avoid query size limits
-            const chunkSize = 500;
-            for (let i = 0; i < ids.length; i += chunkSize) {
-              const chunk = ids.slice(i, i + chunkSize);
-              const placeholders = chunk.map((_, idx) => `$${idx + 1}`).join(',');
-              this.pool.query(`DELETE FROM ${table} WHERE id IN (${placeholders})`, chunk)
-                .catch(err => {
-                  // Non-fatal — PG prune is best-effort
-                  if (!err.message.includes('does not exist')) {
-                    console.error(`[PG-ADAPTER] Prune DELETE failed for ${table}: ${err.message}`);
-                  }
-                });
-            }
-          }
-        }
+        // PG rows are PRESERVED — no DELETE queries fired
       }
     }
 
     if (totalPruned > 0) {
-      console.log(`[PG-ADAPTER] Pruned ${totalPruned} rows from in-memory cache + PG`);
+      console.log(`[PG-ADAPTER] Pruned ${totalPruned} rows from in-memory cache (PG preserved)`);
     }
     return totalPruned;
   }
@@ -407,6 +389,73 @@ export class PostgresAdapter {
     if (this.pool) {
       await this.pool.end();
       console.log('[PG-ADAPTER] Connection pool closed');
+    }
+  }
+
+  /**
+   * GET ACTUAL PG ROW COUNTS — query PostgreSQL directly for true table sizes
+   * Returns { table: pgCount } for all tables, compared to in-memory counts
+   */
+  async getPgRowCounts() {
+    if (!this.pool) return null;
+    const counts = {};
+    for (const table of DB_TABLES) {
+      try {
+        const result = await this.pool.query(`SELECT COUNT(*) as cnt FROM ${table}`);
+        counts[table] = {
+          pg: parseInt(result.rows[0].cnt, 10),
+          memory: (this.tables[table] || []).length,
+        };
+      } catch (err) {
+        counts[table] = { pg: -1, memory: (this.tables[table] || []).length, error: err.message };
+      }
+    }
+    return counts;
+  }
+
+  /**
+   * RELOAD TABLE FROM PG — load ALL rows from PG into memory for a specific table
+   * WARNING: Use only for targeted restore operations, not routine boot.
+   * For large tables, use pagination via queryPgDirect() instead.
+   */
+  async reloadTableFromPg(table, limit = null) {
+    if (!this.pool) return { error: 'No PG pool' };
+    try {
+      const query = limit
+        ? `SELECT * FROM ${table} ORDER BY created_at DESC NULLS LAST LIMIT ${parseInt(limit, 10)}`
+        : `SELECT * FROM ${table} ORDER BY id`;
+      const result = await this.pool.query(query);
+      this.tables[table] = result.rows;
+      return { table, loaded: result.rows.length };
+    } catch (err) {
+      return { table, error: err.message };
+    }
+  }
+
+  /**
+   * QUERY PG DIRECT — paginated query against PG for historical data access
+   * Returns rows directly from PG without loading into memory
+   */
+  async queryPgDirect(table, { offset = 0, limit = 100, orderBy = 'created_at', direction = 'DESC' } = {}) {
+    if (!this.pool) return { error: 'No PG pool' };
+    if (!DB_TABLES.includes(table)) return { error: `Invalid table: ${table}` };
+    const dir = direction === 'ASC' ? 'ASC' : 'DESC';
+    try {
+      const countResult = await this.pool.query(`SELECT COUNT(*) as cnt FROM ${table}`);
+      const total = parseInt(countResult.rows[0].cnt, 10);
+      const query = `SELECT * FROM ${table} ORDER BY ${orderBy} ${dir} NULLS LAST LIMIT $1 OFFSET $2`;
+      const result = await this.pool.query(query, [parseInt(limit, 10), parseInt(offset, 10)]);
+      return { table, total, offset, limit, returned: result.rows.length, rows: result.rows };
+    } catch (err) {
+      // Fallback if orderBy column doesn't exist
+      if (err.message.includes('does not exist')) {
+        const query = `SELECT * FROM ${table} ORDER BY id LIMIT $1 OFFSET $2`;
+        const countResult = await this.pool.query(`SELECT COUNT(*) as cnt FROM ${table}`);
+        const total = parseInt(countResult.rows[0].cnt, 10);
+        const result = await this.pool.query(query, [parseInt(limit, 10), parseInt(offset, 10)]);
+        return { table, total, offset, limit, returned: result.rows.length, rows: result.rows };
+      }
+      return { table, error: err.message };
     }
   }
 

@@ -322,8 +322,10 @@ class JsonDB {
     }
   }
 
-  // ─── TABLE PRUNING: keep operational tables bounded ───
-  // Called periodically to prevent unbounded growth
+  // ─── TABLE PRUNING: keep operational tables bounded in memory ───
+  // Called periodically to prevent unbounded memory growth
+  // NOTE: Financial tables (trades, positions, tax_*) are NOT pruned —
+  //       they are bounded at boot by PG_LOAD_LIMITS and must be preserved.
   pruneOperationalTables() {
     const limits = {
       post_mortems: 200,
@@ -335,18 +337,13 @@ class JsonDB {
       qa_reports: 30,
       login_log: 150,
       order_queue: 50,
-      // Previously unbounded — now capped
       feedback: 500,
       access_requests: 200,
       verification_codes: 100,
       audit_log: 300,
-      // High-volume financial tables — aggressive caps for 512MB
-      trades: 2000,
-      tax_ledger: 1500,
-      tax_lots: 1000,
-      wash_sales: 1000,
-      positions: 1500,
       symbol_performance: 300,
+      // FINANCIAL TABLES REMOVED — never prune trades, positions,
+      // tax_ledger, tax_lots, wash_sales from memory or PG
     };
     let totalPruned = 0;
     for (const [table, maxRows] of Object.entries(limits)) {
@@ -4918,6 +4915,84 @@ if (CLOUD_SYNC_ENABLED) {
     }
   }, CLOUD_SYNC_INTERVAL_MS);
 }
+
+// ─── ADMIN: PostgreSQL Row Counts (actual PG vs. in-memory) ───
+api.get('/api/admin/pg-counts', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  if (typeof db.getPgRowCounts !== 'function') {
+    return json(res, 400, { error: 'PG row counts only available in PostgreSQL mode' });
+  }
+
+  try {
+    const counts = await db.getPgRowCounts();
+    const summary = {};
+    let totalPg = 0, totalMemory = 0;
+    for (const [table, data] of Object.entries(counts)) {
+      summary[table] = data;
+      if (data.pg > 0) totalPg += data.pg;
+      totalMemory += data.memory;
+    }
+    json(res, 200, {
+      database: 'postgresql',
+      totals: { pg: totalPg, memory: totalMemory, delta: totalPg - totalMemory },
+      tables: summary,
+    });
+  } catch (err) {
+    json(res, 500, { error: err.message });
+  }
+});
+
+// ─── ADMIN: Query PG Historical Data (paginated, direct from PG) ───
+api.get('/api/admin/pg-query/:table', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  if (typeof db.queryPgDirect !== 'function') {
+    return json(res, 400, { error: 'PG direct query only available in PostgreSQL mode' });
+  }
+
+  const table = req.params.table;
+  const offset = parseInt(req.query.offset || '0', 10);
+  const limit = Math.min(parseInt(req.query.limit || '100', 10), 500);
+  const orderBy = req.query.orderBy || 'created_at';
+  const direction = req.query.direction || 'DESC';
+
+  try {
+    const result = await db.queryPgDirect(table, { offset, limit, orderBy, direction });
+    if (result.error) return json(res, 400, result);
+    json(res, 200, result);
+  } catch (err) {
+    json(res, 500, { error: err.message });
+  }
+});
+
+// ─── ADMIN: Reload Full Table from PG into Memory ───
+api.post('/api/admin/pg-reload/:table', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  if (typeof db.reloadTableFromPg !== 'function') {
+    return json(res, 400, { error: 'PG reload only available in PostgreSQL mode' });
+  }
+
+  const table = req.params.table;
+  const limit = req.body.limit || null; // Optional — null = load all
+
+  try {
+    const before = (db.tables[table] || []).length;
+    const result = await db.reloadTableFromPg(table, limit);
+    if (result.error) return json(res, 400, result);
+    json(res, 200, {
+      ...result,
+      before,
+      message: `Reloaded ${result.loaded} rows from PG (was ${before} in memory)`,
+    });
+  } catch (err) {
+    json(res, 500, { error: err.message });
+  }
+});
 
 // ─── ADMIN: Cloud Sync Status ───
 api.get('/api/admin/cloud-sync/status', auth, (req, res) => {
