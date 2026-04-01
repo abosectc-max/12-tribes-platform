@@ -15,7 +15,13 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 
-const { Pool } = pg;
+const { Pool, types } = pg;
+
+// Override pg's default NUMERIC/DECIMAL parsing: return JS numbers instead of strings.
+// pg returns NUMERIC as strings to avoid floating-point precision loss, but our app
+// expects numbers for .toFixed(), arithmetic, etc. NUMERIC(18,4) fits in float64.
+types.setTypeParser(1700, (val) => parseFloat(val));  // OID 1700 = NUMERIC/DECIMAL
+types.setTypeParser(20, (val) => parseInt(val, 10));   // OID 20 = BIGINT (INT8)
 
 // Table list (must match standalone.js DB_TABLES)
 const DB_TABLES = [
