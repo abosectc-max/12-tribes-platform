@@ -340,7 +340,7 @@ export class PostgresAdapter {
       if (cols.length === 0) return;
 
       const vals = cols.map((_, i) => `$${i + 1}`).join(',');
-      const colNames = cols.join(',');
+      const colNames = cols.map(c => `"${c}"`).join(',');
 
       // Prepare values — normalize for PG type constraints
       const values = cols.map(col => this._normalizeForPG(table, col, record[col]));
@@ -371,11 +371,11 @@ export class PostgresAdapter {
 
       if (cols.length === 0) return;
 
-      const setClauses = cols.map((col, i) => `${col}=$${i + 1}`).join(',');
+      const setClauses = cols.map((col, i) => `"${col}"=$${i + 1}`).join(',');
       const values = cols.map(col => this._normalizeForPG(table, col, record[col]));
       values.push(record.id); // WHERE id = $n
 
-      const query = `UPDATE ${table} SET ${setClauses} WHERE id=$${cols.length + 1}`;
+      const query = `UPDATE ${table} SET ${setClauses} WHERE "id"=$${cols.length + 1}`;
       await this.pool.query(query, values);
     } catch (err) {
       console.error(`[PG-ADAPTER] _persistUpdate error for ${table}:`, err.message);
