@@ -4527,15 +4527,12 @@ const CLOUD_SYNC_TABLES = [
 
 // Row limits per table to keep snapshot compact (newest rows kept)
 // Target: compressed payload must stay under 1MB (jsonblob.com free limit)
+// NOTE: Financial tables (trades, positions, tax_ledger, tax_lots, wash_sales, tax_allocations)
+// have been removed to prevent data truncation if cloud sync is re-enabled.
+// These tables must NEVER be pruned as they contain critical regulatory/tax records.
 const CLOUD_SYNC_ROW_LIMITS = {
-  trades: 300,
-  tax_ledger: 300,
-  tax_lots: 300,
-  wash_sales: 200,
-  positions: 500,
   post_mortems: 100,
   agent_stats: 100,
-  tax_allocations: 100,
 };
 
 let lastCloudSyncTime = null;
@@ -10149,39 +10146,44 @@ api.get('/api/agents/learning', auth, (req, res) => {
 
 // ─── ADMIN: Recent trades across all users (for Mission Control live feed) ───
 api.get('/api/admin/trades/recent', auth, (req, res) => {
-  const user = db.findOne('users', u => u.id === req.userId);
-  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  try {
+    const user = db.findOne('users', u => u.id === req.userId);
+    if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
 
-  const limit = Math.min(parseInt(new URL(req.url, `http://${req.headers.host}`).searchParams.get('limit')) || 25, 100);
-  const allTrades = db.findMany('trades')
-    .sort((a, b) => (b.closed_at || b.opened_at || '').localeCompare(a.closed_at || a.opened_at || ''))
-    .slice(0, limit);
+    const limit = Math.min(parseInt(new URL(req.url, `http://${req.headers.host}`).searchParams.get('limit')) || 25, 100);
+    const allTrades = db.findMany('trades')
+      .sort((a, b) => (b.closed_at || b.opened_at || '').localeCompare(a.closed_at || a.opened_at || ''))
+      .slice(0, limit);
 
-  // Enrich with user info
-  const trades = allTrades.map(t => {
-    const u = db.findOne('users', usr => usr.id === t.user_id);
-    // ═══ FIX: Use both camelCase and snake_case name fields ═══
-    // Some users registered with first_name/last_name (snake), others with firstName/lastName (camel)
-    const fName = u ? (u.firstName || u.first_name || '') : '';
-    const lName = u ? (u.lastName || u.last_name || '') : '';
-    const displayName = `${fName} ${lName}`.trim() || (u ? u.email : 'Unknown');
-    return {
-      id: t.id,
-      time: t.closed_at || t.opened_at,
-      symbol: t.symbol,
-      side: t.side,
-      quantity: t.quantity,
-      entry_price: t.entry_price,
-      close_price: t.close_price,
-      realized_pnl: t.realized_pnl || 0,
-      agent: t.agent,
-      status: t.status || 'CLOSED',
-      investor: displayName,
-      investorId: t.user_id, // ═══ ADD: reliable ID-based matching for frontend ═══
-    };
-  });
+    // Enrich with user info
+    const trades = allTrades.map(t => {
+      const u = db.findOne('users', usr => usr.id === t.user_id);
+      // ═══ FIX: Use both camelCase and snake_case name fields ═══
+      // Some users registered with first_name/last_name (snake), others with firstName/lastName (camel)
+      const fName = u ? (u.firstName || u.first_name || '') : '';
+      const lName = u ? (u.lastName || u.last_name || '') : '';
+      const displayName = `${fName} ${lName}`.trim() || (u ? u.email : 'Unknown');
+      return {
+        id: t.id,
+        time: t.closed_at || t.opened_at,
+        symbol: t.symbol,
+        side: t.side,
+        quantity: t.quantity,
+        entry_price: t.entry_price,
+        close_price: t.close_price,
+        realized_pnl: t.realized_pnl || 0,
+        agent: t.agent,
+        status: t.status || 'CLOSED',
+        investor: displayName,
+        investorId: t.user_id, // ═══ ADD: reliable ID-based matching for frontend ═══
+      };
+    });
 
-  json(res, 200, { trades, count: trades.length });
+    json(res, 200, { trades, count: trades.length });
+  } catch (err) {
+    console.error('[API] /admin/trades/recent error:', err.message);
+    json(res, 500, { error: 'Failed to fetch recent trades', message: err.message });
+  }
 });
 
 // ─── ADMIN: Agent status with live metrics (for Mission Control) ───

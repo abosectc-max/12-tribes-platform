@@ -47,6 +47,7 @@ const JSONB_COLUMNS = {
   agent_preferences: ['preferences'],
   post_mortems: ['patterns', 'patterns_detected'],
   tax_allocations: ['allocation'], // May vary by actual schema
+  audit_log: ['details', 'metadata'],
 };
 
 export class PostgresAdapter {

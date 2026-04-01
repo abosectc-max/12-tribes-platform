@@ -736,6 +736,55 @@ CREATE INDEX idx_post_mortems_agent ON post_mortems(agent);
 COMMENT ON TABLE post_mortems IS 'Post-trade analysis and AI self-healing insights.';
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- AUDIT LOG TABLE
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Immutable audit trail for regulatory compliance (SEC 17a-4)
+CREATE TABLE audit_log (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  timestamp         TIMESTAMPTZ DEFAULT NOW(),
+  timestamp_ms      BIGINT,
+  category          VARCHAR(50),                       -- TRADE, AUTH, ADMIN, RISK, COMPLIANCE, SYSTEM
+  action            VARCHAR(100),                      -- e.g., TRADE_EXECUTED, POSITION_CLOSED, USER_DELETED
+  user_id           UUID REFERENCES users(id) ON DELETE SET NULL,
+  details           JSONB,                             -- Flexible metadata (position_id, symbol, quantity, price, etc.)
+  metadata          JSONB,                             -- server_version, node_version, etc.
+  prev_hash         VARCHAR(255),                      -- Hash chain for tamper detection
+  entry_hash        VARCHAR(255),                      -- This entry's hash
+  retention_until   TIMESTAMPTZ,                       -- Regulatory retention period (6-year minimum)
+  immutable         BOOLEAN DEFAULT true,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX idx_audit_log_category ON audit_log(category);
+CREATE INDEX idx_audit_log_action ON audit_log(action);
+CREATE INDEX idx_audit_log_timestamp ON audit_log(timestamp DESC);
+CREATE INDEX idx_audit_log_immutable ON audit_log(immutable);
+
+COMMENT ON TABLE audit_log IS 'Immutable compliance audit trail (SEC 17a-4, FINRA) with hash chain tamper detection.';
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SYMBOL PERFORMANCE TABLE
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Per-symbol performance tracking and cooldown management after losses
+CREATE TABLE symbol_performance (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  symbol            VARCHAR(20) UNIQUE NOT NULL,
+  cooldown_until    TIMESTAMPTZ,                       -- Timestamp when cooldown expires
+  cooldown_reason   TEXT,                              -- Reason for cooldown (e.g., post-mortem analysis)
+  last_trade_at     TIMESTAMPTZ,
+  last_loss_at      TIMESTAMPTZ,
+  consecutive_losses INTEGER DEFAULT 0,
+  created_at        TIMESTAMPTZ DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_symbol_performance_symbol ON symbol_performance(symbol);
+CREATE INDEX idx_symbol_performance_cooldown ON symbol_performance(cooldown_until);
+
+COMMENT ON TABLE symbol_performance IS 'Per-symbol performance metrics and cooldown tracking to dampen signals after consecutive losses.';
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- TRIGGERS & UTILITY FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -785,19 +834,23 @@ CREATE TRIGGER trigger_withdrawal_requests_updated_at BEFORE UPDATE ON withdrawa
 CREATE TRIGGER trigger_system_config_updated_at BEFORE UPDATE ON system_config
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER trigger_symbol_performance_updated_at BEFORE UPDATE ON symbol_performance
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- FINAL SUMMARY
 -- ═══════════════════════════════════════════════════════════════════════════
--- Total Tables: 29
+-- Total Tables: 31
 -- Core Users/Auth: users, login_log, passkey_credentials, access_requests
 -- Trading: positions, trades, order_queue, broker_connections, signals
--- Risk/Compliance: risk_events, trade_flags, qa_reports
+-- Risk/Compliance: risk_events, trade_flags, qa_reports, audit_log
 -- Account: wallets, snapshots, fund_settings, verification_codes
 -- Feedback: feedback, withdrawal_requests, auto_trade_log
 -- Tax Accounting: tax_ledger, tax_lots, wash_sales, tax_allocations
 -- Fund Operations: capital_accounts, distributions
 -- AI/Analytics: agent_stats, agent_preferences, post_mortems
 -- Configuration: system_config
+-- Symbol Management: symbol_performance
 --
 -- Key Indexes:
 --   - positions: (user_id, status), (symbol, status) — PRIMARY HOT PATH

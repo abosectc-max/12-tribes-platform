@@ -898,21 +898,49 @@ export default function TwelveTribes_MissionControl() {
   const [serverUsers, setServerUsers] = useState([]);
   const [liveTrades, setLiveTrades] = useState([]);
   const [liveAgents, setLiveAgents] = useState([]);
+  const [hasInitialToken, setHasInitialToken] = useState(!!getToken());
 
   useEffect(() => {
     const timer = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
+  // Wait for auth token to be available before fetching (prevents 401 race condition)
+  // Check for token presence every 100ms up to 5 seconds, then proceed anyway
+  useEffect(() => {
+    if (hasInitialToken) return; // Already have token
+
+    let checks = 0;
+    const maxChecks = 50; // 5 seconds at 100ms intervals
+    const tokenCheckInterval = setInterval(() => {
+      checks++;
+      const token = getToken();
+      if (token) {
+        setHasInitialToken(true);
+        clearInterval(tokenCheckInterval);
+      } else if (checks >= maxChecks) {
+        // Give up waiting — proceed without token
+        setHasInitialToken(true);
+        clearInterval(tokenCheckInterval);
+      }
+    }, 100);
+
+    return () => clearInterval(tokenCheckInterval);
+  }, [hasInitialToken]);
+
   // Fetch real data from server — 15s refresh for live feel
   // Critical data (group, users) fetched independently from optional data (trades, agents)
   // to prevent slow/hanging endpoints from blocking the entire dashboard
   useEffect(() => {
+    if (!hasInitialToken) return; // FIX: Wait for auth token before fetching (prevents 401 race)
+
     const token = getToken();
     const headers = { "Content-Type": "application/json" };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    const fetchWithTimeout = (url, opts, ms = 8000) => {
+    // FIX: Increased timeout from 8s to 30s to accommodate cold starts
+    // Render spins down free tier servers; restart can take 30+ seconds
+    const fetchWithTimeout = (url, opts, ms = 30000) => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), ms);
       return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
@@ -927,7 +955,12 @@ export default function TwelveTribes_MissionControl() {
         ]);
         if (groupRes.ok) { const gd = await groupRes.json(); setGroupData(gd); }
         if (usersRes.ok) { const ud = await usersRes.json(); setServerUsers(Array.isArray(ud) ? ud : ud.users || []); }
-      } catch (err) { console.error("MissionControl critical fetch error:", err); }
+      } catch (err) {
+        // Distinguish AbortError from real errors — AbortError is expected on timeout
+        if (err.name !== 'AbortError') {
+          console.error("MissionControl critical fetch error:", err);
+        }
+      }
 
       // Optional: trades + agents (may be slow, must not block core data)
       try {
@@ -943,7 +976,7 @@ export default function TwelveTribes_MissionControl() {
     fetchData();
     const poller = setInterval(fetchData, 15000);
     return () => clearInterval(poller);
-  }, []);
+  }, [hasInitialToken]);
 
   const totalAUM = groupData.totalEquity || 0;
   const growthData = useMemo(() => generateGrowthData(totalAUM > 0 ? totalAUM : 60000, 252, 0.012), [totalAUM]);
