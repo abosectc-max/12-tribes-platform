@@ -1262,7 +1262,7 @@ function SignalTracker({ investor, isMobile }) {
 
   const API_BASE = (() => {
     if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
-    if (typeof window !== 'undefined' && window.location.hostname === 'localhost') return 'http://localhost:3001/api';
+    if (typeof window !== 'undefined' && window.location.hostname === 'localhost') return 'http://localhost:4000/api';
     return 'https://one2-tribes-api.onrender.com/api';
   })();
   const token = typeof localStorage !== 'undefined' ? localStorage.getItem('12tribes_auth_token') : '';
@@ -3400,7 +3400,7 @@ function PortfolioDashboard({ investor, onLogout }) {
     if (investor?.role !== 'admin') return;
     const API_BASE = (() => {
       if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
-      if (window.location.hostname === 'localhost') return 'http://localhost:3001/api';
+      if (window.location.hostname === 'localhost') return 'http://localhost:4000/api';
       return 'https://one2-tribes-api.onrender.com/api';
     })();
     const token = localStorage.getItem('12tribes_auth_token');
@@ -3456,7 +3456,7 @@ function PortfolioDashboard({ investor, onLogout }) {
     setStatementsLoading(true);
     const API_BASE = (() => {
       if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
-      if (window.location.hostname === 'localhost') return 'http://localhost:3001/api';
+      if (window.location.hostname === 'localhost') return 'http://localhost:4000/api';
       return 'https://one2-tribes-api.onrender.com/api';
     })();
     const token = localStorage.getItem('12tribes_auth_token');

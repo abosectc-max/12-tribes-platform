@@ -110,6 +110,8 @@ const DB_TABLES = [
   'system_config',
   // Agent management — preferences and post-mortem analysis
   'agent_preferences', 'post_mortems',
+  // Symbol performance tracking — cooldowns after losses
+  'symbol_performance',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -815,7 +817,7 @@ function flushSignalBuffer() {
       if (userSignals.length > 10000) {
         const sorted = userSignals.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
         const toDelete = sorted.slice(0, userSignals.length - 10000);
-        for (const s of toDelete) db.delete('signals', r => r.id === s.id);
+        for (const s of toDelete) db.remove('signals', r => r.id === s.id);
       }
     } catch (e) { /* non-critical */ }
   }
@@ -2204,7 +2206,7 @@ function qaProcessTradeFlags() {
   const oneDayAgo = new Date(now - 86400000).toISOString();
   const staleFlags = db.findMany('trade_flags', f => f.status !== 'PENDING' && f.created_at < oneDayAgo);
   for (const sf of staleFlags) {
-    db.delete('trade_flags', sf.id);
+    db.remove('trade_flags', r => r.id === sf.id);
   }
 
   return actions;
@@ -2491,8 +2493,8 @@ function runPostMortem(userId, position, closePrice, pnl, holdTimeSeconds) {
     }
 
     // Regime at exit
-    exitContext.regime = macroIntel?.regime || 'unknown';
-    exitContext.vix = macroIntel?.vix || 'unknown';
+    exitContext.regime = macroIntel?.vix?.regime || 'unknown';
+    exitContext.vix = macroIntel?.vix?.value || 'unknown';
     exitContext.fearGreed = macroIntel?.fearGreed?.value || 50;
 
     // ── Phase 2: Pattern detection ──
@@ -3146,10 +3148,11 @@ api.post('/api/auth/passkey/remove', auth, async (req, res) => {
     // Remove specific credential
     const cred = db.findOne('passkey_credentials', c => c.credential_id === credentialId && c.user_id === req.userId);
     if (!cred) return json(res, 404, { error: 'Credential not found' });
-    db.delete('passkey_credentials', c => c.id === cred.id);
+    db.remove('passkey_credentials', c => c.id === cred.id);
   } else {
-    // Remove all passkeys for user
-    db.delete('passkey_credentials', c => c.user_id === req.userId);
+    // Remove all passkeys for user — remove() only removes first match, loop to get all
+    let removed;
+    do { removed = db.remove('passkey_credentials', c => c.user_id === req.userId); } while (removed);
   }
 
   // Check if any passkeys remain
@@ -6778,8 +6781,8 @@ function computeSignal(symbol, agentStyle, agentName) {
       rsiVal: rsi(hist, 14), mom: momentum(hist, 20), mom10: momentum(hist, 10),
       vol: volatility(hist, 20), bb: bollingerBands(hist, 20, 2),
       adxVal: adx(hist, 14), stoch: stochastic(hist, 14, 3),
-      obvVal: (() => { const o = obv(hist); return o.length > 0 ? o[o.length - 1] : 0; })(),
-      obvPrev: (() => { const o = obv(hist); return o.length > 5 ? o[o.length - 6] : 0; })(),
+      obvVal: obv(hist),
+      obvPrev: obv(hist.slice(0, -5)),
       rocVal: roc(hist, 12), atrVal: atr(hist, 14), vwapVal: vwap(hist),
       mtf: multiTimeframeSignal(hist),
     };
@@ -6977,9 +6980,10 @@ function computeSignal(symbol, agentStyle, agentName) {
       score += 0.2; confluenceBullish++; indicators_used.push('bb_squeeze'); reasons.push('BB squeeze breakout — expansion trade');
     }
     // VWAP confluence for index/ETF entries
-    if (typeof vwapDev !== 'undefined') {
-      if (vwapDev > 0 && vwapDev < 0.02 && mom > 0) { score += 0.15; confluenceBullish++; reasons.push('Above VWAP with momentum — institutional flow'); }
-      if (vwapDev < 0 && vwapDev > -0.02 && mom < 0) { score -= 0.15; confluenceBearish++; reasons.push('Below VWAP with neg momentum — distribution'); }
+    if (vwapVal && price) {
+      const localVwapDev = (price - vwapVal) / vwapVal;
+      if (localVwapDev > 0 && localVwapDev < 0.02 && mom > 0) { score += 0.15; confluenceBullish++; reasons.push('Above VWAP with momentum — institutional flow'); }
+      if (localVwapDev < 0 && localVwapDev > -0.02 && mom < 0) { score -= 0.15; confluenceBearish++; reasons.push('Below VWAP with neg momentum — distribution'); }
     }
     // Index futures (ES=F, NQ=F, YM=F) — follow regime with larger conviction
     const indexFutures = ['ES=F', 'NQ=F', 'YM=F'];
@@ -8852,7 +8856,7 @@ function qaCheckDataIntegrity() {
         return tb - ta;
       });
       const toRemove = sorted.slice(limits.maxRows);
-      for (const row of toRemove) db.delete(table, row.id);
+      for (const row of toRemove) db.remove(table, r => r.id === row.id);
       if (toRemove.length > 0) {
         fixes.push({ issue: 'TABLE_PRUNED', action: `${table}: removed ${toRemove.length} oldest rows (cap: ${limits.maxRows})` });
         console.log(`[QA] 🧹 Pruned ${toRemove.length} rows from ${table} (exceeded ${limits.maxRows} row limit)`);
@@ -8864,7 +8868,7 @@ function qaCheckDataIntegrity() {
       const ts = r.created_at || r.timestamp || r.date;
       return ts && ts < cutoff;
     });
-    for (const row of stale) db.delete(table, row.id);
+    for (const row of stale) db.remove(table, r => r.id === row.id);
     if (stale.length > 0) {
       fixes.push({ issue: 'TABLE_AGE_PRUNED', action: `${table}: removed ${stale.length} records older than ${limits.maxAge / 86400000} days` });
       console.log(`[QA] 🧹 Pruned ${stale.length} stale rows from ${table} (older than ${limits.maxAge / 86400000} days)`);

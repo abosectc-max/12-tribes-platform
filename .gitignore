@@ -3,3 +3,7 @@ dist
 server/data
 .env.local
 .DS_Store
+# Debug/audit scripts
+audit_*.js
+fix_*.js
+fix_*.sh

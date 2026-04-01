@@ -2,7 +2,7 @@
   "name": "12 Tribes — AI Investment Platform",
   "short_name": "12 Tribes",
   "description": "AI-Powered Multi-Asset Investment Platform for the 12-Investor Collective",
-  "start_url": "/investor-portal",
+  "start_url": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#0a0a1a",
