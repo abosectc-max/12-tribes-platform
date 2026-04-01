@@ -350,6 +350,10 @@ export class PostgresAdapter {
     } catch (err) {
       // Log but don't throw (fire-and-forget pattern)
       console.error(`[PG-ADAPTER] _persistInsert error for ${table}:`, err.message);
+      if (table === 'post_mortems' || table === 'signals') {
+        console.error(`[PG-ADAPTER] DEBUG ${table} cols:`, cols.join(','));
+        console.error(`[PG-ADAPTER] DEBUG ${table} vals:`, values.map((v, i) => `${cols[i]}=${typeof v}:${v === null ? 'NULL' : String(v).substring(0, 30)}`).join(' | '));
+      }
     }
   }
 
