@@ -350,10 +350,6 @@ export class PostgresAdapter {
     } catch (err) {
       // Log but don't throw (fire-and-forget pattern)
       console.error(`[PG-ADAPTER] _persistInsert error for ${table}:`, err.message);
-      if (table === 'post_mortems' || table === 'signals') {
-        console.error(`[PG-ADAPTER] DEBUG ${table} cols:`, cols.join(','));
-        console.error(`[PG-ADAPTER] DEBUG ${table} vals:`, values.map((v, i) => `${cols[i]}=${typeof v}:${v === null ? 'NULL' : String(v).substring(0, 30)}`).join(' | '));
-      }
     }
   }
 
@@ -445,6 +441,13 @@ export class PostgresAdapter {
     // Enum case normalization (e.g., 'SHORT_TERM' → 'short_term')
     const normalizer = PostgresAdapter.ENUM_NORMALIZERS[column];
     if (normalizer) return normalizer(value);
+
+    // Object passed to a non-JSONB column — extract .value if it has one, otherwise NULL
+    // Handles cases like exit_vix receiving {value: 17.01, regime: "complacent", ...}
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      if ('value' in value) return value.value;
+      return null;
+    }
 
     return value;
   }
