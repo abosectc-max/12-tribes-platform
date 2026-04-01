@@ -40,11 +40,11 @@ const JSONB_COLUMNS = {
   fund_settings: ['data'],
   risk_events: ['details'],
   signals: ['indicators', 'details'],
-  qa_reports: ['report_data'],
-  trade_flags: ['details'],
+  qa_reports: ['report_data', 'issues', 'metrics', 'severity_counts', 'systemState', 'checks', 'agentStats', 'perUserDebug'],
+  trade_flags: ['details', 'order', 'context'],
   system_config: ['value'],
   agent_preferences: ['preferences'],
-  post_mortems: ['patterns'],
+  post_mortems: ['patterns', 'patterns_detected'],
   tax_allocations: ['allocation'], // May vary by actual schema
 };
 
@@ -59,6 +59,7 @@ export class PostgresAdapter {
     };
     this._initialized = false;
     this._pendingWrites = new Map(); // Track pending async writes for debugging
+    this._pgColumns = {};           // Cache of valid PG column names per table
   }
 
   /**
@@ -107,6 +108,19 @@ export class PostgresAdapter {
           } else {
             throw err;
           }
+        }
+      }
+
+      // Build column cache for schema-safe inserts/updates
+      for (const table of DB_TABLES) {
+        try {
+          const colResult = await this.pool.query(
+            `SELECT column_name FROM information_schema.columns WHERE table_name = $1 AND table_schema = 'public'`,
+            [table]
+          );
+          this._pgColumns[table] = new Set(colResult.rows.map(r => r.column_name));
+        } catch {
+          this._pgColumns[table] = new Set();
         }
       }
 
@@ -317,7 +331,14 @@ export class PostgresAdapter {
     if (!this.pool) return;
 
     try {
-      const cols = Object.keys(record);
+      // Filter to only columns that exist in PG schema
+      const validCols = this._pgColumns[table];
+      const cols = validCols && validCols.size > 0
+        ? Object.keys(record).filter(k => validCols.has(k))
+        : Object.keys(record);
+
+      if (cols.length === 0) return;
+
       const vals = cols.map((_, i) => `$${i + 1}`).join(',');
       const colNames = cols.join(',');
 
@@ -339,7 +360,14 @@ export class PostgresAdapter {
     if (!this.pool || !record.id) return;
 
     try {
-      const cols = Object.keys(record).filter(col => col !== 'id');
+      // Filter to only columns that exist in PG schema (excluding id which is in WHERE clause)
+      const validCols = this._pgColumns[table];
+      const cols = validCols && validCols.size > 0
+        ? Object.keys(record).filter(col => col !== 'id' && validCols.has(col))
+        : Object.keys(record).filter(col => col !== 'id');
+
+      if (cols.length === 0) return;
+
       const setClauses = cols.map((col, i) => `${col}=$${i + 1}`).join(',');
       const values = cols.map(col => this._serializeValue(table, col, record[col]));
       values.push(record.id); // WHERE id = $n
