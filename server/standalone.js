@@ -8897,6 +8897,366 @@ function qaCheckPerUserDebug() {
   return { fixes, diagnostics: userDiagnostics };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//   ENHANCED QA CHECKS — Data Integrity Sentinel
+//   Catches: wallet drift, duplicate positions, data inflation, cross-table
+//   inconsistency, and position accounting errors.
+//   Added: April 2026 — Post-inflation incident hardening
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Boot baseline: snapshot of table counts at startup for drift detection ───
+const QA_BOOT_BASELINE = {
+  capturedAt: null,
+  positions: 0,
+  trades: 0,
+  taxLedger: 0,
+  taxLots: 0,
+  washSales: 0,
+};
+
+function qaCaptureBootBaseline() {
+  QA_BOOT_BASELINE.positions = db.count('positions');
+  QA_BOOT_BASELINE.trades = db.count('trades');
+  QA_BOOT_BASELINE.taxLedger = db.count('tax_ledger');
+  QA_BOOT_BASELINE.taxLots = db.count('tax_lots');
+  QA_BOOT_BASELINE.washSales = db.count('wash_sales');
+  QA_BOOT_BASELINE.capturedAt = new Date().toISOString();
+  console.log(`[QA SENTINEL] Boot baseline captured: positions=${QA_BOOT_BASELINE.positions} trades=${QA_BOOT_BASELINE.trades} tax_ledger=${QA_BOOT_BASELINE.taxLedger} tax_lots=${QA_BOOT_BASELINE.taxLots}`);
+}
+
+// ─── CHECK 8: Wallet-to-Trade Reconciliation ───
+// Validates that wallet.realized_pnl matches the sum of closed position PnLs,
+// wallet.trade_count matches actual closed positions, and balance is consistent.
+function qaCheckWalletReconciliation() {
+  const fixes = [];
+  const wallets = db.findMany('wallets');
+  const allPositions = db.tables.positions || [];
+
+  // Build per-user closed position stats in a single pass
+  const closedStats = {};
+  for (const p of allPositions) {
+    if (p.status !== 'CLOSED') continue;
+    const uid = p.user_id;
+    if (!closedStats[uid]) closedStats[uid] = { pnl: 0, count: 0, wins: 0, losses: 0 };
+    const pnl = p.realized_pnl || 0;
+    closedStats[uid].pnl += pnl;
+    closedStats[uid].count++;
+    if (pnl > 0) closedStats[uid].wins++;
+    else if (pnl < 0) closedStats[uid].losses++;
+  }
+
+  for (const wallet of wallets) {
+    const uid = wallet.user_id;
+    const stats = closedStats[uid] || { pnl: 0, count: 0, wins: 0, losses: 0 };
+    const reconPnl = roundTo(stats.pnl, 2);
+    const walletPnl = roundTo(wallet.realized_pnl || 0, 2);
+    const pnlDrift = Math.abs(reconPnl - walletPnl);
+
+    // Reconcile realized_pnl if drift exceeds $5
+    if (pnlDrift > 5) {
+      const oldPnl = walletPnl;
+      wallet.realized_pnl = reconPnl;
+      // Recompute balance: initial + realized_pnl
+      const initialBal = wallet.initial_balance || INITIAL_BALANCE;
+      wallet.balance = roundTo(initialBal + reconPnl, 2);
+      db._save('wallets');
+      fixes.push({
+        userId: uid,
+        issue: 'WALLET_PNL_DRIFT',
+        action: `Reconciled realized_pnl: $${oldPnl.toFixed(2)} → $${reconPnl.toFixed(2)} (drift: $${pnlDrift.toFixed(2)}). Balance recalculated to $${wallet.balance.toFixed(2)}`,
+        severity: pnlDrift > 1000 ? 'CRITICAL' : 'WARNING',
+      });
+      console.warn(`[QA SENTINEL] 🔧 Wallet PnL drift for ${uid.slice(0,8)}: $${oldPnl.toFixed(2)} → $${reconPnl.toFixed(2)} (Δ$${pnlDrift.toFixed(2)})`);
+    }
+
+    // Reconcile trade_count
+    const walletTrades = wallet.trade_count || 0;
+    const tradeDrift = Math.abs(stats.count - walletTrades);
+    if (tradeDrift > 5) {
+      const oldCount = walletTrades;
+      wallet.trade_count = stats.count;
+      wallet.win_count = stats.wins;
+      wallet.loss_count = stats.losses;
+      db._save('wallets');
+      fixes.push({
+        userId: uid,
+        issue: 'WALLET_TRADE_COUNT_DRIFT',
+        action: `Trade count reconciled: ${oldCount} → ${stats.count} (wins: ${stats.wins}, losses: ${stats.losses})`,
+        severity: tradeDrift > 50 ? 'CRITICAL' : 'WARNING',
+      });
+      console.warn(`[QA SENTINEL] 🔧 Trade count drift for ${uid.slice(0,8)}: ${oldCount} → ${stats.count}`);
+    }
+
+    // Cross-check: balance should be close to initial + realized_pnl
+    const expectedBalance = roundTo((wallet.initial_balance || INITIAL_BALANCE) + (wallet.realized_pnl || 0), 2);
+    const balanceDrift = Math.abs((wallet.balance || 0) - expectedBalance);
+    if (balanceDrift > 10) {
+      fixes.push({
+        userId: uid,
+        issue: 'WALLET_BALANCE_INCONSISTENT',
+        action: `Balance $${wallet.balance?.toFixed(2)} diverges from expected $${expectedBalance.toFixed(2)} (initial + realized_pnl). Drift: $${balanceDrift.toFixed(2)}`,
+        severity: balanceDrift > 5000 ? 'CRITICAL' : 'WARNING',
+      });
+      console.warn(`[QA SENTINEL] ⚠️  Balance inconsistency for ${uid.slice(0,8)}: actual=$${wallet.balance?.toFixed(2)} expected=$${expectedBalance.toFixed(2)}`);
+    }
+  }
+  return fixes;
+}
+
+// ─── CHECK 9: Duplicate Position Detection ───
+// Detects multiple OPEN positions for the same user+symbol+side.
+// The engine's symbol check at trade execution should prevent this,
+// but data corruption or race conditions can bypass it.
+function qaCheckDuplicatePositions() {
+  const fixes = [];
+  const openPositions = db.findMany('positions', p => p.status === 'OPEN');
+
+  // Build index: key = user_id|symbol|side → [positions]
+  const posIndex = {};
+  for (const p of openPositions) {
+    const key = `${p.user_id}|${p.symbol}|${p.side}`;
+    if (!posIndex[key]) posIndex[key] = [];
+    posIndex[key].push(p);
+  }
+
+  for (const [key, positions] of Object.entries(posIndex)) {
+    if (positions.length <= 1) continue;
+
+    // Duplicate detected — keep the oldest (first opened), close the rest
+    const sorted = positions.sort((a, b) =>
+      new Date(a.opened_at || a.created_at || 0).getTime() -
+      new Date(b.opened_at || b.created_at || 0).getTime()
+    );
+    const [keep, ...duplicates] = sorted;
+    const [userId, symbol, side] = key.split('|');
+
+    for (const dup of duplicates) {
+      dup.status = 'CLOSED';
+      dup.closed_at = new Date().toISOString();
+      dup.close_reason = 'QA_DUPLICATE_CLEANUP';
+      dup.realized_pnl = 0; // Zero out to avoid phantom PnL
+      db._save('positions');
+      fixes.push({
+        userId,
+        issue: 'DUPLICATE_POSITION',
+        action: `Closed duplicate ${side} ${symbol} position (id: ${dup.id?.slice(0,8)}). Kept original from ${keep.opened_at}. ${duplicates.length} duplicate(s) removed.`,
+        severity: 'CRITICAL',
+      });
+    }
+    if (duplicates.length > 0) {
+      console.warn(`[QA SENTINEL] 🔴 DUPLICATE: ${duplicates.length}x ${side} ${symbol} for user ${userId.slice(0,8)} — closed duplicates, kept original`);
+    }
+  }
+
+  // Also check for duplicate wallets per user
+  const wallets = db.findMany('wallets');
+  const walletIndex = {};
+  for (const w of wallets) {
+    if (!walletIndex[w.user_id]) walletIndex[w.user_id] = [];
+    walletIndex[w.user_id].push(w);
+  }
+  for (const [userId, userWallets] of Object.entries(walletIndex)) {
+    if (userWallets.length > 1) {
+      fixes.push({
+        userId,
+        issue: 'DUPLICATE_WALLET',
+        action: `User has ${userWallets.length} wallets — only 1 expected. Investigation required.`,
+        severity: 'CRITICAL',
+      });
+      console.warn(`[QA SENTINEL] 🔴 DUPLICATE WALLET: user ${userId.slice(0,8)} has ${userWallets.length} wallets`);
+    }
+  }
+
+  return fixes;
+}
+
+// ─── CHECK 10: Data Growth Rate Monitor ───
+// Tracks data growth since boot. If positions or trades are growing
+// faster than expected, it flags potential compounding or runaway engine.
+function qaCheckDataGrowthRate() {
+  const fixes = [];
+  if (!QA_BOOT_BASELINE.capturedAt) return fixes;
+
+  const now = Date.now();
+  const bootTime = new Date(QA_BOOT_BASELINE.capturedAt).getTime();
+  const uptimeMinutes = (now - bootTime) / 60000;
+  if (uptimeMinutes < 2) return fixes; // Skip if just booted
+
+  const currentPositions = db.count('positions');
+  const currentTrades = db.count('trades');
+
+  const posGrowth = currentPositions - QA_BOOT_BASELINE.positions;
+  const tradeGrowth = currentTrades - QA_BOOT_BASELINE.trades;
+
+  // Expected growth: ~1 position per user per 5 minutes max (conservative)
+  const activeUsers = db.findMany('fund_settings').filter(s => s.data?.autoTrading?.isAutoTrading).length;
+  const maxExpectedPosGrowth = Math.ceil(activeUsers * (uptimeMinutes / 5) * 2); // 2x safety margin
+  const maxExpectedTradeGrowth = Math.ceil(activeUsers * (uptimeMinutes / 3) * 2);
+
+  if (posGrowth > maxExpectedPosGrowth && posGrowth > 50) {
+    fixes.push({
+      issue: 'POSITION_GROWTH_ANOMALY',
+      action: `Positions grew by ${posGrowth} since boot (${uptimeMinutes.toFixed(0)}min ago). Expected max ~${maxExpectedPosGrowth}. Possible data compounding.`,
+      severity: 'CRITICAL',
+    });
+    console.warn(`[QA SENTINEL] 🔴 POSITION GROWTH ANOMALY: +${posGrowth} positions in ${uptimeMinutes.toFixed(0)}min (expected max ${maxExpectedPosGrowth})`);
+  }
+
+  if (tradeGrowth > maxExpectedTradeGrowth && tradeGrowth > 100) {
+    fixes.push({
+      issue: 'TRADE_GROWTH_ANOMALY',
+      action: `Trades grew by ${tradeGrowth} since boot (${uptimeMinutes.toFixed(0)}min ago). Expected max ~${maxExpectedTradeGrowth}. Possible runaway engine.`,
+      severity: 'CRITICAL',
+    });
+    console.warn(`[QA SENTINEL] 🔴 TRADE GROWTH ANOMALY: +${tradeGrowth} trades in ${uptimeMinutes.toFixed(0)}min (expected max ${maxExpectedTradeGrowth})`);
+  }
+
+  // Check per-user position count — no user should have >30 OPEN positions
+  const openByUser = {};
+  const openPositions = db.findMany('positions', p => p.status === 'OPEN');
+  for (const p of openPositions) {
+    openByUser[p.user_id] = (openByUser[p.user_id] || 0) + 1;
+  }
+  for (const [uid, count] of Object.entries(openByUser)) {
+    if (count > 30) {
+      fixes.push({
+        userId: uid,
+        issue: 'EXCESSIVE_OPEN_POSITIONS',
+        action: `User has ${count} OPEN positions — max expected is 30. Possible data compounding or runaway trading.`,
+        severity: 'CRITICAL',
+      });
+      console.warn(`[QA SENTINEL] 🔴 User ${uid.slice(0,8)} has ${count} OPEN positions — investigating`);
+    }
+  }
+
+  return fixes;
+}
+
+// ─── CHECK 11: Position Integrity Validator ───
+// Validates individual position data quality: entry prices, unrealized PnL
+// calculations, orphan detection, and accounting consistency.
+function qaCheckPositionIntegrity() {
+  const fixes = [];
+  const openPositions = db.findMany('positions', p => p.status === 'OPEN');
+  const userIds = new Set(db.findMany('users').map(u => u.id));
+  const walletIds = new Set(db.findMany('wallets').map(w => w.user_id));
+  let invalidPrices = 0;
+  let orphanPositions = 0;
+  let pnlErrors = 0;
+
+  for (const pos of openPositions) {
+    // Invalid entry price
+    if (!pos.entry_price || pos.entry_price <= 0) {
+      invalidPrices++;
+      if (invalidPrices <= 3) {
+        fixes.push({
+          userId: pos.user_id,
+          issue: 'INVALID_ENTRY_PRICE',
+          action: `Position ${pos.symbol} has invalid entry_price: ${pos.entry_price}`,
+          severity: 'WARNING',
+        });
+      }
+    }
+
+    // Orphan position (no user or wallet)
+    if (!userIds.has(pos.user_id) || !walletIds.has(pos.user_id)) {
+      orphanPositions++;
+      if (orphanPositions <= 3) {
+        fixes.push({
+          userId: pos.user_id,
+          issue: 'ORPHAN_POSITION',
+          action: `Position ${pos.symbol} belongs to non-existent user ${pos.user_id?.slice(0,8)}`,
+          severity: 'WARNING',
+        });
+      }
+    }
+
+    // Unrealized PnL sanity check
+    const currentPrice = marketPrices[pos.symbol];
+    if (currentPrice && pos.entry_price > 0) {
+      const expectedPnl = pos.side === 'LONG'
+        ? (currentPrice - pos.entry_price) * (pos.quantity || 1)
+        : (pos.entry_price - currentPrice) * (pos.quantity || 1);
+      const actualPnl = pos.unrealized_pnl || 0;
+      const pnlDrift = Math.abs(expectedPnl - actualPnl);
+      // Allow 5% tolerance due to price movement between checks
+      if (pnlDrift > Math.abs(expectedPnl * 0.5) && pnlDrift > 100) {
+        pnlErrors++;
+        if (pnlErrors <= 3) {
+          fixes.push({
+            userId: pos.user_id,
+            issue: 'UNREALIZED_PNL_ERROR',
+            action: `${pos.symbol} unrealized_pnl ($${actualPnl.toFixed(2)}) diverges from calculated ($${expectedPnl.toFixed(2)})`,
+            severity: 'WARNING',
+          });
+        }
+      }
+    }
+  }
+
+  if (invalidPrices > 3) fixes.push({ issue: 'INVALID_ENTRY_PRICE', action: `${invalidPrices} total positions with invalid entry prices`, severity: 'WARNING' });
+  if (orphanPositions > 3) fixes.push({ issue: 'ORPHAN_POSITION', action: `${orphanPositions} total orphan positions detected`, severity: 'WARNING' });
+  if (pnlErrors > 3) fixes.push({ issue: 'UNREALIZED_PNL_ERROR', action: `${pnlErrors} total positions with PnL calculation errors`, severity: 'WARNING' });
+
+  return fixes;
+}
+
+// ─── CHECK 12: Boot Baseline Validation ───
+// Runs once at boot to validate that PG data is within expected ranges.
+// Catches: inflation from prior restarts, data corruption, orphan data.
+function qaBootBaselineValidation() {
+  const fixes = [];
+  const userCount = db.count('users');
+  const walletCount = db.count('wallets');
+  const posCount = db.count('positions');
+  const tradeCount = db.count('trades');
+  const openCount = db.count('positions', p => p.status === 'OPEN');
+
+  // Wallet count should match user count
+  if (walletCount !== userCount) {
+    fixes.push({
+      issue: 'BOOT_WALLET_USER_MISMATCH',
+      action: `Wallet count (${walletCount}) != user count (${userCount}). Data integrity issue.`,
+      severity: 'CRITICAL',
+    });
+    console.warn(`[QA SENTINEL BOOT] 🔴 Wallet/user mismatch: ${walletCount} wallets vs ${userCount} users`);
+  }
+
+  // No user should have >30 OPEN positions at boot (indicates prior compounding)
+  const openByUser = {};
+  const openPositions = db.findMany('positions', p => p.status === 'OPEN');
+  for (const p of openPositions) {
+    openByUser[p.user_id] = (openByUser[p.user_id] || 0) + 1;
+  }
+  for (const [uid, count] of Object.entries(openByUser)) {
+    if (count > 30) {
+      fixes.push({
+        userId: uid,
+        issue: 'BOOT_EXCESSIVE_POSITIONS',
+        action: `User ${uid.slice(0,8)} loaded with ${count} OPEN positions — likely compounding from prior restarts. Max expected: ~15-20.`,
+        severity: 'CRITICAL',
+      });
+      console.warn(`[QA SENTINEL BOOT] 🔴 User ${uid.slice(0,8)} has ${count} OPEN positions at boot — compounding suspected`);
+    }
+  }
+
+  // Total position-to-user ratio sanity check
+  const posPerUser = userCount > 0 ? posCount / userCount : 0;
+  if (posPerUser > 3000) {
+    fixes.push({
+      issue: 'BOOT_DATA_INFLATION',
+      action: `Positions-per-user ratio is ${posPerUser.toFixed(0)} — expected <2000. Total: ${posCount} positions across ${userCount} users. Data inflation suspected.`,
+      severity: 'CRITICAL',
+    });
+    console.warn(`[QA SENTINEL BOOT] 🔴 Data inflation detected: ${posPerUser.toFixed(0)} positions per user (total: ${posCount})`);
+  }
+
+  // Log boot summary
+  console.log(`[QA SENTINEL BOOT] Baseline: users=${userCount} wallets=${walletCount} positions=${posCount} (${openCount} open) trades=${tradeCount}`);
+
+  return fixes;
+}
+
 // ═══ MAIN QA AGENT: Full system debug on EVERY cycle ═══
 function runQAAgent(isFullAudit = false) {
   qaState.checksRun++;
@@ -8942,6 +9302,26 @@ function runQAAgent(isFullAudit = false) {
   });
   allFixes.push(...agentFixes);
 
+  // ─── CHECK 8: Wallet-to-Trade Reconciliation (SENTINEL) ───
+  const reconFixes = qaCheckWalletReconciliation();
+  checks.push({ name: 'wallet_reconciliation', fixes: reconFixes.length, status: reconFixes.length === 0 ? 'PASS' : 'FIXED' });
+  allFixes.push(...reconFixes);
+
+  // ─── CHECK 9: Duplicate Position Detection (SENTINEL) ───
+  const dupeFixes = qaCheckDuplicatePositions();
+  checks.push({ name: 'duplicate_detection', fixes: dupeFixes.length, status: dupeFixes.length === 0 ? 'PASS' : 'CRITICAL' });
+  allFixes.push(...dupeFixes);
+
+  // ─── CHECK 10: Data Growth Rate Monitor (SENTINEL) ───
+  const growthFixes = qaCheckDataGrowthRate();
+  checks.push({ name: 'data_growth_rate', fixes: growthFixes.length, status: growthFixes.length === 0 ? 'PASS' : 'WARNING' });
+  allFixes.push(...growthFixes);
+
+  // ─── CHECK 11: Position Integrity (SENTINEL) ───
+  const posIntFixes = qaCheckPositionIntegrity();
+  checks.push({ name: 'position_integrity', fixes: posIntFixes.length, status: posIntFixes.length === 0 ? 'PASS' : 'WARNING' });
+  allFixes.push(...posIntFixes);
+
   // ─── CHECK 7: Trade Flag Review — QA investigates flagged trades ───
   const flagActions = qaProcessTradeFlags();
   const flagApproved = flagActions.filter(a => a.decision === 'APPROVE' || a.decision === 'OVERRIDE').length;
@@ -8980,8 +9360,14 @@ function runQAAgent(isFullAudit = false) {
   const totalOpen = db.count('positions', p => p.status === 'OPEN');
 
   // Determine severity: CRITICAL (system down), WARNING (degraded), INFO (routine)
-  const hasCritical = allFixes.some(f => ['TRADE_STALL', 'ALL_USERS_DAILY_CAPPED', 'ZERO_PRICES'].includes(f.issue));
-  const hasWarning = allFixes.some(f => ['STUCK_KILL_SWITCH', 'MISSING_WALLET', 'WEAK_SIGNALS', 'MISSING_HISTORY'].includes(f.issue));
+  const CRITICAL_ISSUES = ['TRADE_STALL', 'ALL_USERS_DAILY_CAPPED', 'ZERO_PRICES',
+    'DUPLICATE_POSITION', 'DUPLICATE_WALLET', 'POSITION_GROWTH_ANOMALY', 'TRADE_GROWTH_ANOMALY',
+    'EXCESSIVE_OPEN_POSITIONS', 'BOOT_DATA_INFLATION', 'BOOT_EXCESSIVE_POSITIONS', 'BOOT_WALLET_USER_MISMATCH'];
+  const WARNING_ISSUES = ['STUCK_KILL_SWITCH', 'MISSING_WALLET', 'WEAK_SIGNALS', 'MISSING_HISTORY',
+    'WALLET_PNL_DRIFT', 'WALLET_TRADE_COUNT_DRIFT', 'WALLET_BALANCE_INCONSISTENT',
+    'INVALID_ENTRY_PRICE', 'ORPHAN_POSITION', 'UNREALIZED_PNL_ERROR'];
+  const hasCritical = allFixes.some(f => CRITICAL_ISSUES.includes(f.issue) || f.severity === 'CRITICAL');
+  const hasWarning = allFixes.some(f => WARNING_ISSUES.includes(f.issue) || f.severity === 'WARNING');
   const severity = hasCritical ? 'CRITICAL' : hasWarning ? 'WARNING' : allFixes.length > 0 ? 'INFO' : 'HEALTHY';
 
   const report = {
@@ -9053,6 +9439,25 @@ const qaInterval = setInterval(() => {
 // ─── BOOT SELF-TEST: Comprehensive system validation at 15s ───
 setTimeout(() => {
   console.log(`[QA BOOT] Running comprehensive boot validation...`);
+
+  // 0. Capture boot baseline and run SENTINEL validation
+  qaCaptureBootBaseline();
+  const bootFixes = qaBootBaselineValidation();
+  if (bootFixes.length > 0) {
+    console.warn(`[QA SENTINEL BOOT] 🔴 ${bootFixes.length} baseline issues detected:`);
+    bootFixes.forEach(f => console.warn(`  → [${f.severity}] ${f.issue}: ${f.action}`));
+    // Persist boot findings as a dedicated QA report
+    db.insert('qa_reports', {
+      reportId: `QA-BOOT-SENTINEL-${Date.now().toString(36).toUpperCase()}`,
+      type: 'BOOT_SENTINEL',
+      severity: bootFixes.some(f => f.severity === 'CRITICAL') ? 'CRITICAL' : 'WARNING',
+      timestamp: new Date().toISOString(),
+      checks: [{ name: 'boot_baseline_validation', fixes: bootFixes.length, status: 'ISSUES_FOUND' }],
+      issues: bootFixes,
+    });
+  } else {
+    console.log(`[QA SENTINEL BOOT] ✅ Boot baseline validation passed — all counts within expected ranges`);
+  }
 
   // 1. Run full audit immediately
   const auditResult = runQAAgent(true);
@@ -9262,6 +9667,54 @@ api.post('/api/qa/run', auth, (req, res) => {
     checksPerformed: result.checks.length,
     issuesFound: result.fixes.length,
     report: result.report,
+  });
+});
+
+// ─── QA SENTINEL STATUS API ───
+api.get('/api/qa/sentinel', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
+
+  const currentPositions = db.count('positions');
+  const currentTrades = db.count('trades');
+  const openCount = db.count('positions', p => p.status === 'OPEN');
+
+  // Run all sentinel checks
+  const reconFixes = qaCheckWalletReconciliation();
+  const dupeFixes = qaCheckDuplicatePositions();
+  const growthFixes = qaCheckDataGrowthRate();
+  const posIntFixes = qaCheckPositionIntegrity();
+  const allFixes = [...reconFixes, ...dupeFixes, ...growthFixes, ...posIntFixes];
+
+  // Per-user open position counts
+  const openByUser = {};
+  const openPositions = db.findMany('positions', p => p.status === 'OPEN');
+  for (const p of openPositions) {
+    openByUser[p.user_id] = (openByUser[p.user_id] || 0) + 1;
+  }
+
+  // Wallet reconciliation snapshot
+  const walletSnapshot = db.findMany('wallets').map(w => ({
+    userId: w.user_id?.slice(0, 8),
+    balance: w.balance,
+    equity: w.equity,
+    realizedPnl: w.realized_pnl,
+    tradeCount: w.trade_count,
+    openPositions: openByUser[w.user_id] || 0,
+  }));
+
+  json(res, 200, {
+    status: allFixes.length === 0 ? 'HEALTHY' : allFixes.some(f => f.severity === 'CRITICAL') ? 'CRITICAL' : 'WARNING',
+    timestamp: new Date().toISOString(),
+    bootBaseline: QA_BOOT_BASELINE,
+    currentCounts: { positions: currentPositions, openPositions: openCount, trades: currentTrades },
+    growth: {
+      positions: currentPositions - QA_BOOT_BASELINE.positions,
+      trades: currentTrades - QA_BOOT_BASELINE.trades,
+    },
+    wallets: walletSnapshot,
+    issues: allFixes,
+    issueCount: allFixes.length,
   });
 });
 
