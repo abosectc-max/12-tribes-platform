@@ -124,6 +124,8 @@ class JsonDB {
     if (!existsSync(this.backupDir)) mkdirSync(this.backupDir, { recursive: true });
     this.tables = {};
     this._dirty = new Set(); // Track tables that have been modified since last backup
+    this._pendingSaves = new Set(); // Tables needing flush to disk
+    this._saveFlushInterval = null; // Deferred save timer
 
     // Load all tables with corruption recovery
     for (const table of DB_TABLES) {
@@ -148,6 +150,9 @@ class JsonDB {
 
     // Start auto-backup rotation
     this._backupInterval = setInterval(() => this._rotateBackup(), BACKUP_INTERVAL_MS);
+
+    // MEMORY FIX: Deferred save — flush pending writes every 5 seconds instead of on every insert
+    this._saveFlushInterval = setInterval(() => this._flushPendingSaves(), 5000);
   }
 
   _filePath(table) { return join(this.dir, `${table}.json`); }
@@ -242,9 +247,9 @@ class JsonDB {
       // Step 1: Write to temp file
       writeFileSync(tmp, json);
 
-      // Step 2: Verify temp file is valid JSON
-      const verify = JSON.parse(readFileSync(tmp, 'utf8'));
-      if (!Array.isArray(verify)) throw new Error('Temp file validation failed');
+      // Step 2: Verify temp file is valid (check size, not full re-parse — saves ~4MB allocation for large tables)
+      const tmpStat = statSync(tmp);
+      if (tmpStat.size < 2) throw new Error('Temp file validation failed — empty');
 
       // Step 3: Backup current file before overwriting
       if (existsSync(fp)) {
@@ -292,6 +297,55 @@ class JsonDB {
     this._dirty.clear();
   }
 
+  // ─── DEFERRED SAVE: mark table for next flush cycle (every 5s) ───
+  _deferSave(table) {
+    this._pendingSaves.add(table);
+    this._dirty.add(table);
+  }
+
+  // ─── FLUSH PENDING: write all deferred tables to disk ───
+  _flushPendingSaves() {
+    if (this._pendingSaves.size === 0) return;
+    const tables = [...this._pendingSaves];
+    this._pendingSaves.clear();
+    for (const table of tables) {
+      try { this._save(table); } catch (err) {
+        console.error(`[DB] Deferred flush error for "${table}": ${err.message}`);
+      }
+    }
+  }
+
+  // ─── TABLE PRUNING: keep operational tables bounded ───
+  // Called periodically to prevent unbounded growth
+  pruneOperationalTables() {
+    const limits = {
+      post_mortems: 300,
+      signals: 500,
+      risk_events: 300,
+      auto_trade_log: 500,
+      snapshots: 500,
+      trade_flags: 200,
+      qa_reports: 50,
+      login_log: 200,
+      order_queue: 100,
+    };
+    let totalPruned = 0;
+    for (const [table, maxRows] of Object.entries(limits)) {
+      if (!this.tables[table]) continue;
+      const excess = this.tables[table].length - maxRows;
+      if (excess > 0) {
+        // Remove oldest (front of array)
+        this.tables[table].splice(0, excess);
+        this._deferSave(table);
+        totalPruned += excess;
+      }
+    }
+    if (totalPruned > 0) {
+      console.log(`[DB-PRUNE] Trimmed ${totalPruned} stale records across operational tables`);
+    }
+    return totalPruned;
+  }
+
   // ─── FLUSH ALL: called during graceful shutdown ───
   flushAll() {
     console.log('[DB] Flushing all tables to disk...');
@@ -311,15 +365,28 @@ class JsonDB {
   // ─── STOP: cleanup intervals ───
   stop() {
     if (this._backupInterval) clearInterval(this._backupInterval);
+    if (this._saveFlushInterval) clearInterval(this._saveFlushInterval);
+    this._flushPendingSaves(); // Final flush
   }
 
   // ─── CRUD operations (unchanged interface) ───
+
+  // High-volume tables that use deferred (batched) saves to reduce serialization pressure
+  static DEFERRED_SAVE_TABLES = new Set([
+    'signals', 'risk_events', 'auto_trade_log', 'snapshots', 'post_mortems',
+    'trade_flags', 'order_queue', 'login_log', 'qa_reports',
+  ]);
 
   insert(table, record) {
     if (!record.id) record.id = randomUUID();
     record.created_at = new Date().toISOString();
     this.tables[table].push(record);
-    this._save(table);
+    // MEMORY FIX: High-volume tables defer serialization to batch flush (every 5s)
+    if (JsonDB.DEFERRED_SAVE_TABLES.has(table)) {
+      this._deferSave(table);
+    } else {
+      this._save(table);
+    }
     return record;
   }
 
@@ -354,7 +421,11 @@ class JsonDB {
 
   count(table, predicate) {
     if (!this.tables[table]) return 0;
-    return predicate ? this.tables[table].filter(predicate).length : this.tables[table].length;
+    if (!predicate) return this.tables[table].length;
+    // MEMORY FIX: iterate-and-count instead of allocating a filtered array
+    let c = 0;
+    for (const r of this.tables[table]) if (predicate(r)) c++;
+    return c;
   }
 
   upsert(table, predicate, record) {
@@ -2605,6 +2676,12 @@ const api = new Router();
 
 // ─── HEALTH ───
 api.get('/api/health', (req, res) => {
+  // MEMORY FIX: Surface memory metrics for monitoring
+  const mem = process.memoryUsage();
+  const tableSizes = {};
+  for (const t of DB_TABLES) {
+    if (db.tables[t] && db.tables[t].length > 0) tableSizes[t] = db.tables[t].length;
+  }
   json(res, 200, {
     status: 'operational',
     version: '1.0.0-standalone',
@@ -2614,6 +2691,13 @@ api.get('/api/health', (req, res) => {
     users: db.count('users'),
     uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
+    memory: {
+      rss_mb: Math.round(mem.rss / 1048576),
+      heap_used_mb: Math.round(mem.heapUsed / 1048576),
+      heap_total_mb: Math.round(mem.heapTotal / 1048576),
+      external_mb: Math.round(mem.external / 1048576),
+    },
+    tableSizes,
     cloudSync: {
       enabled: CLOUD_SYNC_ENABLED,
       backend: CLOUD_BACKEND,
@@ -7118,69 +7202,84 @@ function runAutoTradeTick() {
 
   // ═══ STABILIZATION: Wallet reconciliation — every ~15 minutes (30 ticks at 30s) ═══
   // Re-derives realized_pnl, win_count, loss_count from positions table truth.
-  // Fixes counter drift where closePosition() increments weren't always persisted.
+  // MEMORY FIX: Single-pass index build instead of N findMany scans (was 5 wallets × 8K positions = 40K filter ops)
   if (autoTradeTickCount % 30 === 0) {
     try {
-      const wallets = db.findMany('wallets');
-      for (const wallet of wallets) {
-        const closedPositions = db.findMany('positions', p => p.user_id === wallet.user_id && p.status === 'CLOSED');
-        if (closedPositions.length === 0) continue;
-
-        let reconRealizedPnl = 0;
-        let reconWins = 0;
-        let reconLosses = 0;
-        for (const p of closedPositions) {
+      // Phase 1: Build per-user position index in ONE pass (O(n) instead of O(n*w))
+      const closedByUser = {};   // userId → { pnl, wins, losses }
+      const openByUser = {};     // userId → [{ entry_price, quantity, side, unrealized_pnl }]
+      const allPositions = db.tables.positions || [];
+      for (let i = 0; i < allPositions.length; i++) {
+        const p = allPositions[i];
+        const uid = p.user_id;
+        if (p.status === 'CLOSED') {
+          if (!closedByUser[uid]) closedByUser[uid] = { pnl: 0, wins: 0, losses: 0 };
           const pnl = p.realized_pnl || 0;
-          reconRealizedPnl += pnl;
-          if (pnl > 0) reconWins++;
-          else if (pnl < 0) reconLosses++;
+          closedByUser[uid].pnl += pnl;
+          if (pnl > 0) closedByUser[uid].wins++;
+          else if (pnl < 0) closedByUser[uid].losses++;
+        } else if (p.status === 'OPEN') {
+          if (!openByUser[uid]) openByUser[uid] = [];
+          openByUser[uid].push(p);
         }
-        reconRealizedPnl = roundTo(reconRealizedPnl, 2);
+      }
+
+      // Phase 2: Reconcile each wallet using pre-built index (zero additional scans)
+      const wallets = db.tables.wallets || [];
+      let anyFixed = false;
+      for (const wallet of wallets) {
+        const userId = wallet.user_id;
+        const closed = closedByUser[userId];
+        if (!closed) continue;
+
+        const reconRealizedPnl = roundTo(closed.pnl, 2);
+        const reconWins = closed.wins;
+        const reconLosses = closed.losses;
 
         const walletRpnl = roundTo(wallet.realized_pnl || 0, 2);
         const pnlDrift = Math.abs(reconRealizedPnl - walletRpnl);
         const winDrift = Math.abs(reconWins - (wallet.win_count || 0));
         const lossDrift = Math.abs(reconLosses - (wallet.loss_count || 0));
 
-        // Only reconcile if significant drift detected (> $1 PnL or > 5 win/loss count)
         if (pnlDrift > 1 || winDrift > 5 || lossDrift > 5) {
-          const userId = wallet.user_id;
           const user = db.findOne('users', u => u.id === userId);
           console.log(`[RECONCILE] ${user?.email || userId.slice(0,8)}: PnL drift $${pnlDrift.toFixed(2)} (wallet=$${walletRpnl} → positions=$${reconRealizedPnl}) | W drift=${winDrift} L drift=${lossDrift}`);
 
-          // Correct wallet counters
           wallet.realized_pnl = reconRealizedPnl;
           wallet.win_count = reconWins;
           wallet.loss_count = reconLosses;
 
-          // Recalculate balance from first principles: initial + realized - cost_of_open_positions + margin_returned
-          const openPositions = db.findMany('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN');
-          const openCost = openPositions.reduce((sum, p) => {
+          // Use pre-indexed open positions (no additional scan)
+          const opens = openByUser[userId] || [];
+          let openCost = 0;
+          let totalUnrealized = 0;
+          for (const p of opens) {
             const cost = p.entry_price * p.quantity;
-            return sum + (p.side === 'LONG' ? cost : cost * 0.5);
-          }, 0);
+            openCost += (p.side === 'LONG' ? cost : cost * 0.5);
+            totalUnrealized += (p.unrealized_pnl || 0);
+          }
           const reconBalance = roundTo((wallet.initial_balance || INITIAL_BALANCE) + reconRealizedPnl - openCost, 2);
 
-          // Only apply balance fix if it improves accuracy (within 20% of current)
           if (Math.abs(reconBalance - wallet.balance) / wallet.balance < 0.20) {
             wallet.balance = reconBalance;
           }
 
-          // Update equity = balance + unrealized
-          const totalUnrealized = openPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0);
           wallet.unrealized_pnl = roundTo(totalUnrealized, 2);
           wallet.equity = roundTo(wallet.balance + totalUnrealized, 2);
 
-          // Update peak equity if current is higher
           if (wallet.equity > (wallet.peak_equity || 0)) {
             wallet.peak_equity = wallet.equity;
           }
 
-          db._save('wallets');
           invalidateWalletCache(userId);
+          anyFixed = true;
           console.log(`[RECONCILE] ${user?.email || userId.slice(0,8)}: CORRECTED → bal=$${wallet.balance.toFixed(2)} eq=$${wallet.equity.toFixed(2)} rpnl=$${wallet.realized_pnl.toFixed(2)} W=${wallet.win_count} L=${wallet.loss_count}`);
         }
       }
+      if (anyFixed) db._save('wallets');
+
+      // Phase 3: Prune operational tables to prevent unbounded memory growth
+      db.pruneOperationalTables();
     } catch (reconErr) {
       console.error('[RECONCILE] Non-blocking reconciliation error:', reconErr.message);
     }
@@ -7917,10 +8016,18 @@ const autoTradeInterval = setInterval(() => {
     perfMetrics.tickDurationMs.push(tickDuration);
     if (perfMetrics.tickDurationMs.length > 100) perfMetrics.tickDurationMs.shift();
     perfMetrics.avgTickMs = perfMetrics.tickDurationMs.reduce((a,b) => a+b, 0) / perfMetrics.tickDurationMs.length;
-    // Log every 30th tick
+    // Log every 30th tick with memory metrics
     if (autoTradeTickCount % 30 === 0) {
       const metrics = getPerfMetrics();
-      console.log(`[PERF] Tick #${autoTradeTickCount}: ${tickDuration}ms | avg=${metrics.avgTickMs}ms | indCache=${metrics.indicatorHitRate} | sigCache=${metrics.signalHitRate} | computed=${perfMetrics.signalsComputed} | skipped=${perfMetrics.signalsSkippedUnchanged}`);
+      const mem = process.memoryUsage();
+      const heapMB = Math.round(mem.heapUsed / 1048576);
+      const rssMB = Math.round(mem.rss / 1048576);
+      console.log(`[PERF] Tick #${autoTradeTickCount}: ${tickDuration}ms | avg=${metrics.avgTickMs}ms | heap=${heapMB}MB rss=${rssMB}MB | indCache=${metrics.indicatorHitRate} | sigCache=${metrics.signalHitRate} | computed=${perfMetrics.signalsComputed} | skipped=${perfMetrics.signalsSkippedUnchanged}`);
+      // Memory pressure warning
+      if (rssMB > 400) {
+        console.warn(`[MEMORY] ⚠️ RSS at ${rssMB}MB — approaching Render limit`);
+        if (typeof global.gc === 'function') global.gc(); // Suggest GC if --expose-gc is set
+      }
     }
     isAutoTradeTickRunning = false;
   }
