@@ -112,6 +112,8 @@ const DB_TABLES = [
   'agent_preferences', 'post_mortems',
   // Symbol performance tracking — cooldowns after losses
   'symbol_performance',
+  // Compliance audit log
+  'audit_log',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -146,7 +148,10 @@ class JsonDB {
       this._save('agent_stats');
     }
 
-    // Log startup data integrity
+    // BOOT PRUNE: Immediately trim oversized tables loaded from disk
+    this.pruneOperationalTables();
+
+    // Log startup data integrity (after prune)
     const counts = DB_TABLES.map(t => `${t}:${this.tables[t].length}`).join(', ');
     console.log(`[DB] Loaded from ${dataDir} — ${counts}`);
 
@@ -321,15 +326,27 @@ class JsonDB {
   // Called periodically to prevent unbounded growth
   pruneOperationalTables() {
     const limits = {
-      post_mortems: 300,
-      signals: 500,
-      risk_events: 300,
-      auto_trade_log: 500,
-      snapshots: 500,
-      trade_flags: 200,
-      qa_reports: 50,
-      login_log: 200,
-      order_queue: 100,
+      post_mortems: 200,
+      signals: 300,
+      risk_events: 200,
+      auto_trade_log: 300,
+      snapshots: 300,
+      trade_flags: 150,
+      qa_reports: 30,
+      login_log: 150,
+      order_queue: 50,
+      // Previously unbounded — now capped
+      feedback: 500,
+      access_requests: 200,
+      verification_codes: 100,
+      audit_log: 300,
+      // High-volume financial tables — aggressive caps for 512MB
+      trades: 2000,
+      tax_ledger: 1500,
+      tax_lots: 1000,
+      wash_sales: 1000,
+      positions: 1500,
+      symbol_performance: 300,
     };
     let totalPruned = 0;
     for (const [table, maxRows] of Object.entries(limits)) {
@@ -4514,10 +4531,14 @@ const CLOUD_SYNC_TABLES = [
 // Row limits per table to keep snapshot compact (newest rows kept)
 // Target: compressed payload must stay under 1MB (jsonblob.com free limit)
 const CLOUD_SYNC_ROW_LIMITS = {
-  trades: 500,
-  tax_ledger: 500,
-  tax_lots: 500,
-  agent_stats: 200,
+  trades: 300,
+  tax_ledger: 300,
+  tax_lots: 300,
+  wash_sales: 200,
+  positions: 500,
+  post_mortems: 100,
+  agent_stats: 100,
+  tax_allocations: 100,
 };
 
 let lastCloudSyncTime = null;
@@ -7275,6 +7296,11 @@ function computeSignal(symbol, agentStyle, agentName) {
 function runAutoTradeTick() {
   autoTradeTickCount++;
 
+  // ═══ MEMORY GUARD: Prune every 10 ticks (~100s) instead of only at reconciliation ═══
+  if (autoTradeTickCount % 10 === 0) {
+    db.pruneOperationalTables();
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   //   STRUCTURAL STALL PREVENTION SYSTEM
   //   Three-tier recovery: confidence, symbol performance, and cooldowns.
@@ -8167,11 +8193,36 @@ const autoTradeInterval = setInterval(() => {
       const heapMB = Math.round(mem.heapUsed / 1048576);
       const rssMB = Math.round(mem.rss / 1048576);
       console.log(`[PERF] Tick #${autoTradeTickCount}: ${tickDuration}ms | avg=${metrics.avgTickMs}ms | heap=${heapMB}MB rss=${rssMB}MB | indCache=${metrics.indicatorHitRate} | sigCache=${metrics.signalHitRate} | computed=${perfMetrics.signalsComputed} | skipped=${perfMetrics.signalsSkippedUnchanged}`);
-      // Memory pressure warning
-      if (rssMB > 400) {
-        console.warn(`[MEMORY] ⚠️ RSS at ${rssMB}MB — approaching Render limit`);
-        if (typeof global.gc === 'function') global.gc(); // Suggest GC if --expose-gc is set
+      // Memory pressure warning + emergency measures
+      if (rssMB > 350) {
+        console.warn(`[MEMORY] ⚠️ RSS at ${rssMB}MB — approaching Render 512MB limit`);
+        // Emergency: purge all caches
+        for (const key in indicatorCache) delete indicatorCache[key];
+        for (const key in signalCache) delete signalCache[key];
+        // Force prune tables
+        db.pruneOperationalTables();
+        if (typeof global.gc === 'function') global.gc();
+        console.warn(`[MEMORY] Emergency cache purge + table prune executed`);
       }
+
+      // Routine cache cleanup every 30 ticks (~5min) — evict stale entries
+      const cacheNow = Date.now();
+      const CACHE_TTL = 300000; // 5 minutes
+      let evicted = 0;
+      for (const key in indicatorCache) {
+        if (cacheNow - indicatorCache[key].ts > CACHE_TTL) { delete indicatorCache[key]; evicted++; }
+      }
+      for (const key in signalCache) {
+        if (cacheNow - signalCache[key].ts > CACHE_TTL) { delete signalCache[key]; evicted++; }
+      }
+      // Cap sentiment headlines per symbol
+      for (const sym in sentimentStore) {
+        if (sentimentStore[sym]?.headlines?.length > 20) {
+          sentimentStore[sym].headlines = sentimentStore[sym].headlines.slice(-20);
+          evicted++;
+        }
+      }
+      if (evicted > 0) console.log(`[CACHE-GC] Evicted ${evicted} stale cache entries`);
     }
     isAutoTradeTickRunning = false;
   }

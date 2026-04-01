@@ -5,7 +5,7 @@ services:
     region: oregon
     plan: starter
     buildCommand: npm install --production
-    startCommand: node server/standalone.js
+    startCommand: node --max-old-space-size=384 --expose-gc server/standalone.js
     disk:
       name: tribes-data
       mountPath: /data
