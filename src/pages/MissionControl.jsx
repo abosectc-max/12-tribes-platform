@@ -453,11 +453,19 @@ function LiveTradeFeed({ trades = [], isMobile = false }) {
 function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = false, isTablet = false }) {
   const memberCount = serverUsers.length;
   // Map recent trades per investor for activity sparkline
-  const tradesByInvestor = {};
+  // ═══ FIX: Use investorId (reliable) with fallback to investor name matching ═══
+  const tradesById = {};
+  const tradesByName = {};
   liveTrades.forEach(t => {
+    // Primary: match by user ID (reliable, added to API response)
+    if (t.investorId) {
+      if (!tradesById[t.investorId]) tradesById[t.investorId] = [];
+      tradesById[t.investorId].push(t);
+    }
+    // Fallback: match by display name
     const inv = t.investor || 'Unknown';
-    if (!tradesByInvestor[inv]) tradesByInvestor[inv] = [];
-    tradesByInvestor[inv].push(t);
+    if (!tradesByName[inv]) tradesByName[inv] = [];
+    tradesByName[inv].push(t);
   });
 
   return (
@@ -481,10 +489,11 @@ function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = fal
           const unrealized = user.unrealizedPnL || 0;
           const trades = user.tradeCount || 0;
           const openPos = user.openPositions || 0;
-          const userTrades = tradesByInvestor[name] || [];
+          const userTrades = tradesById[user.id] || tradesByName[name] || [];
           const recentPnL = userTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
-          const wins = userTrades.filter(t => (t.realized_pnl || 0) > 0).length;
-          const losses = userTrades.filter(t => (t.realized_pnl || 0) < 0).length;
+          // W/L: use recent trades if available, otherwise fall back to wallet totals from roster API
+          const wins = userTrades.length > 0 ? userTrades.filter(t => (t.realized_pnl || 0) > 0).length : (user.winCount || 0);
+          const losses = userTrades.length > 0 ? userTrades.filter(t => (t.realized_pnl || 0) < 0).length : (user.lossCount || 0);
 
           return (
             <div key={user.id} style={{

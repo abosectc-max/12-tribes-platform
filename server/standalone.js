@@ -5352,6 +5352,8 @@ api.get('/api/investors/roster', auth, (req, res) => {
       realizedPnL: wallet?.realized_pnl || 0,
       unrealizedPnL,
       tradeCount: wallet?.trade_count || 0,
+      winCount: wallet?.win_count || 0,
+      lossCount: wallet?.loss_count || 0,
       openPositions: openPositions.length,
       isTrading: fundSettings?.data?.autoTrading?.isAutoTrading || false,
       tradingModeActive: fundSettings?.data?.autoTrading?.tradingMode || 'balanced',
@@ -9328,6 +9330,11 @@ api.get('/api/admin/trades/recent', auth, (req, res) => {
   // Enrich with user info
   const trades = allTrades.map(t => {
     const u = db.findOne('users', usr => usr.id === t.user_id);
+    // ═══ FIX: Use both camelCase and snake_case name fields ═══
+    // Some users registered with first_name/last_name (snake), others with firstName/lastName (camel)
+    const fName = u ? (u.firstName || u.first_name || '') : '';
+    const lName = u ? (u.lastName || u.last_name || '') : '';
+    const displayName = `${fName} ${lName}`.trim() || (u ? u.email : 'Unknown');
     return {
       id: t.id,
       time: t.closed_at || t.opened_at,
@@ -9339,7 +9346,8 @@ api.get('/api/admin/trades/recent', auth, (req, res) => {
       realized_pnl: t.realized_pnl || 0,
       agent: t.agent,
       status: t.status || 'CLOSED',
-      investor: u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email : 'Unknown',
+      investor: displayName,
+      investorId: t.user_id, // ═══ ADD: reliable ID-based matching for frontend ═══
     };
   });
 
