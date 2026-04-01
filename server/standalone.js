@@ -2148,6 +2148,12 @@ function _executeTrade(userId, order, bypassFlags) {
   const price = order.price || marketPrices[order.symbol];
   if (!price) return { success: false, error: `No price data for ${order.symbol}` };
 
+  // ═══ STABILIZATION: Reject zero/negative quantity trades ═══
+  // Prevents phantom positions that consume trade budget without generating PnL
+  if (!order.quantity || order.quantity <= 0 || !isFinite(order.quantity)) {
+    return { success: false, error: `Invalid quantity: ${order.quantity}. Must be a positive number.`, code: 'INVALID_QUANTITY' };
+  }
+
   // Risk check — flags instead of rejecting when bypassFlags is false
   const risk = preTradeRiskCheck(userId, wallet, { ...order, price }, bypassFlags);
   if (!risk.approved) {
@@ -7108,6 +7114,76 @@ function runAutoTradeTick() {
     }
   }
 
+  // ═══ STABILIZATION: Wallet reconciliation — every ~15 minutes (30 ticks at 30s) ═══
+  // Re-derives realized_pnl, win_count, loss_count from positions table truth.
+  // Fixes counter drift where closePosition() increments weren't always persisted.
+  if (autoTradeTickCount % 30 === 0) {
+    try {
+      const wallets = db.findMany('wallets');
+      for (const wallet of wallets) {
+        const closedPositions = db.findMany('positions', p => p.user_id === wallet.user_id && p.status === 'CLOSED');
+        if (closedPositions.length === 0) continue;
+
+        let reconRealizedPnl = 0;
+        let reconWins = 0;
+        let reconLosses = 0;
+        for (const p of closedPositions) {
+          const pnl = p.realized_pnl || 0;
+          reconRealizedPnl += pnl;
+          if (pnl > 0) reconWins++;
+          else if (pnl < 0) reconLosses++;
+        }
+        reconRealizedPnl = roundTo(reconRealizedPnl, 2);
+
+        const walletRpnl = roundTo(wallet.realized_pnl || 0, 2);
+        const pnlDrift = Math.abs(reconRealizedPnl - walletRpnl);
+        const winDrift = Math.abs(reconWins - (wallet.win_count || 0));
+        const lossDrift = Math.abs(reconLosses - (wallet.loss_count || 0));
+
+        // Only reconcile if significant drift detected (> $1 PnL or > 5 win/loss count)
+        if (pnlDrift > 1 || winDrift > 5 || lossDrift > 5) {
+          const userId = wallet.user_id;
+          const user = db.findOne('users', u => u.id === userId);
+          console.log(`[RECONCILE] ${user?.email || userId.slice(0,8)}: PnL drift $${pnlDrift.toFixed(2)} (wallet=$${walletRpnl} → positions=$${reconRealizedPnl}) | W drift=${winDrift} L drift=${lossDrift}`);
+
+          // Correct wallet counters
+          wallet.realized_pnl = reconRealizedPnl;
+          wallet.win_count = reconWins;
+          wallet.loss_count = reconLosses;
+
+          // Recalculate balance from first principles: initial + realized - cost_of_open_positions + margin_returned
+          const openPositions = db.findMany('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN');
+          const openCost = openPositions.reduce((sum, p) => {
+            const cost = p.entry_price * p.quantity;
+            return sum + (p.side === 'LONG' ? cost : cost * 0.5);
+          }, 0);
+          const reconBalance = roundTo((wallet.initial_balance || INITIAL_BALANCE) + reconRealizedPnl - openCost, 2);
+
+          // Only apply balance fix if it improves accuracy (within 20% of current)
+          if (Math.abs(reconBalance - wallet.balance) / wallet.balance < 0.20) {
+            wallet.balance = reconBalance;
+          }
+
+          // Update equity = balance + unrealized
+          const totalUnrealized = openPositions.reduce((sum, p) => sum + (p.unrealized_pnl || 0), 0);
+          wallet.unrealized_pnl = roundTo(totalUnrealized, 2);
+          wallet.equity = roundTo(wallet.balance + totalUnrealized, 2);
+
+          // Update peak equity if current is higher
+          if (wallet.equity > (wallet.peak_equity || 0)) {
+            wallet.peak_equity = wallet.equity;
+          }
+
+          db._save('wallets');
+          invalidateWalletCache(userId);
+          console.log(`[RECONCILE] ${user?.email || userId.slice(0,8)}: CORRECTED → bal=$${wallet.balance.toFixed(2)} eq=$${wallet.equity.toFixed(2)} rpnl=$${wallet.realized_pnl.toFixed(2)} W=${wallet.win_count} L=${wallet.loss_count}`);
+        }
+      }
+    } catch (reconErr) {
+      console.error('[RECONCILE] Non-blocking reconciliation error:', reconErr.message);
+    }
+  }
+
   // Record equity snapshots for all wallets every ~5 minutes (every 10 ticks at 30s interval)
   if (autoTradeTickCount % 10 === 0) {
     const wallets = db.findMany('wallets');
@@ -7132,6 +7208,31 @@ function runAutoTradeTick() {
           position_count: db.count('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN'),
           date: dateKey, hour: hourKey,
         });
+      }
+
+      // ═══ STABILIZATION: Equity alert system ═══
+      // Flags investors whose equity drops below alert thresholds
+      const initBal = wallet.initial_balance || INITIAL_BALANCE;
+      const equityPct = initBal > 0 ? (wallet.equity / initBal) * 100 : 100;
+      if (equityPct < 80 && autoTradeTickCount % 60 === 0) {
+        const user = db.findOne('users', u => u.id === wallet.user_id);
+        const severity = equityPct < 60 ? 'CRITICAL' : equityPct < 70 ? 'WARNING' : 'WATCH';
+        console.warn(`[EQUITY ALERT] ${severity}: ${user?.email || wallet.user_id.slice(0,8)} at ${equityPct.toFixed(1)}% of initial ($${wallet.equity.toFixed(0)} / $${initBal})`);
+        try {
+          db.insert('risk_events', {
+            user_id: wallet.user_id,
+            type: 'equity_alert',
+            severity: severity.toLowerCase(),
+            message: `Equity at ${equityPct.toFixed(1)}% of initial investment ($${wallet.equity.toFixed(0)} / $${initBal})`,
+            details: {
+              equity: wallet.equity, balance: wallet.balance,
+              initial_balance: initBal, equity_pct: equityPct,
+              realized_pnl: wallet.realized_pnl, peak_equity: wallet.peak_equity,
+              drawdown_from_peak: wallet.peak_equity > 0 ? ((wallet.peak_equity - wallet.equity) / wallet.peak_equity * 100) : 0,
+            },
+            created_at: new Date().toISOString(),
+          });
+        } catch (e) { /* non-critical */ }
       }
     }
   }
@@ -7337,12 +7438,21 @@ function runAllAgents(userId, fundData) {
     // Tiered position sizing based on signal confluence
     const price = marketPrices[signal.symbol];
     if (!price) continue;
-    const equity = wallet.equity || wallet.balance || 100000;
+    const rawEquity = wallet.equity || wallet.balance || 100000;
 
-    // Drawdown protection — consistent with preTradeRiskCheck: measure from peak equity
+    // ═══ STABILIZATION: Minimum equity floor for position sizing ═══
+    // Prevents death-spiral where underperforming accounts get progressively
+    // smaller positions, compounding their disadvantage. Floor = 60% of initial.
+    const initialBal = wallet.initial_balance || INITIAL_BALANCE;
+    const equityFloor = initialBal * 0.60;
+    const equity = Math.max(rawEquity, equityFloor);
+
+    // Drawdown protection — GRADUAL curve replaces hard cliff
+    // Old: 0.5x at >10%, 0.75x at >5% → punished recovering accounts too hard
+    // New: smooth linear scale from 1.0 at 0% DD → 0.45 at 25% DD
     const peakEq = wallet.peak_equity || wallet.initial_balance || INITIAL_BALANCE;
-    const drawdownPct = peakEq > 0 ? ((peakEq - equity) / peakEq) * 100 : 0;
-    const drawdownMultiplier = drawdownPct > 10 ? 0.5 : drawdownPct > 5 ? 0.75 : 1.0;
+    const drawdownPct = peakEq > 0 ? ((peakEq - rawEquity) / peakEq) * 100 : 0;
+    const drawdownMultiplier = Math.max(0.45, 1.0 - (drawdownPct * 0.022));
 
     // Drawdown threshold — flag for Guardian review, don't stop trading
     if (drawdownPct > AUTO_TRADE_CONFIG.maxDrawdownPct) {
@@ -7381,6 +7491,15 @@ function runAllAgents(userId, fundData) {
     const maxPosValue = equity * sizePct;
     const quantity = Math.max(1, Math.floor(maxPosValue / price));
 
+    // ═══ STABILIZATION: Skip if position value is negligible (< $50) ═══
+    const posValue = quantity * price;
+    if (posValue < 50) {
+      if (autoTradeTickCount % 30 === 1) {
+        console.log(`[AutoTrader] SKIP ${signal.symbol}: position value $${posValue.toFixed(0)} < $50 minimum (equity=$${equity.toFixed(0)}, sizePct=${(sizePct*100).toFixed(2)}%)`);
+      }
+      continue;
+    }
+
     const result = executeTrade(userId, { symbol: signal.symbol, side, quantity, agent: signal.agent, price });
     if (result.success) {
       const tier = signal.confluence >= 4 ? 'ELITE' : signal.confluence >= 3 ? 'HIGH' : 'BASE';
@@ -7413,6 +7532,21 @@ function adaptivePositionManagement(userId, openPositions) {
     const pnlPct = ((currentPrice / pos.entry_price) - 1) * 100 * dir;
     const holdMs = Date.now() - new Date(pos.opened_at).getTime();
     const holdMinutes = holdMs / 60000;
+
+    // ═══ STABILIZATION: Minimum hold time before ANY exit logic ═══
+    // Prevents instant open→close cycles that produce zero-PnL phantom trades.
+    // Only exception: hard stop-loss still triggers immediately for capital protection.
+    const MIN_HOLD_SECONDS = 45; // 45 seconds minimum hold
+    if (holdMs < MIN_HOLD_SECONDS * 1000 && pnlPct > -(AUTO_TRADE_CONFIG.maxLossPct || 0.6)) {
+      // Not yet at minimum hold time and not at hard stop — skip all exit logic
+      // Still update current price for tracking
+      if (currentPrice !== pos.current_price) {
+        pos.current_price = currentPrice;
+        pos.unrealized_pnl = roundTo((currentPrice - pos.entry_price) * pos.quantity * dir, 2);
+        pos.return_pct = pnlPct;
+      }
+      continue;
+    }
 
     const hist = priceHistory[pos.symbol] || [];
     const regime = symbolRegimes[pos.symbol] || 'ranging';
