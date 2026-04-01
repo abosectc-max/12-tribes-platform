@@ -32,6 +32,7 @@ const DB_TABLES = [
   'signals', 'trade_flags', 'system_config', 'agent_preferences',
   'post_mortems', 'tax_allocations', 'tax_ledger', 'tax_lots',
   'wash_sales', 'distributions', 'capital_accounts', 'passkey_credentials',
+  'symbol_performance', 'audit_log',
 ];
 
 // Columns that should be stored as JSON in PostgreSQL
@@ -91,20 +92,62 @@ export class PostgresAdapter {
       conn.release();
       console.log(`[PG-ADAPTER] Connected to PostgreSQL at ${result.rows[0].now}`);
 
-      // Load all tables from PG into memory
+      // MEMORY-SAFE: Load tables with row limits for high-volume tables
+      // Only load newest N rows for operational tables to prevent OOM on 512MB Render
+      const PG_LOAD_LIMITS = {
+        trades: 2000,
+        positions: 1500,
+        tax_ledger: 1500,
+        tax_lots: 1000,
+        wash_sales: 1000,
+        post_mortems: 200,
+        signals: 300,
+        risk_events: 200,
+        auto_trade_log: 300,
+        snapshots: 300,
+        trade_flags: 150,
+        qa_reports: 30,
+        login_log: 150,
+        order_queue: 50,
+        audit_log: 300,
+        feedback: 500,
+        access_requests: 200,
+        verification_codes: 100,
+        symbol_performance: 300,
+      };
+
       const counts = {};
       for (const table of DB_TABLES) {
         try {
-          const rows = await this.pool.query(`SELECT * FROM ${table} ORDER BY id`);
+          const limit = PG_LOAD_LIMITS[table];
+          let query;
+          if (limit) {
+            // Load only newest rows for high-volume tables (ORDER BY created_at DESC)
+            query = `SELECT * FROM ${table} ORDER BY created_at DESC NULLS LAST LIMIT ${limit}`;
+          } else {
+            // Small tables (users, wallets, fund_settings, etc.) — load all
+            query = `SELECT * FROM ${table} ORDER BY id`;
+          }
+          const rows = await this.pool.query(query);
           this.tables[table] = rows.rows;
           counts[table] = rows.rows.length;
         } catch (err) {
-          // Table might not exist yet (e.g., on first run before schema init)
-          // Initialize as empty array
           if (err.code === '42P01' || err.message.includes('does not exist')) {
             console.warn(`[PG-ADAPTER] Table "${table}" does not exist, starting empty`);
             this.tables[table] = [];
             counts[table] = 0;
+          } else if (err.message.includes('column "created_at" does not exist')) {
+            // Fallback: no created_at column, load with generic LIMIT
+            try {
+              const limit = PG_LOAD_LIMITS[table] || 5000;
+              const rows = await this.pool.query(`SELECT * FROM ${table} LIMIT ${limit}`);
+              this.tables[table] = rows.rows;
+              counts[table] = rows.rows.length;
+            } catch (e2) {
+              console.warn(`[PG-ADAPTER] Failed to load "${table}": ${e2.message}`);
+              this.tables[table] = [];
+              counts[table] = 0;
+            }
           } else {
             throw err;
           }
@@ -293,12 +336,67 @@ export class PostgresAdapter {
   }
 
   /**
-   * PRUNE OPERATIONAL TABLES (no-op for PG, handled by LIMIT queries if needed)
+   * PRUNE OPERATIONAL TABLES — trim in-memory arrays AND delete old rows from PG
+   * Critical for staying under Render's 512MB memory limit
    */
   pruneOperationalTables() {
-    // PostgreSQL can implement this via LIMIT or DELETE with ORDER BY
-    // For now, this is a no-op (can be implemented if needed)
-    return 0;
+    const limits = {
+      post_mortems: 200,
+      signals: 300,
+      risk_events: 200,
+      auto_trade_log: 300,
+      snapshots: 300,
+      trade_flags: 150,
+      qa_reports: 30,
+      login_log: 150,
+      order_queue: 50,
+      feedback: 500,
+      access_requests: 200,
+      verification_codes: 100,
+      audit_log: 300,
+      trades: 2000,
+      tax_ledger: 1500,
+      tax_lots: 1000,
+      wash_sales: 1000,
+      positions: 1500,
+      symbol_performance: 300,
+    };
+
+    let totalPruned = 0;
+    for (const [table, maxRows] of Object.entries(limits)) {
+      if (!this.tables[table]) continue;
+      const excess = this.tables[table].length - maxRows;
+      if (excess > 0) {
+        // Remove oldest (front of array) from in-memory cache
+        const removed = this.tables[table].splice(0, excess);
+        totalPruned += excess;
+
+        // Fire-and-forget: delete from PG too (keep PG in sync)
+        if (this.pool && removed.length > 0) {
+          const ids = removed.filter(r => r.id).map(r => r.id);
+          if (ids.length > 0) {
+            // Batch delete in chunks of 500 to avoid query size limits
+            const chunkSize = 500;
+            for (let i = 0; i < ids.length; i += chunkSize) {
+              const chunk = ids.slice(i, i + chunkSize);
+              const placeholders = chunk.map((_, idx) => `$${idx + 1}`).join(',');
+              this.pool.query(`DELETE FROM ${table} WHERE id IN (${placeholders})`, chunk)
+                .catch(err => {
+                  // Non-fatal — PG prune is best-effort
+                  if (!err.message.includes('does not exist')) {
+                    console.error(`[PG-ADAPTER] Prune DELETE failed for ${table}: ${err.message}`);
+                  }
+                });
+            }
+          }
+        }
+      }
+    }
+
+    if (totalPruned > 0) {
+      console.log(`[PG-ADAPTER] Pruned ${totalPruned} rows from in-memory cache + PG`);
+    }
+    return totalPruned;
   }
 
   /**
