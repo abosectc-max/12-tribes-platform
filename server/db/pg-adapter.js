@@ -1,0 +1,405 @@
+// ═══════════════════════════════════════════════════════════════════════════
+//   12 TRIBES — POSTGRESQL ADAPTER
+//   Drop-in replacement for JsonDB | Sync interface with async persistence
+//
+//   Architecture:
+//   - In-memory cache (loaded from PG on init) as source of truth for reads
+//   - Synchronous interface (100% compatible with JsonDB)
+//   - Fire-and-forget async writes to PostgreSQL
+//   - Hybrid approach: JS predicates on in-memory, PG as persistent backing store
+//
+//   Connection: DATABASE_URL env var (e.g., postgresql://user:pass@host/db)
+//   Usage: const db = new PostgresAdapter(); await db.init();
+// ═══════════════════════════════════════════════════════════════════════════
+
+import pg from 'pg';
+import { randomUUID } from 'node:crypto';
+
+const { Pool } = pg;
+
+// Table list (must match standalone.js DB_TABLES)
+const DB_TABLES = [
+  'users', 'wallets', 'positions', 'trades', 'snapshots',
+  'login_log', 'agent_stats', 'broker_connections', 'risk_events',
+  'order_queue', 'access_requests', 'auto_trade_log', 'fund_settings',
+  'verification_codes', 'qa_reports', 'feedback', 'withdrawal_requests',
+  'signals', 'trade_flags', 'system_config', 'agent_preferences',
+  'post_mortems', 'tax_allocations', 'tax_ledger', 'tax_lots',
+  'wash_sales', 'distributions', 'capital_accounts', 'passkey_credentials',
+];
+
+// Columns that should be stored as JSON in PostgreSQL
+// Before INSERT/UPDATE, these are JSON.stringify'd
+const JSONB_COLUMNS = {
+  fund_settings: ['data'],
+  risk_events: ['details'],
+  signals: ['indicators', 'details'],
+  qa_reports: ['report_data'],
+  trade_flags: ['details'],
+  system_config: ['value'],
+  agent_preferences: ['preferences'],
+  post_mortems: ['patterns'],
+  tax_allocations: ['allocation'], // May vary by actual schema
+};
+
+export class PostgresAdapter {
+  constructor(options = {}) {
+    this.tables = {};         // In-memory cache (plain object with arrays)
+    this.pool = null;
+    this.options = {
+      maxConnections: options.maxConnections || 10,
+      idleTimeoutMillis: options.idleTimeoutMillis || 30000,
+      connectionTimeoutMillis: options.connectionTimeoutMillis || 2000,
+    };
+    this._initialized = false;
+    this._pendingWrites = new Map(); // Track pending async writes for debugging
+  }
+
+  /**
+   * Initialize the adapter: connect to PostgreSQL and load all tables into memory
+   */
+  async init() {
+    if (this._initialized) {
+      console.warn('[PG-ADAPTER] Already initialized, skipping init()');
+      return;
+    }
+
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) {
+      throw new Error('DATABASE_URL env var not set');
+    }
+
+    try {
+      this.pool = new Pool({
+        connectionString: dbUrl,
+        max: this.options.maxConnections,
+        idleTimeoutMillis: this.options.idleTimeoutMillis,
+        connectionTimeoutMillis: this.options.connectionTimeoutMillis,
+      });
+
+      // Test connection
+      const conn = await this.pool.connect();
+      const result = await conn.query('SELECT NOW()');
+      conn.release();
+      console.log(`[PG-ADAPTER] Connected to PostgreSQL at ${result.rows[0].now}`);
+
+      // Load all tables from PG into memory
+      const counts = {};
+      for (const table of DB_TABLES) {
+        try {
+          const rows = await this.pool.query(`SELECT * FROM ${table} ORDER BY id`);
+          this.tables[table] = rows.rows;
+          counts[table] = rows.rows.length;
+        } catch (err) {
+          // Table might not exist yet (e.g., on first run before schema init)
+          // Initialize as empty array
+          if (err.code === '42P01' || err.message.includes('does not exist')) {
+            console.warn(`[PG-ADAPTER] Table "${table}" does not exist, starting empty`);
+            this.tables[table] = [];
+            counts[table] = 0;
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      // Log startup
+      const countStr = Object.entries(counts)
+        .map(([t, c]) => `${t}:${c}`)
+        .join(', ');
+      console.log(`[PG-ADAPTER] Loaded from PostgreSQL — ${countStr}`);
+
+      // Seed AI agents if empty (matching standalone.js behavior)
+      if (this.tables.agent_stats.length === 0) {
+        const agents = ['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Phoenix', 'Titan'];
+        for (const name of agents) {
+          const record = {
+            id: randomUUID(),
+            agent_name: name,
+            total_trades: 0,
+            wins: 0,
+            losses: 0,
+            total_pnl: 0,
+            best_trade: 0,
+            worst_trade: 0,
+            avg_return: 0,
+          };
+          this.insert('agent_stats', record);
+        }
+      }
+
+      this._initialized = true;
+    } catch (err) {
+      console.error('[PG-ADAPTER] Initialization failed:', err.message);
+      if (this.pool) await this.pool.end();
+      throw err;
+    }
+  }
+
+  /**
+   * INSERT: Add a new record to table and persist to PG asynchronously
+   */
+  insert(table, record) {
+    if (!this.tables[table]) {
+      throw new Error(`Table "${table}" does not exist in schema`);
+    }
+
+    // Generate ID and timestamps if missing
+    if (!record.id) record.id = randomUUID();
+    if (!record.created_at) record.created_at = new Date().toISOString();
+
+    // Add to in-memory cache (source of truth for reads)
+    this.tables[table].push(record);
+
+    // Fire-and-forget async write to PostgreSQL
+    if (this.pool) {
+      this._persistInsert(table, record).catch(err => {
+        console.error(`[PG-ADAPTER] Failed to persist INSERT to ${table}:`, err.message);
+      });
+    }
+
+    return record;
+  }
+
+  /**
+   * FIND ONE: Synchronous search in in-memory cache using JS predicate
+   */
+  findOne(table, predicate) {
+    if (!this.tables[table]) return null;
+    return this.tables[table].find(predicate) || null;
+  }
+
+  /**
+   * FIND MANY: Synchronous search in in-memory cache using JS predicate
+   */
+  findMany(table, predicate) {
+    if (!this.tables[table]) return [];
+    return predicate ? this.tables[table].filter(predicate) : [...this.tables[table]];
+  }
+
+  /**
+   * UPDATE: Modify a record in-memory and persist changes to PG asynchronously
+   */
+  update(table, predicate, updates) {
+    const record = this.tables[table]?.find(predicate);
+    if (record) {
+      Object.assign(record, updates, { updated_at: new Date().toISOString() });
+
+      // Fire-and-forget async write
+      if (this.pool) {
+        this._persistUpdate(table, record).catch(err => {
+          console.error(`[PG-ADAPTER] Failed to persist UPDATE to ${table}:`, err.message);
+        });
+      }
+    }
+    return record || null;
+  }
+
+  /**
+   * REMOVE: Delete a record from memory and from PG asynchronously
+   */
+  remove(table, predicate) {
+    const idx = this.tables[table]?.findIndex(predicate);
+    if (idx === undefined || idx < 0) return null;
+
+    const removed = this.tables[table].splice(idx, 1)[0];
+
+    // Fire-and-forget async delete
+    if (this.pool && removed.id) {
+      this._persistDelete(table, removed.id).catch(err => {
+        console.error(`[PG-ADAPTER] Failed to persist DELETE from ${table}:`, err.message);
+      });
+    }
+
+    return removed;
+  }
+
+  /**
+   * COUNT: Synchronous count in in-memory cache
+   */
+  count(table, predicate) {
+    if (!this.tables[table]) return 0;
+    if (!predicate) return this.tables[table].length;
+    let c = 0;
+    for (const r of this.tables[table]) if (predicate(r)) c++;
+    return c;
+  }
+
+  /**
+   * UPSERT: Insert if not exists, update if exists
+   */
+  upsert(table, predicate, record) {
+    if (!this.tables[table]) {
+      throw new Error(`Table "${table}" does not exist in schema`);
+    }
+
+    const existing = this.tables[table].find(predicate);
+    if (existing) {
+      Object.assign(existing, record, { updated_at: new Date().toISOString() });
+      if (this.pool) {
+        this._persistUpdate(table, existing).catch(err => {
+          console.error(`[PG-ADAPTER] Failed to persist UPSERT (update) to ${table}:`, err.message);
+        });
+      }
+      return existing;
+    } else {
+      if (!record.id) record.id = randomUUID();
+      if (!record.created_at) record.created_at = new Date().toISOString();
+      this.tables[table].push(record);
+      if (this.pool) {
+        this._persistInsert(table, record).catch(err => {
+          console.error(`[PG-ADAPTER] Failed to persist UPSERT (insert) to ${table}:`, err.message);
+        });
+      }
+      return record;
+    }
+  }
+
+  /**
+   * NO-OP methods (for JsonDB compatibility)
+   */
+  _save(table) {
+    // In PostgreSQL, data is persisted immediately (async), no file-based save needed
+  }
+
+  _deferSave(table) {
+    // In PostgreSQL, all writes are async by default
+  }
+
+  flushAll() {
+    // In PostgreSQL, writes are already async and will be processed
+    // This is a no-op for compatibility
+  }
+
+  /**
+   * PRUNE OPERATIONAL TABLES (no-op for PG, handled by LIMIT queries if needed)
+   */
+  pruneOperationalTables() {
+    // PostgreSQL can implement this via LIMIT or DELETE with ORDER BY
+    // For now, this is a no-op (can be implemented if needed)
+    return 0;
+  }
+
+  /**
+   * STOP: Gracefully close the connection pool
+   */
+  async stop() {
+    console.log('[PG-ADAPTER] Shutting down...');
+    if (this.pool) {
+      await this.pool.end();
+      console.log('[PG-ADAPTER] Connection pool closed');
+    }
+  }
+
+  /**
+   * DEFERRED SAVE TABLES (static for compatibility)
+   */
+  static DEFERRED_SAVE_TABLES = new Set([
+    'signals', 'risk_events', 'auto_trade_log', 'snapshots', 'post_mortems',
+    'trade_flags', 'order_queue', 'login_log', 'qa_reports',
+  ]);
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // PRIVATE METHODS: PostgreSQL Persistence Layer
+  // ═════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Persist an INSERT to PostgreSQL (async, fire-and-forget)
+   */
+  async _persistInsert(table, record) {
+    if (!this.pool) return;
+
+    try {
+      const cols = Object.keys(record);
+      const vals = cols.map((_, i) => `$${i + 1}`).join(',');
+      const colNames = cols.join(',');
+
+      // Prepare values, converting JSONB columns
+      const values = cols.map(col => this._serializeValue(table, col, record[col]));
+
+      const query = `INSERT INTO ${table} (${colNames}) VALUES (${vals})`;
+      await this.pool.query(query, values);
+    } catch (err) {
+      // Log but don't throw (fire-and-forget pattern)
+      console.error(`[PG-ADAPTER] _persistInsert error for ${table}:`, err.message);
+    }
+  }
+
+  /**
+   * Persist an UPDATE to PostgreSQL (async, fire-and-forget)
+   */
+  async _persistUpdate(table, record) {
+    if (!this.pool || !record.id) return;
+
+    try {
+      const cols = Object.keys(record).filter(col => col !== 'id');
+      const setClauses = cols.map((col, i) => `${col}=$${i + 1}`).join(',');
+      const values = cols.map(col => this._serializeValue(table, col, record[col]));
+      values.push(record.id); // WHERE id = $n
+
+      const query = `UPDATE ${table} SET ${setClauses} WHERE id=$${cols.length + 1}`;
+      await this.pool.query(query, values);
+    } catch (err) {
+      console.error(`[PG-ADAPTER] _persistUpdate error for ${table}:`, err.message);
+    }
+  }
+
+  /**
+   * Persist a DELETE to PostgreSQL (async, fire-and-forget)
+   */
+  async _persistDelete(table, id) {
+    if (!this.pool) return;
+
+    try {
+      await this.pool.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
+    } catch (err) {
+      console.error(`[PG-ADAPTER] _persistDelete error for ${table}:`, err.message);
+    }
+  }
+
+  /**
+   * Serialize a value for PostgreSQL
+   * - Convert JSONB columns to JSON strings
+   * - Pass other values as-is
+   */
+  _serializeValue(table, column, value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    // Check if this column should be stored as JSONB
+    const jsonbCols = JSONB_COLUMNS[table] || [];
+    if (jsonbCols.includes(column)) {
+      // If already a string, assume it's JSON and pass through
+      if (typeof value === 'string') return value;
+      // Otherwise, stringify it
+      return JSON.stringify(value);
+    }
+
+    return value;
+  }
+
+  /**
+   * Deserialize a value from PostgreSQL
+   * - Parse JSONB columns from JSON strings back to objects
+   * - Pass other values as-is
+   */
+  _deserializeValue(table, column, value) {
+    if (value === null || value === undefined) {
+      return value;
+    }
+
+    const jsonbCols = JSONB_COLUMNS[table] || [];
+    if (jsonbCols.includes(column) && typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value; // Fallback to string if parse fails
+      }
+    }
+
+    return value;
+  }
+}
+
+export default PostgresAdapter;

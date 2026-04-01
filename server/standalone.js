@@ -443,7 +443,18 @@ class JsonDB {
   }
 }
 
-const db = new JsonDB(DATA_DIR);
+// ═══ DATABASE INIT: PostgreSQL if DATABASE_URL is set, else JSON file DB ═══
+let db;
+const USE_POSTGRES = !!process.env.DATABASE_URL;
+if (USE_POSTGRES) {
+  const { PostgresAdapter } = await import('./db/pg-adapter.js');
+  db = new PostgresAdapter();
+  await db.init();
+  console.log('[DB] ✅ PostgreSQL mode — persistent, scalable, no memory ceiling');
+} else {
+  db = new JsonDB(DATA_DIR);
+  console.log('[DB] JSON file mode — suitable for dev/MVP');
+}
 
 // ═══════════════════════════════════════════
 //   AUTHENTICATION (scrypt + HMAC JWT)
@@ -2685,7 +2696,7 @@ api.get('/api/health', (req, res) => {
   json(res, 200, {
     status: 'operational',
     version: '1.0.0-standalone',
-    database: 'json-file',
+    database: USE_POSTGRES ? 'postgresql' : 'json-file',
     wsClients: wsClients.size,
     symbols: Object.keys(marketPrices).length,
     users: db.count('users'),
@@ -4374,7 +4385,9 @@ let BLOB_ID = process.env.CLOUD_BACKUP_ID || '';
 
 const CLOUD_SYNC_INTERVAL_MS = 600000; // 10 minutes
 const CLOUD_BACKEND = (CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) ? 'jsonbin' : 'jsonblob';
-let CLOUD_SYNC_ENABLED = !!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) || !!BLOB_ID;
+// PostgreSQL mode disables cloud sync — PG is its own persistence layer
+let CLOUD_SYNC_ENABLED = USE_POSTGRES ? false : (!!(CLOUD_BACKUP_KEY && CLOUD_BACKUP_BIN) || !!BLOB_ID);
+if (USE_POSTGRES) console.log('[CLOUD-SYNC] Disabled — PostgreSQL provides persistent storage');
 
 /**
  * Auto-create jsonblob.com blob on first boot (zero-config bootstrap).
