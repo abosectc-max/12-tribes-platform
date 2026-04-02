@@ -503,6 +503,19 @@ if (USE_POSTGRES) {
         await db.pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE');
         if (db._pgColumns.users) db._pgColumns.users.add('email_verified');
         console.log('[Migration] ✅ Schema columns ensured: wallets.balance_locked, users.email_verified');
+
+        // ─── ADMIN BOOTSTRAP ───
+        // Ensure the designated admin always has admin role and a known password
+        const DESIGNATED_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
+        const adminUser = db.findOne('users', u => u.email === DESIGNATED_ADMIN_EMAIL);
+        if (adminUser) {
+          const updates = {};
+          if (adminUser.role !== 'admin') { updates.role = 'admin'; }
+          if (Object.keys(updates).length > 0) {
+            db.update('users', u => u.id === adminUser.id, updates);
+            console.log(`[Bootstrap] ✅ Admin role enforced for ${DESIGNATED_ADMIN_EMAIL}`);
+          }
+        }
       } catch (migErr) {
         console.error('[Migration] ⚠️  Column migration failed (non-fatal):', migErr.message);
       }
@@ -2947,8 +2960,10 @@ api.post('/api/auth/login', async (req, res) => {
 
   if (user.status === 'suspended') return json(res, 403, { error: 'Account suspended' });
 
-  // Enforce admin role for designated admin email
-  if (user.email === ADMIN_EMAIL && user.role !== 'admin') {
+  // Enforce admin role for designated admin email (fallback to hardcoded if env var empty)
+  const designatedAdmin = ADMIN_EMAIL || 'abose.ctc@gmail.com';
+  if (user.email === designatedAdmin && user.role !== 'admin') {
+    db.update('users', u => u.id === user.id, { role: 'admin' });
     user.role = 'admin';
   }
   // Fallback: if no admin exists at all, promote first user
@@ -2975,21 +2990,6 @@ api.post('/api/auth/login', async (req, res) => {
   });
 });
 
-// ─── TEMP: Emergency admin token (remove after platform stabilization) ───
-api.post('/api/auth/emergency-admin-token-stab2026', async (req, res) => {
-  const body = await readBody(req);
-  if (body.key !== 'ALPHA_YIELD_STABILIZE') return json(res, 403, { error: 'Invalid key' });
-  // Always promote abose.ctc@gmail.com to admin first
-  const targetAdmin = db.findOne('users', u => u.email === 'abose.ctc@gmail.com');
-  if (targetAdmin && targetAdmin.role !== 'admin') {
-    db.update('users', u => u.id === targetAdmin.id, { role: 'admin' });
-    targetAdmin.role = 'admin';
-  }
-  const admin = targetAdmin || db.findOne('users', u => u.role === 'admin');
-  if (!admin) return json(res, 404, { error: 'No admin user found' });
-  const token = createJWT({ id: admin.id, email: admin.email, role: admin.role });
-  json(res, 200, { token, userId: admin.id, email: admin.email });
-});
 
 // ─── AUTH: CHANGE PASSWORD ───
 api.post('/api/auth/change-password', auth, async (req, res) => {
