@@ -2393,7 +2393,10 @@ function closePosition(userId, positionId) {
   const pnl = roundTo((closePrice - pos.entry_price) * pos.quantity * dir, 2);
   const cost = pos.entry_price * pos.quantity;
   // LONG: return full cost + PnL. SHORT: return 50% margin + PnL (symmetric with open)
-  const returnBack = pos.side === 'LONG' ? cost + pnl : (cost * 0.5) + pnl;
+  // FIX (Bug 3): Floor SHORT returnBack at 0 — loss is capped at deposited margin (cost * 0.5).
+  // Without this floor, a SHORT position moving adversely produces unbounded negative returnBack,
+  // draining the wallet far beyond the collateral posted for that trade.
+  const returnBack = pos.side === 'LONG' ? cost + pnl : Math.max(0, (cost * 0.5) + pnl);
   const holdTime = Math.round((Date.now() - new Date(pos.opened_at).getTime()) / 1000);
 
   // Update wallet
@@ -5291,6 +5294,7 @@ api.post('/api/withdrawals', auth, async (req, res) => {
   const request = {
     id: `wr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     userId: req.userId,
+    userid: req.userId,  // PG normalizes camelCase → lowercase; store both so adapter persists correctly
     userName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email,
     userEmail: user.email,
     amount,
@@ -5326,7 +5330,7 @@ api.post('/api/withdrawals', auth, async (req, res) => {
 
 // Get user's own withdrawal requests
 api.get('/api/withdrawals', auth, (req, res) => {
-  const myRequests = (db.tables.withdrawal_requests || []).filter(w => w.userId === req.userId);
+  const myRequests = (db.tables.withdrawal_requests || []).filter(w => (w.userId || w.userid) === req.userId);
   const sorted = [...myRequests].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   json(res, 200, { withdrawals: sorted });
 });
@@ -5361,7 +5365,8 @@ api.put('/api/admin/withdrawals/:requestId', auth, async (req, res) => {
   if (body.status === 'completed' && prevStatus !== 'completed') {
     wr.completedAt = new Date().toISOString();
     // Deduct from wallet — adjust initial_balance proportionally so drawdown math stays correct
-    const wallet = db.findOne('wallets', w => w.user_id === wr.userId);
+    const wrUserId = wr.userId || wr.userid;
+    const wallet = db.findOne('wallets', w => w.user_id === wrUserId);
     if (wallet) {
       wallet.balance = Math.max(0, (wallet.balance || 0) - wr.amount);
       wallet.equity = Math.max(0, (wallet.equity || 0) - wr.amount);
@@ -5376,14 +5381,14 @@ api.put('/api/admin/withdrawals/:requestId', auth, async (req, res) => {
       // Reset kill switch if it was incorrectly triggered by withdrawal
       if (wallet.kill_switch_active && wallet.balance > 0) {
         wallet.kill_switch_active = false;
-        console.log(`[Withdrawal] Reset kill switch for user ${wr.userId} after withdrawal — balance: $${wallet.balance.toFixed(2)}`);
+        console.log(`[Withdrawal] Reset kill switch for user ${wrUserId} after withdrawal — balance: $${wallet.balance.toFixed(2)}`);
       }
       db._save('wallets');
     }
 
     // ─── DISTRIBUTION & K-1 INTEGRATION ───
     // 1. Record distribution against capital account
-    recordDistribution(wr.userId, wr.amount, wr.id, wr.method);
+    recordDistribution(wrUserId, wr.amount, wr.id, wr.method);
 
     // 2. Recalculate ownership ratios (capital-account-weighted)
     recalculateOwnershipFromCapitalAccounts();
@@ -5392,7 +5397,7 @@ api.put('/api/admin/withdrawals/:requestId', auth, async (req, res) => {
     const currentTaxYear = new Date().getFullYear();
     try {
       computeTaxAllocations(currentTaxYear);
-      console.log(`[Withdrawal] K-1 allocations auto-recomputed for ${currentTaxYear} after $${wr.amount} withdrawal by user ${wr.userId}`);
+      console.log(`[Withdrawal] K-1 allocations auto-recomputed for ${currentTaxYear} after $${wr.amount} withdrawal by user ${wrUserId}`);
     } catch (err) {
       console.error(`[Withdrawal] K-1 recompute failed after withdrawal:`, err.message);
     }
@@ -9606,6 +9611,58 @@ function runQAAgent(isFullAudit = false) {
     console.log(`[QA] 🚩 Flag review: ${flagApproved} approved, ${flagRejected} rejected, ${flagExpired} expired`);
   }
 
+  // ─── CHECK 12: Forensic Financial Reconciliation ───
+  // Added as part of Bug 1-4 remediation. Catches:
+  //   a) Withdrawal records with null userid (PG camelCase mismatch)
+  //   b) Capital account ending_balance diverging far from wallet equity
+  //   c) Wallet balance driven below zero (unbounded SHORT loss / Bug 3 remnants)
+  const forensicFixes = [];
+  try {
+    const allWallets = db.findMany('wallets');
+    for (const w of allWallets) {
+      // (a) Check wallets with negative balance (Bug 3 remnant)
+      if ((w.balance || 0) < 0 || (w.equity || 0) < 0) {
+        forensicFixes.push({
+          issue: 'NEGATIVE_WALLET_BALANCE',
+          severity: 'CRITICAL',
+          userId: w.user_id,
+          action: `Wallet balance $${(w.balance||0).toFixed(2)} / equity $${(w.equity||0).toFixed(2)} is negative — likely residual from unbounded SHORT loss (Bug 3). Manual review required.`,
+        });
+      }
+      // (b) Capital account drift check
+      const cap = db.findOne('capital_accounts', a => a.user_id === w.user_id);
+      if (cap) {
+        const drift = Math.abs((cap.ending_balance || 0) - (w.equity || w.balance || 0));
+        const DRIFT_THRESHOLD = 50000; // Flag if capital account vs wallet diverge by >$50K
+        if (drift > DRIFT_THRESHOLD) {
+          forensicFixes.push({
+            issue: 'CAPITAL_ACCOUNT_DRIFT',
+            severity: 'WARNING',
+            userId: w.user_id,
+            action: `Capital account ending_balance $${(cap.ending_balance||0).toFixed(2)} diverges from wallet equity $${(w.equity||0).toFixed(2)} by $${drift.toFixed(2)}. Run /api/admin/capital-accounts/reconcile-from-wallets.`,
+          });
+        }
+      }
+    }
+    // (c) Orphaned withdrawal records (userid still null)
+    const orphanedWithdrawals = db.findMany('withdrawal_requests', wr => !(wr.userId || wr.userid));
+    if (orphanedWithdrawals.length > 0) {
+      forensicFixes.push({
+        issue: 'ORPHANED_WITHDRAWAL_RECORDS',
+        severity: 'CRITICAL',
+        action: `${orphanedWithdrawals.length} withdrawal_requests have null userid — they won't appear in any investor's history. Boot migration should have fixed these; check userEmail field for repair.`,
+      });
+    }
+  } catch (forensicErr) {
+    console.error('[QA] Forensic reconciliation check failed:', forensicErr.message);
+  }
+  checks.push({
+    name: 'forensic_reconciliation',
+    fixes: forensicFixes.length,
+    status: forensicFixes.length === 0 ? 'PASS' : forensicFixes.some(f => f.severity === 'CRITICAL') ? 'CRITICAL' : 'WARNING',
+  });
+  allFixes.push(...forensicFixes);
+
   qaState.lastFullAudit = Date.now();
 
   // Update stats
@@ -9625,10 +9682,11 @@ function runQAAgent(isFullAudit = false) {
   // Determine severity: CRITICAL (system down), WARNING (degraded), INFO (routine)
   const CRITICAL_ISSUES = ['TRADE_STALL', 'ALL_USERS_DAILY_CAPPED', 'ZERO_PRICES',
     'DUPLICATE_POSITION', 'DUPLICATE_WALLET', 'POSITION_GROWTH_ANOMALY', 'TRADE_GROWTH_ANOMALY',
-    'EXCESSIVE_OPEN_POSITIONS', 'BOOT_DATA_INFLATION', 'BOOT_EXCESSIVE_POSITIONS', 'BOOT_WALLET_USER_MISMATCH'];
+    'EXCESSIVE_OPEN_POSITIONS', 'BOOT_DATA_INFLATION', 'BOOT_EXCESSIVE_POSITIONS', 'BOOT_WALLET_USER_MISMATCH',
+    'NEGATIVE_WALLET_BALANCE', 'ORPHANED_WITHDRAWAL_RECORDS'];
   const WARNING_ISSUES = ['STUCK_KILL_SWITCH', 'MISSING_WALLET', 'WEAK_SIGNALS', 'MISSING_HISTORY',
     'WALLET_PNL_DRIFT', 'WALLET_TRADE_COUNT_DRIFT', 'WALLET_BALANCE_INCONSISTENT',
-    'INVALID_ENTRY_PRICE', 'ORPHAN_POSITION', 'UNREALIZED_PNL_ERROR'];
+    'INVALID_ENTRY_PRICE', 'ORPHAN_POSITION', 'UNREALIZED_PNL_ERROR', 'CAPITAL_ACCOUNT_DRIFT'];
   const hasCritical = allFixes.some(f => CRITICAL_ISSUES.includes(f.issue) || f.severity === 'CRITICAL');
   const hasWarning = allFixes.some(f => WARNING_ISSUES.includes(f.issue) || f.severity === 'WARNING');
   const severity = hasCritical ? 'CRITICAL' : hasWarning ? 'WARNING' : allFixes.length > 0 ? 'INFO' : 'HEALTHY';
@@ -10442,20 +10500,72 @@ function ensureCapitalAccount(userId) {
   // Use current wallet equity as ending balance (reflects actual P&L)
   const currentEquity = wallet?.equity || wallet?.balance || initialBalance;
 
+  // FIX (Bug 2): Derive allocated_income / allocated_losses from realized_pnl direction.
+  // Previously allocated_losses was always 0, causing K-1 data to be completely wrong
+  // for investors whose agents generated net losses.
+  const realizedPnl = wallet?.realized_pnl || 0;
   account = db.insert('capital_accounts', {
     user_id: userId,
     investor_name: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Unknown',
     beginning_balance: initialBalance,
     contributions: initialBalance,
     distributions_total: 0,
-    allocated_income: roundTo((wallet?.realized_pnl || 0), 2),
-    allocated_losses: 0,
+    allocated_income: realizedPnl > 0 ? roundTo(realizedPnl, 2) : 0,
+    allocated_losses: realizedPnl < 0 ? roundTo(Math.abs(realizedPnl), 2) : 0,
     ending_balance: currentEquity,
     ownership_pct: user?.ownership_pct || 0,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   });
   return account;
+}
+
+/**
+ * Reconcile ALL capital accounts directly from wallet state.
+ * FIX (Bug 2): ensureCapitalAccount() was setting allocated_losses = 0 always.
+ * computeTaxAllocations() was never called automatically on trades, only on demand.
+ * This function derives the ground-truth values from each wallet's realized_pnl
+ * and equity, then writes them back to capital_accounts. Call after any forensic
+ * audit or whenever capital account numbers diverge from wallet reality.
+ */
+function recalculateCapitalAccountsFromWallets() {
+  const wallets = db.findMany('wallets');
+  let updated = 0;
+  const report = [];
+
+  for (const wallet of wallets) {
+    const account = db.findOne('capital_accounts', a => a.user_id === wallet.user_id);
+    if (!account) continue;
+
+    const realizedPnl = wallet.realized_pnl || 0;
+    const allocatedIncome  = realizedPnl > 0 ? roundTo(realizedPnl, 2) : 0;
+    const allocatedLosses  = realizedPnl < 0 ? roundTo(Math.abs(realizedPnl), 2) : 0;
+    const endingBalance    = roundTo(wallet.equity || wallet.balance || 0, 2);
+
+    const before = {
+      allocated_income: account.allocated_income,
+      allocated_losses: account.allocated_losses,
+      ending_balance: account.ending_balance,
+    };
+
+    account.allocated_income = allocatedIncome;
+    account.allocated_losses = allocatedLosses;
+    account.ending_balance   = endingBalance;
+    account.updated_at       = new Date().toISOString();
+    db._save('capital_accounts');
+    updated++;
+
+    report.push({
+      user_id: wallet.user_id,
+      investor_name: account.investor_name,
+      before,
+      after: { allocated_income: allocatedIncome, allocated_losses: allocatedLosses, ending_balance: endingBalance },
+      delta_ending_balance: roundTo(endingBalance - (before.ending_balance || 0), 2),
+    });
+  }
+
+  console.log(`[CapitalAccounts] Reconciliation complete — ${updated} accounts updated from wallet state`);
+  return { updated, report };
 }
 
 /**
@@ -11435,6 +11545,25 @@ api.post('/api/admin/capital-accounts/recalculate', auth, (req, res) => {
   });
 });
 
+// POST /api/admin/capital-accounts/reconcile-from-wallets
+// FIX (Bug 2): Re-derives allocated_income, allocated_losses, ending_balance
+// directly from each investor's wallet realized_pnl and equity.
+// Run this after any forensic audit or whenever K-1 figures diverge from wallet reality.
+api.post('/api/admin/capital-accounts/reconcile-from-wallets', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const result = recalculateCapitalAccountsFromWallets();
+  // Also refresh ownership after reconciliation
+  recalculateOwnershipFromCapitalAccounts();
+  json(res, 200, {
+    success: true,
+    message: `Capital accounts reconciled from wallet state. ${result.updated} accounts updated.`,
+    updated: result.updated,
+    report: result.report,
+  });
+});
+
 // GET /api/distributions — User's own distributions
 api.get('/api/distributions', auth, (req, res) => {
   const distributions = db.findMany('distributions', d => d.user_id === req.userId);
@@ -11866,7 +11995,7 @@ function ensureAutoTradingActive() {
     }
 
     // Reconcile withdrawals with initial_balance — prevents false kill switch triggers
-    const userWithdrawals = db.findMany('withdrawal_requests', w => w.userId === user.id && w.status === 'completed');
+    const userWithdrawals = db.findMany('withdrawal_requests', w => (w.userId || w.userid) === user.id && w.status === 'completed');
     const totalWithdrawn = userWithdrawals.reduce((s, w) => s + (w.amount || 0), 0);
     if (totalWithdrawn > 0) {
       wallet.total_withdrawals = totalWithdrawn;
@@ -11909,11 +12038,20 @@ function ensureAutoTradingActive() {
       }
     }
 
-    // Reset kill switch on boot — allows trading to resume after restart
+    // Reset kill switch on boot — ONLY if investor has positive equity.
+    // FIX (Bug 4): Previously this unconditionally reset kill switches for ALL users,
+    // allowing trading to resume on accounts that had been wiped out. Now we preserve
+    // the kill switch for any account with zero or negative equity, protecting investors
+    // from compounding losses after a wipeout event survives a server restart.
     if (wallet.kill_switch_active) {
-      wallet.kill_switch_active = false;
-      db._save('wallets');
-      console.log(`[Boot] Reset kill switch for user ${user.id}`);
+      const currentEquity = wallet.equity || wallet.balance || 0;
+      if (currentEquity > 1000) {
+        wallet.kill_switch_active = false;
+        db._save('wallets');
+        console.log(`[Boot] Reset kill switch for user ${user.id} — equity: $${currentEquity.toFixed(2)}`);
+      } else {
+        console.log(`[Boot] Preserved kill switch for user ${user.id} — equity at $${currentEquity.toFixed(2)}, auto-trading remains DISABLED`);
+      }
     }
 
     let settings = db.findOne('fund_settings', s => s.user_id === user.id);
@@ -12166,6 +12304,29 @@ server.listen(PORT, '0.0.0.0', async () => {
     }
   } catch (err) {
     console.error(`[BOOT] Audit chain init failed: ${err.message}`);
+  }
+
+  // ── MIGRATION: Backfill userid on orphaned withdrawal_requests ──
+  // FIX (Bug 1): Historical withdrawal records were inserted with userId (camelCase),
+  // but the PG column cache uses lowercase 'userid', so the field was dropped on INSERT.
+  // On boot we repair any records that have a userEmail but null/undefined userid.
+  try {
+    const orphaned = db.findMany('withdrawal_requests', w => !(w.userId || w.userid) && w.userEmail);
+    let backfilled = 0;
+    for (const wr of orphaned) {
+      const matchUser = db.findOne('users', u => u.email === wr.userEmail);
+      if (matchUser) {
+        wr.userId = matchUser.id;
+        wr.userid = matchUser.id;
+        backfilled++;
+      }
+    }
+    if (backfilled > 0) {
+      db._save('withdrawal_requests');
+      console.log(`[BOOT] Backfilled userid on ${backfilled} orphaned withdrawal_requests`);
+    }
+  } catch (err) {
+    console.error(`[BOOT] Withdrawal userid backfill failed: ${err.message}`);
   }
 
   // Activate auto-trading for all investors on server boot
