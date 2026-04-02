@@ -11957,6 +11957,72 @@ api.post('/api/admin/wallets/platform-error-correction', auth, async (req, res) 
   });
 });
 
+// POST /api/admin/wallets/restore-from-snapshot
+// Directly restores exact wallet balances from a known-good backup snapshot.
+// Accepts array of { userId, balance, equity, realizedPnL } — writes each to PG via db.update().
+// Closes all open positions and re-enables trading after restore.
+api.post('/api/admin/wallets/restore-from-snapshot', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const body = await readBody(req);
+  const { snapshots, confirm } = body;
+  if (!confirm) return json(res, 400, { error: 'Requires confirm: true' });
+  if (!Array.isArray(snapshots) || snapshots.length === 0) return json(res, 400, { error: 'snapshots array required' });
+
+  const ts = new Date().toISOString();
+  const report = [];
+
+  for (const snap of snapshots) {
+    const { userId, balance, equity, realizedPnL } = snap;
+    if (!userId || balance == null) { report.push({ userId, status: 'SKIPPED', reason: 'missing userId or balance' }); continue; }
+
+    const wallet = db.findOne('wallets', w => w.user_id === userId);
+    if (!wallet) { report.push({ userId, status: 'NOT_FOUND' }); continue; }
+
+    const user = db.findOne('users', u => u.id === userId);
+    const preBalance = wallet.balance;
+
+    // Close any open positions
+    const openPositions = db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN');
+    for (const pos of openPositions) {
+      pos.status = 'CLOSED'; pos.close_price = pos.current_price || pos.entry_price;
+      pos.realized_pnl = 0; pos.closed_at = ts; pos.close_reason = 'SNAPSHOT_RESTORE';
+      db.update('positions', p => p.id === pos.id, { status: 'CLOSED', close_price: pos.close_price, realized_pnl: 0, closed_at: ts, close_reason: 'SNAPSHOT_RESTORE' });
+    }
+
+    // Write exact snapshot values directly to PG
+    const patch = {
+      balance:          roundTo(balance, 2),
+      equity:           roundTo(equity ?? balance, 2),
+      unrealized_pnl:   0,
+      realized_pnl:     roundTo(realizedPnL ?? 0, 2),
+      peak_equity:      roundTo(Math.max(equity ?? balance, wallet.peak_equity || 0), 2),
+      kill_switch_active: false,
+      platform_correction_applied: ts,
+      platform_correction_mode: 'snapshot_restore',
+    };
+    Object.assign(wallet, patch);
+    db.update('wallets', w => w.id === wallet.id, patch);
+
+    // Re-enable auto-trading
+    const settings = db.findOne('fund_settings', s => s.user_id === userId);
+    if (settings) {
+      if (!settings.data) settings.data = {};
+      if (!settings.data.autoTrading) settings.data.autoTrading = {};
+      settings.data.autoTrading.isAutoTrading = true;
+      settings.data.autoTrading.agentsActive = AI_AGENTS.map(a => a.name);
+      settings.updated_at = ts;
+      db.update('fund_settings', s => s.id === settings.id, { data: settings.data, updated_at: ts });
+    }
+
+    report.push({ userId, email: user?.email, preBalance, restoredBalance: patch.balance, restoredEquity: patch.equity, positionsClosed: openPositions.length, status: 'OK' });
+    console.log(`[SnapshotRestore] ${user?.email} | $${preBalance?.toLocaleString()} → $${patch.balance.toLocaleString()}`);
+  }
+
+  json(res, 200, { success: true, restored: report.filter(r => r.status === 'OK').length, report });
+});
+
 // POST /api/admin/capital-accounts/reconcile-from-wallets
 // FIX (Bug 2): Re-derives allocated_income, allocated_losses, ending_balance
 // directly from each investor's wallet realized_pnl and equity.
