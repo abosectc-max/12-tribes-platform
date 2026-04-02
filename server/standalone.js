@@ -492,6 +492,20 @@ if (USE_POSTGRES) {
       await db.init();
       pgInitDone = true;
       console.log('[DB] ✅ PostgreSQL mode — persistent, scalable, no memory ceiling');
+
+      // ─── SCHEMA MIGRATIONS ───
+      // Run idempotent ALTER TABLE statements to ensure new columns exist.
+      // _pgColumns cache is updated in-memory so _persistUpdate() knows to write them.
+      // These are safe to run on every boot (IF NOT EXISTS is idempotent).
+      try {
+        await db.pool.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS balance_locked BOOLEAN DEFAULT FALSE');
+        if (db._pgColumns.wallets) db._pgColumns.wallets.add('balance_locked');
+        await db.pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE');
+        if (db._pgColumns.users) db._pgColumns.users.add('email_verified');
+        console.log('[Migration] ✅ Schema columns ensured: wallets.balance_locked, users.email_verified');
+      } catch (migErr) {
+        console.error('[Migration] ⚠️  Column migration failed (non-fatal):', migErr.message);
+      }
     } catch (err) {
       if (pgAttempt < PG_MAX_RETRIES) {
         console.warn(`[DB] ⚠️  PG init attempt ${pgAttempt}/${PG_MAX_RETRIES} failed: ${err.message} — retrying in 10s`);
