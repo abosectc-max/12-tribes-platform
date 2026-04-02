@@ -7692,11 +7692,9 @@ function runAutoTradeTick() {
         const winDrift = Math.abs(reconWins - (wallet.win_count || 0));
         const lossDrift = Math.abs(reconLosses - (wallet.loss_count || 0));
 
-        // Grace period: skip reconciliation for 10 min after snapshot restore
-        const tickRecentRestore = wallet.platform_correction_mode === 'snapshot_restore' &&
-          wallet.platform_correction_applied &&
-          (Date.now() - new Date(wallet.platform_correction_applied).getTime()) < 10 * 60 * 1000;
-        if (tickRecentRestore) continue;
+        // BALANCE LOCK: if wallet.balance_locked === true, an admin set this balance explicitly.
+        // Skip ALL balance reconciliation — positions table may contain corrupted historical data.
+        if (wallet.balance_locked) continue;
 
         if (pnlDrift > 1 || winDrift > 5 || lossDrift > 5) {
           const user = db.findOne('users', u => u.id === userId);
@@ -9433,13 +9431,14 @@ function qaCheckWalletReconciliation() {
     const pnlDrift = Math.abs(reconPnl - walletPnl);
 
     // Reconcile realized_pnl if drift exceeds $5
-    // GRACE PERIOD: skip reconciliation for 10 minutes after a snapshot restore —
-    // the positions table may still contain stale trades whose pnl sum does not
-    // match the authoritative snapshot value written by the restore endpoint.
-    const recentRestore = wallet.platform_correction_mode === 'snapshot_restore' &&
-      wallet.platform_correction_applied &&
-      (Date.now() - new Date(wallet.platform_correction_applied).getTime()) < 10 * 60 * 1000;
-    if (pnlDrift > 5 && !recentRestore) {
+    // BALANCE LOCK: wallet.balance_locked === true means an admin explicitly set this balance
+    // (e.g., via snapshot restore). The positions table may contain corrupted historical trades
+    // that produce a poisoned pnl sum. Never auto-correct a locked balance — log only.
+    if (wallet.balance_locked) {
+      if (pnlDrift > 5) {
+        console.log(`[QA SENTINEL] 🔒 Wallet ${uid.slice(0,8)} balance is LOCKED ($${(wallet.balance||0).toFixed(2)}) — skipping PnL reconciliation (drift: $${pnlDrift.toFixed(2)})`);
+      }
+    } else if (pnlDrift > 5) {
       const oldPnl = walletPnl;
       wallet.realized_pnl = reconPnl;
       // Recompute balance: initial + realized_pnl
@@ -9453,8 +9452,6 @@ function qaCheckWalletReconciliation() {
         severity: pnlDrift > 1000 ? 'CRITICAL' : 'WARNING',
       });
       console.warn(`[QA SENTINEL] 🔧 Wallet PnL drift for ${uid.slice(0,8)}: $${oldPnl.toFixed(2)} → $${reconPnl.toFixed(2)} (Δ$${pnlDrift.toFixed(2)})`);
-    } else if (pnlDrift > 5 && recentRestore) {
-      console.log(`[QA SENTINEL] ⏳ Skipping PnL reconciliation for ${uid.slice(0,8)} — snapshot restore grace period active`);
     }
 
     // Reconcile trade_count
@@ -10668,6 +10665,13 @@ api.post('/api/auto-trading/toggle', auth, async (req, res) => {
   if (enabled !== false) {
     settings.data.autoTrading.tradingStartedAt = Date.now();
     settings.data.autoTrading.agentsActive = AI_AGENTS.map(a => a.name);
+    // Clear balance lock when trading is explicitly re-enabled — from this point forward,
+    // the reconcilers can track live P&L normally against the restored balance baseline.
+    const walletToUnlock = db.findOne('wallets', w => w.user_id === req.userId);
+    if (walletToUnlock && walletToUnlock.balance_locked) {
+      db.update('wallets', w => w.id === walletToUnlock.id, { balance_locked: false });
+      console.log(`[AutoTrader] Cleared balance_locked for user ${req.userId} — live reconciliation resumed`);
+    }
   } else {
     settings.data.autoTrading.agentsActive = [];
 
@@ -12029,6 +12033,9 @@ api.post('/api/admin/wallets/restore-from-snapshot', auth, async (req, res) => {
       kill_switch_active: false,
       platform_correction_applied: ts,
       platform_correction_mode: 'snapshot_restore',
+      balance_locked: true,   // Prevents QA sentinel + trade-tick reconciler from overwriting this balance.
+                               // The positions table may contain corrupted historical trades.
+                               // Clear this flag (balance_locked = false) when re-enabling live trading.
     };
     Object.assign(wallet, patch);
     db.update('wallets', w => w.id === wallet.id, patch);
@@ -12586,11 +12593,12 @@ function ensureAutoTradingActive() {
       if (!settings.data.autoTrading) settings.data.autoTrading = {};
 
       if (!settings.data.autoTrading.isAutoTrading) {
-        // GUARD: Never re-enable trading on accounts that were deliberately paused via snapshot restore.
-        // wallet.platform_correction_mode === 'snapshot_restore' is the persistent signal that an
-        // admin manually restored this wallet and disabled trading. Respect that decision on boot.
-        if (wallet.platform_correction_mode === 'snapshot_restore') {
-          console.log(`[Boot] Skipping auto-trading re-enable for user ${user.id} — wallet is in snapshot_restore mode (trading was deliberately disabled by admin)`);
+        // GUARD: If trading was previously active (tradingStartedAt is set) but is now disabled,
+        // that means an admin deliberately stopped it. Respect that decision across server restarts.
+        // tradingStartedAt is stored in fund_settings.data (PG-persisted via db.update) so it
+        // survives Render deploys — unlike wallet fields that need their own explicit PG write.
+        if (settings.data.autoTrading.tradingStartedAt) {
+          console.log(`[Boot] Skipping auto-trading re-enable for user ${user.id} — trading was previously active (started ${new Date(settings.data.autoTrading.tradingStartedAt).toISOString()}) and was deliberately stopped`);
           continue;
         }
 
