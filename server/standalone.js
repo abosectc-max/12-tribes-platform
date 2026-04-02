@@ -10528,6 +10528,192 @@ function ensureCapitalAccount(userId) {
  * and equity, then writes them back to capital_accounts. Call after any forensic
  * audit or whenever capital account numbers diverge from wallet reality.
  */
+/**
+ * PLATFORM ERROR CORRECTION — Retroactive wallet restoration.
+ *
+ * Background: Bug 3 (unbounded SHORT loss) was present from day 1. The formula
+ *   returnBack = (cost * 0.5) + pnl  with no floor
+ * allowed SHORT positions to drain wallets by millions beyond deposited margin.
+ * The trade history is largely pruned (5,000-row cap), so per-trade recomputation
+ * is incomplete. The correct baseline for every investor is their initial_balance —
+ * the guaranteed pre-glitch floor, since no investor can owe money to a paper
+ * trading platform.
+ *
+ * This function:
+ *  1. Scans AVAILABLE SHORT trades to compute provable excess drain (audit trail only)
+ *  2. Closes all open positions at market (P&L zeroed — they were entered under the bug)
+ *  3. Restores wallet.balance + wallet.equity to initial_balance minus any COMPLETED withdrawals
+ *  4. Resets realized_pnl, unrealized_pnl, win_count, loss_count, trade_count
+ *  5. Clears kill_switch_active so trading resumes with the fix in place
+ *  6. Records a platform_correction entry per wallet for the audit log
+ *  7. Calls recalculateCapitalAccountsFromWallets() to sync K-1 data
+ *
+ * Returns a detailed per-investor correction report.
+ *
+ * @param {string} adminUserId  - ID of admin triggering the correction
+ * @param {string} mode         - '24h' (reverse last 24h of trades) | 'full' (restore to initial_balance)
+ * @param {number} [hoursBack]  - How many hours back to roll (default 24, only used in '24h' mode)
+ */
+function applyPlatformErrorCorrection(adminUserId, mode = '24h', hoursBack = 24) {
+  const allWallets = db.findMany('wallets');
+  const correctionReport = [];
+  const correctionTimestamp = new Date().toISOString();
+  const cutoffMs = Date.now() - (hoursBack * 60 * 60 * 1000);
+  const cutoffISO = new Date(cutoffMs).toISOString();
+  let totalCredited = 0;
+
+  for (const wallet of allWallets) {
+    const user = db.findOne('users', u => u.id === wallet.user_id);
+    if (!user) continue;
+
+    const preBalance  = roundTo(wallet.balance  || 0, 2);
+    const preEquity   = roundTo(wallet.equity   || 0, 2);
+    const preRealizedPnl = roundTo(wallet.realized_pnl || 0, 2);
+    const initialBal  = wallet.initial_balance || 100000;
+
+    // ── Step 1: Get completed withdrawals (preserved regardless of mode) ──
+    const completedWithdrawals = db.findMany('withdrawal_requests',
+      w => (w.userId || w.userid) === wallet.user_id && w.status === 'completed');
+    const totalWithdrawn = completedWithdrawals.reduce((s, w) => s + (w.amount || 0), 0);
+
+    // ── Step 2: Compute provable excess drain from ALL available SHORT trades (audit) ──
+    const allShortTrades = db.findMany('trades', t => t.user_id === wallet.user_id && t.side === 'SHORT');
+    let totalExcessDrain = 0;
+    for (const t of allShortTrades) {
+      const cost = (t.entry_price || 0) * (t.quantity || 0);
+      const actualReturn = (cost * 0.5) + (t.realized_pnl || 0);
+      if (actualReturn < 0) totalExcessDrain += Math.abs(actualReturn);
+    }
+
+    let restoredBalance, restoredRealizedPnl, rollbackNotes;
+    let tradesReversed = 0, reversedPnl = 0;
+
+    if (mode === '24h') {
+      // ── 24H MODE: Reverse all trades closed in the last N hours ──
+      // For each trade: reconstruct the returnBack that was applied to wallet.balance
+      // and subtract it. Then subtract realized_pnl too.
+      const recentTrades = db.findMany('trades',
+        t => t.user_id === wallet.user_id && new Date(t.closed_at || t.created_at || 0).getTime() > cutoffMs
+      );
+
+      for (const t of recentTrades) {
+        const cost = (t.entry_price || 0) * (t.quantity || 0);
+        let appliedReturnBack;
+        if (t.side === 'LONG') {
+          appliedReturnBack = cost + (t.realized_pnl || 0);
+        } else {
+          // Bug 3: returnBack was (cost*0.5)+pnl, possibly deeply negative
+          appliedReturnBack = (cost * 0.5) + (t.realized_pnl || 0);
+        }
+        reversedPnl += appliedReturnBack;
+        tradesReversed++;
+      }
+
+      // Also account for unrealized P&L on currently open positions
+      // (those were entered AFTER the cutoff and shouldn't exist in the restored state)
+      const openPosUnrealized = wallet.unrealized_pnl || 0;
+
+      // Restored balance = current balance minus everything accumulated since cutoff
+      restoredRealizedPnl = roundTo(preRealizedPnl - recentTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0), 2);
+      restoredBalance = roundTo(preBalance - reversedPnl - openPosUnrealized, 2);
+
+      // Floor at 0 — investors cannot owe money to the platform
+      restoredBalance = Math.max(0, restoredBalance);
+      rollbackNotes = `24h rollback: reversed ${tradesReversed} trades (returnBack sum: $${reversedPnl.toFixed(2)}), unrealized cleared: $${openPosUnrealized.toFixed(2)}`;
+    } else {
+      // ── FULL MODE: Restore to initial_balance minus completed withdrawals ──
+      restoredBalance = Math.max(0, initialBal - totalWithdrawn);
+      restoredRealizedPnl = 0;
+      tradesReversed = allShortTrades.length; // all history effectively reversed
+      rollbackNotes = `Full reset to initial_balance ($${initialBal.toLocaleString()}) minus withdrawals ($${totalWithdrawn.toLocaleString()})`;
+    }
+
+    // ── Step 3: Close all open positions (entered during the buggy / rollback window) ──
+    const openPositions = db.findMany('positions', p => p.user_id === wallet.user_id && p.status === 'OPEN');
+    for (const pos of openPositions) {
+      pos.status = 'CLOSED';
+      pos.close_price = pos.current_price || pos.entry_price;
+      pos.realized_pnl = 0;  // P&L zeroed — position invalidated by correction
+      pos.closed_at = correctionTimestamp;
+      pos.close_reason = `PLATFORM_ERROR_CORRECTION_${mode.toUpperCase()}`;
+    }
+    if (openPositions.length > 0) db._save('positions');
+
+    // ── Step 4: Apply corrected wallet state ──
+    const correctionAmount = roundTo(restoredBalance - preBalance, 2);
+    wallet.balance            = restoredBalance;
+    wallet.equity             = restoredBalance;
+    wallet.unrealized_pnl     = 0;
+    wallet.realized_pnl       = Math.max(restoredRealizedPnl, -(initialBal)); // floor at -initial
+    wallet.win_count          = mode === 'full' ? 0 : wallet.win_count;
+    wallet.loss_count         = mode === 'full' ? 0 : wallet.loss_count;
+    wallet.trade_count        = mode === 'full' ? 0 : wallet.trade_count;
+    wallet.peak_equity        = Math.max(restoredBalance, wallet.peak_equity || 0);
+    wallet.kill_switch_active = false;  // Re-enable trading with the fix in place
+    wallet.platform_correction_applied = correctionTimestamp;
+    wallet.platform_correction_amount  = correctionAmount;
+    wallet.platform_correction_mode    = mode;
+    db._save('wallets');
+    totalCredited += correctionAmount;
+
+    // ── Step 5: Immutable audit entry ──
+    db.insert('audit_log', {
+      id: `CORR_${Date.now()}_${wallet.user_id.slice(0, 8)}`,
+      type: 'PLATFORM_ERROR_CORRECTION',
+      action: `WALLET_ROLLBACK_${mode.toUpperCase()}`,
+      user_id: wallet.user_id,
+      performed_by: adminUserId,
+      details: {
+        mode,
+        hours_back: mode === '24h' ? hoursBack : null,
+        cutoff_timestamp: mode === '24h' ? cutoffISO : null,
+        reason: 'Bug 3 — unbounded SHORT loss / platform infrastructure error',
+        notes: rollbackNotes,
+        pre_balance: preBalance,
+        pre_equity: preEquity,
+        pre_realized_pnl: preRealizedPnl,
+        initial_balance: initialBal,
+        completed_withdrawals: totalWithdrawn,
+        restored_balance: restoredBalance,
+        correction_amount: correctionAmount,
+        trades_reversed: tradesReversed,
+        reversed_pnl_sum: roundTo(reversedPnl, 2),
+        total_provable_excess_drain: roundTo(totalExcessDrain, 2),
+        open_positions_closed: openPositions.length,
+      },
+      timestamp: correctionTimestamp,
+    });
+
+    correctionReport.push({
+      user_id: wallet.user_id,
+      investor_name: `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.email,
+      pre_balance: preBalance,
+      restored_balance: restoredBalance,
+      correction_amount: correctionAmount,
+      completed_withdrawals: roundTo(totalWithdrawn, 2),
+      trades_reversed: tradesReversed,
+      open_positions_closed: openPositions.length,
+      notes: rollbackNotes,
+    });
+
+    console.log(`[PlatformCorrection:${mode}] ${user.email}: $${preBalance.toFixed(2)} → $${restoredBalance.toFixed(2)} (+$${correctionAmount.toFixed(2)}) | ${rollbackNotes}`);
+  }
+
+  // ── Step 6: Sync capital accounts to restored wallet state ──
+  recalculateCapitalAccountsFromWallets();
+  recalculateOwnershipFromCapitalAccounts();
+
+  console.log(`[PlatformCorrection] ✅ Complete — mode=${mode}, ${correctionReport.length} wallets restored, total credited: $${totalCredited.toFixed(2)}`);
+  return {
+    mode,
+    hoursBack: mode === '24h' ? hoursBack : null,
+    cutoffTimestamp: mode === '24h' ? cutoffISO : null,
+    corrected: correctionReport.length,
+    totalCredited: roundTo(totalCredited, 2),
+    report: correctionReport,
+  };
+}
+
 function recalculateCapitalAccountsFromWallets() {
   const wallets = db.findMany('wallets');
   let updated = 0;
@@ -11542,6 +11728,34 @@ api.post('/api/admin/capital-accounts/recalculate', auth, (req, res) => {
     success: true,
     message: 'Ownership percentages recalculated from capital accounts',
     accounts,
+  });
+});
+
+// POST /api/admin/wallets/platform-error-correction
+// Retroactively restores all investor wallets to a pre-glitch state.
+// Supports two modes:
+//   mode=24h (default): reverses all trades from the last N hours (hoursBack, default 24)
+//   mode=full:          restores each wallet to initial_balance minus completed withdrawals
+// Both modes: close all open positions, re-enable trading, sync capital accounts.
+api.post('/api/admin/wallets/platform-error-correction', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const body = await readBody(req);
+  const mode = (body.mode === 'full') ? 'full' : '24h';
+  const hoursBack = parseInt(body.hoursBack, 10) || 24;
+
+  if (mode === 'full' && !body.confirm_full_reset) {
+    return json(res, 400, { error: 'Full reset requires confirm_full_reset: true in request body' });
+  }
+
+  console.log(`[PlatformCorrection] Admin ${user.email} triggered ${mode} correction (hoursBack: ${hoursBack})`);
+  const result = applyPlatformErrorCorrection(req.userId, mode, hoursBack);
+
+  json(res, 200, {
+    success: true,
+    message: `Platform error correction applied (mode: ${mode}${mode === '24h' ? `, last ${hoursBack}h` : ''}). ${result.corrected} wallets restored. Total credited: $${result.totalCredited.toLocaleString()}.`,
+    ...result,
   });
 });
 
