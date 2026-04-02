@@ -3849,13 +3849,26 @@ api.put('/api/admin/users/:userId', auth, async (req, res) => {
   if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
 
   const body = await readBody(req);
-  const { role } = body;
-  if (!['admin', 'investor'].includes(role)) return json(res, 400, { error: 'Role must be "admin" or "investor"' });
+  const { role, emailVerified, firstName, lastName } = body;
 
-  const target = db.update('users', u => u.id === req.params.userId, { role });
+  const patch = {};
+  if (role !== undefined) {
+    if (!['admin', 'investor'].includes(role)) return json(res, 400, { error: 'Role must be "admin" or "investor"' });
+    patch.role = role;
+  }
+  if (emailVerified !== undefined) {
+    patch.email_verified = !!emailVerified;
+    if (emailVerified) patch.email_verified_at = new Date().toISOString();
+  }
+  if (firstName !== undefined) patch.first_name = firstName;
+  if (lastName !== undefined) patch.last_name = lastName;
+
+  if (Object.keys(patch).length === 0) return json(res, 400, { error: 'No valid fields to update' });
+
+  const target = db.update('users', u => u.id === req.params.userId, patch);
   if (!target) return json(res, 404, { error: 'User not found' });
 
-  json(res, 200, { success: true, user: { id: target.id, email: target.email, role: target.role } });
+  json(res, 200, { success: true, user: { id: target.id, email: target.email, role: target.role, emailVerified: target.email_verified } });
 });
 
 // ─── ADMIN: DELETE USER ───
