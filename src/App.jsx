@@ -16,11 +16,11 @@ import InstallPrompt from './components/InstallPrompt.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 
 const glass = {
-  background: "rgba(255,255,255,0.04)",
-  backdropFilter: "blur(40px) saturate(180%)",
-  WebkitBackdropFilter: "blur(40px) saturate(180%)",
-  border: "1px solid rgba(255,255,255,0.15)",
-  boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 120px rgba(180,200,255,0.06), inset 0 1px 0 rgba(255,255,255,0.4)",
+  background: "rgba(255,255,255,0.035)",
+  backdropFilter: "blur(48px) saturate(200%)",
+  WebkitBackdropFilter: "blur(48px) saturate(200%)",
+  border: "1px solid rgba(255,255,255,0.12)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(255,255,255,0.08), inset 0 1px 0 rgba(255,255,255,0.35), inset 0 -1px 0 rgba(0,0,0,0.1)",
 }
 
 const NAV_ITEMS = [
@@ -103,13 +103,14 @@ function AppNav() {
     )
   }
 
-  // Desktop: floating bar
+  // Desktop: floating bar with refined glass
   return (
     <div style={{
       ...glass,
       position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
-      zIndex: 9999, borderRadius: 20, padding: '8px 12px',
-      display: 'flex', gap: 4, alignItems: 'center',
+      zIndex: 9999, borderRadius: 22, padding: '6px 8px',
+      display: 'flex', gap: 2, alignItems: 'center',
+      animation: 'slideInFromBottom 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
     }}>
       {NAV_ITEMS.map(item => {
         const active = location.pathname === item.path
@@ -118,16 +119,18 @@ function AppNav() {
             key={item.path}
             to={item.path}
             style={{
-              padding: '8px 14px', borderRadius: 14,
-              fontSize: 12, fontWeight: 500,
-              background: active ? 'rgba(0,212,255,0.15)' : 'transparent',
-              color: active ? '#00D4FF' : 'rgba(255,255,255,0.5)',
-              transition: 'all 0.2s',
-              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '9px 16px', borderRadius: 16,
+              fontSize: 12, fontWeight: active ? 600 : 500,
+              letterSpacing: active ? '0.02em' : '0',
+              background: active ? 'rgba(0,212,255,0.12)' : 'transparent',
+              color: active ? '#00D4FF' : 'rgba(255,255,255,0.45)',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              display: 'flex', alignItems: 'center', gap: 6,
               whiteSpace: 'nowrap', textDecoration: 'none',
+              boxShadow: active ? '0 0 16px rgba(0,212,255,0.15), inset 0 0.5px 0 rgba(0,212,255,0.2)' : 'none',
             }}
           >
-            <span>{item.icon}</span>
+            <span style={{ fontSize: 13, opacity: active ? 1 : 0.7 }}>{item.icon}</span>
             <span>{item.label}</span>
           </Link>
         )

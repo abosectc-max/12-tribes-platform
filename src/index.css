@@ -1,3 +1,51 @@
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.04);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.15);
+  --glass-blur: blur(40px) saturate(180%);
+  --glass-shadow: 0 8px 40px rgba(0, 0, 0, 0.08), 0 0 120px rgba(180, 200, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  --accent-primary: #00D4FF;
+  --accent-hover: rgba(0, 212, 255, 0.2);
+  --accent-active: rgba(0, 212, 255, 0.15);
+  --text-primary: #ffffff;
+  --text-muted: rgba(255, 255, 255, 0.5);
+  --bg-dark: #0a0a1a;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes glowPulse {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(0, 212, 255, 0.3), 0 8px 40px rgba(0, 0, 0, 0.08);
+  }
+  50% {
+    box-shadow: 0 0 40px rgba(0, 212, 255, 0.4), 0 8px 40px rgba(0, 0, 0, 0.08);
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes slideInFromBottom {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -7,26 +55,34 @@
 html, body, #root {
   width: 100%;
   min-height: 100vh;
-  background: #0a0a1a;
-  color: #fff;
+  background: var(--bg-dark);
+  color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+#root > div {
+  animation: fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.1);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  transition: background 0.3s ease;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.2);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 a {
@@ -35,5 +91,6 @@ a {
 }
 
 ::selection {
-  background: rgba(0,212,255,0.3);
+  background: rgba(0, 212, 255, 0.4);
+  color: var(--text-primary);
 }
