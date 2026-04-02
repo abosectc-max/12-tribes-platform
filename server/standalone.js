@@ -12042,14 +12042,17 @@ api.post('/api/admin/wallets/restore-from-snapshot', auth, async (req, res) => {
 
     // Disable auto-trading after restore so balances are not immediately overwritten.
     // Admin must manually re-enable trading after verifying restored values.
+    // CRITICAL: Use JSON deep-clone for newData so that db.update()'s Object.assign()
+    // actually REPLACES record.data with a new object reference (isAutoTrading: false)
+    // rather than assigning the same reference back — which would be a no-op in memory
+    // and could race against other async mutations before _persistUpdate fires.
     const settings = db.findOne('fund_settings', s => s.user_id === userId);
     if (settings) {
-      if (!settings.data) settings.data = {};
-      if (!settings.data.autoTrading) settings.data.autoTrading = {};
-      settings.data.autoTrading.isAutoTrading = false;
-      settings.data.autoTrading.agentsActive = [];
-      settings.updated_at = ts;
-      db.update('fund_settings', s => s.id === settings.id, { data: settings.data, updated_at: ts });
+      const newData = JSON.parse(JSON.stringify(settings.data || {}));
+      if (!newData.autoTrading) newData.autoTrading = {};
+      newData.autoTrading.isAutoTrading = false;
+      newData.autoTrading.agentsActive = [];
+      db.update('fund_settings', s => s.id === settings.id, { data: newData, updated_at: ts });
     }
 
     report.push({ userId, email: user?.email, preBalance, restoredBalance: patch.balance, restoredEquity: patch.equity, positionsClosed: openPositions.length, status: 'OK' });
