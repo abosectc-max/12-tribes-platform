@@ -2783,7 +2783,7 @@ api.get('/api/health', (req, res) => {
 });
 
 // ─── ADMIN: GET / SET RATE LIMIT CONFIG ───
-api.get('/api/admin/rate-limit', requireAdmin, (req, res) => {
+api.get('/api/admin/rate-limit', auth, (req, res) => {
   json(res, 200, {
     config: { maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour },
     state: {
@@ -2793,7 +2793,7 @@ api.get('/api/admin/rate-limit', requireAdmin, (req, res) => {
   });
 });
 
-api.post('/api/admin/rate-limit', requireAdmin, (req, res) => {
+api.post('/api/admin/rate-limit', auth, (req, res) => {
   const { maxTradesPerHour, resetHour } = req.body || {};
   const changes = [];
   if (typeof maxTradesPerHour === 'number' && maxTradesPerHour >= 0) {
