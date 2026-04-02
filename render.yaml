@@ -9,7 +9,9 @@ services:
     startCommand: node --max-old-space-size=6144 --expose-gc server/standalone.js
     # Health check: Render waits for /api/health to return 200 before marking
     # the new deploy live. This prevents traffic hitting a half-booted instance.
+    # Timeout raised to 300s (5 min) — gives PG cold-start + table load time.
     healthCheckPath: /api/health
+    healthCheckTimeout: 300
     autoDeploy: true
     disk:
       name: tribes-data
@@ -26,3 +28,7 @@ services:
         value: hybrid
       - key: NODE_ENV
         value: production
+      # ── SECRET / SENSITIVE VARS — set value in Render dashboard, NOT here ──
+      # DATABASE_URL    — set in Render dashboard (PostgreSQL internal connection string)
+      # ADMIN_EMAIL     — set in Render dashboard (e.g. abose.ctc@gmail.com)
+      #                   Required: prevents first-registered user from becoming admin

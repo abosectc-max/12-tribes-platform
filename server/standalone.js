@@ -2479,15 +2479,30 @@ function closePosition(userId, positionId) {
       if (pnl >= 0) { agent.wins++; agent.best_trade = Math.max(agent.best_trade, pnl); }
       else { agent.losses++; agent.worst_trade = Math.min(agent.worst_trade, pnl); }
       agent.avg_return = agent.total_trades > 0 ? agent.total_pnl / agent.total_trades : 0;
-      db._save('agent_stats');
+      // PG-safe: replace no-op db._save() with db.update() so agent stats persist
+      db.update('agent_stats', a => a.id === agent.id, {
+        total_trades: agent.total_trades,
+        total_pnl:    agent.total_pnl,
+        wins:         agent.wins,
+        losses:       agent.losses,
+        best_trade:   agent.best_trade,
+        worst_trade:  agent.worst_trade,
+        avg_return:   agent.avg_return,
+      });
     }
   }
 
-  // Close position
+  // Close position — PG-safe: use db.update() so closed status persists
   pos.status = 'CLOSED';
   pos.close_price = closePrice;
   pos.realized_pnl = pnl;
-  db._save('positions');
+  pos.updated_at = new Date().toISOString();
+  db.update('positions', p => p.id === pos.id, {
+    status:       'CLOSED',
+    close_price:  closePrice,
+    realized_pnl: pnl,
+    updated_at:   pos.updated_at,
+  });
 
   // Attribute P&L back to originating signal for signal performance tracking
   try {
@@ -4462,6 +4477,43 @@ setInterval(() => {
   }
 }, 30 * 1000); // Every 30 seconds
 
+// ─── POSITIONS + AGENT_STATS SYNC INTERVAL ───────────────────────────────────
+// Any code that mutates positions/agent_stats in-memory without going through
+// db.update() (legacy db._save() calls) is caught here.  Runs every 60 seconds.
+setInterval(() => {
+  if (!USE_POSTGRES) return; // JSON mode: db.update() already writes to file
+  try {
+    // Sync open positions only — closed positions are written via db.update() in closePosition()
+    const openPositions = db.findMany('positions', p => p.status === 'OPEN');
+    for (const p of openPositions) {
+      db.update('positions', pp => pp.id === p.id, {
+        unrealized_pnl: p.unrealized_pnl,
+        current_price:  p.current_price,
+        updated_at:     p.updated_at || new Date().toISOString(),
+      });
+    }
+  } catch (err) {
+    console.error(`[PosSync] ❌ Failed to sync positions to PG: ${err.message}`);
+  }
+  try {
+    // Sync agent stats — catches any paths that still use db._save('agent_stats')
+    const agents = db.findMany('agent_stats');
+    for (const a of agents) {
+      db.update('agent_stats', aa => aa.id === a.id, {
+        total_trades: a.total_trades,
+        total_pnl:    a.total_pnl,
+        wins:         a.wins,
+        losses:       a.losses,
+        best_trade:   a.best_trade,
+        worst_trade:  a.worst_trade,
+        avg_return:   a.avg_return,
+      });
+    }
+  } catch (err) {
+    console.error(`[AgentSync] ❌ Failed to sync agent_stats to PG: ${err.message}`);
+  }
+}, 60 * 1000); // Every 60 seconds
+
 // ─── AUTO PROFILE BACKUP: Runs every 30 minutes alongside DB rotation ───
 const PROFILE_BACKUP_INTERVAL_MS = 1800000; // 30 minutes
 const profileBackupInterval = setInterval(() => {
@@ -5518,7 +5570,8 @@ api.put('/api/fund-settings', auth, async (req, res) => {
   if (existing) {
     existing.data = body;
     existing.updated_at = new Date().toISOString();
-    db._save('fund_settings');
+    // PG-safe: replace no-op db._save() with db.update() so settings persist
+    db.update('fund_settings', s => s.id === existing.id, { data: existing.data, updated_at: existing.updated_at });
   } else {
     db.insert('fund_settings', {
       user_id: req.userId,
@@ -10606,7 +10659,8 @@ api.post('/api/auto-trading/toggle', auth, async (req, res) => {
     }
   }
   settings.updated_at = new Date().toISOString();
-  db._save('fund_settings');
+  // PG-safe: replace no-op db._save() with db.update() so toggle state persists
+  db.update('fund_settings', s => s.id === settings.id, { data: settings.data, updated_at: settings.updated_at });
 
   const openPositions = db.findMany('positions', p => p.user_id === req.userId && p.status === 'OPEN');
 
@@ -12442,7 +12496,8 @@ function ensureAutoTradingActive() {
         settings.data.autoTrading.tradingStartedAt = settings.data.autoTrading.tradingStartedAt || Date.now();
         settings.data.autoTrading.agentsActive = AI_AGENTS.map(a => a.name);
         settings.updated_at = new Date().toISOString();
-        db._save('fund_settings');
+        // PG-safe: replace no-op db._save() with db.update() so activation persists
+        db.update('fund_settings', s => s.id === settings.id, { data: settings.data, updated_at: settings.updated_at });
         activatedCount++;
       }
     }
