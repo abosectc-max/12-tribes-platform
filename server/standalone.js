@@ -12005,13 +12005,14 @@ api.post('/api/admin/wallets/restore-from-snapshot', auth, async (req, res) => {
     Object.assign(wallet, patch);
     db.update('wallets', w => w.id === wallet.id, patch);
 
-    // Re-enable auto-trading
+    // Disable auto-trading after restore so balances are not immediately overwritten.
+    // Admin must manually re-enable trading after verifying restored values.
     const settings = db.findOne('fund_settings', s => s.user_id === userId);
     if (settings) {
       if (!settings.data) settings.data = {};
       if (!settings.data.autoTrading) settings.data.autoTrading = {};
-      settings.data.autoTrading.isAutoTrading = true;
-      settings.data.autoTrading.agentsActive = AI_AGENTS.map(a => a.name);
+      settings.data.autoTrading.isAutoTrading = false;
+      settings.data.autoTrading.agentsActive = [];
       settings.updated_at = ts;
       db.update('fund_settings', s => s.id === settings.id, { data: settings.data, updated_at: ts });
     }
