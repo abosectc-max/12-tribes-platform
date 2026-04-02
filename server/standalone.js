@@ -7678,6 +7678,12 @@ function runAutoTradeTick() {
         const winDrift = Math.abs(reconWins - (wallet.win_count || 0));
         const lossDrift = Math.abs(reconLosses - (wallet.loss_count || 0));
 
+        // Grace period: skip reconciliation for 10 min after snapshot restore
+        const tickRecentRestore = wallet.platform_correction_mode === 'snapshot_restore' &&
+          wallet.platform_correction_applied &&
+          (Date.now() - new Date(wallet.platform_correction_applied).getTime()) < 10 * 60 * 1000;
+        if (tickRecentRestore) continue;
+
         if (pnlDrift > 1 || winDrift > 5 || lossDrift > 5) {
           const user = db.findOne('users', u => u.id === userId);
           console.log(`[RECONCILE] ${user?.email || userId.slice(0,8)}: PnL drift $${pnlDrift.toFixed(2)} (wallet=$${walletRpnl} → positions=$${reconRealizedPnl}) | W drift=${winDrift} L drift=${lossDrift}`);
@@ -9413,7 +9419,13 @@ function qaCheckWalletReconciliation() {
     const pnlDrift = Math.abs(reconPnl - walletPnl);
 
     // Reconcile realized_pnl if drift exceeds $5
-    if (pnlDrift > 5) {
+    // GRACE PERIOD: skip reconciliation for 10 minutes after a snapshot restore —
+    // the positions table may still contain stale trades whose pnl sum does not
+    // match the authoritative snapshot value written by the restore endpoint.
+    const recentRestore = wallet.platform_correction_mode === 'snapshot_restore' &&
+      wallet.platform_correction_applied &&
+      (Date.now() - new Date(wallet.platform_correction_applied).getTime()) < 10 * 60 * 1000;
+    if (pnlDrift > 5 && !recentRestore) {
       const oldPnl = walletPnl;
       wallet.realized_pnl = reconPnl;
       // Recompute balance: initial + realized_pnl
@@ -9427,6 +9439,8 @@ function qaCheckWalletReconciliation() {
         severity: pnlDrift > 1000 ? 'CRITICAL' : 'WARNING',
       });
       console.warn(`[QA SENTINEL] 🔧 Wallet PnL drift for ${uid.slice(0,8)}: $${oldPnl.toFixed(2)} → $${reconPnl.toFixed(2)} (Δ$${pnlDrift.toFixed(2)})`);
+    } else if (pnlDrift > 5 && recentRestore) {
+      console.log(`[QA SENTINEL] ⏳ Skipping PnL reconciliation for ${uid.slice(0,8)} — snapshot restore grace period active`);
     }
 
     // Reconcile trade_count
