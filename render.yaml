@@ -6,7 +6,7 @@ services:
     # plan intentionally omitted — uses whatever is set in the Render dashboard.
     # Previously had plan: starter which was overriding and capping resources.
     buildCommand: npm install --production
-    startCommand: node --max-old-space-size=1536 --expose-gc server/standalone.js
+    startCommand: node --max-old-space-size=3072 --expose-gc server/standalone.js
     # Health check: Render waits for /api/health to return 200 before marking
     # the new deploy live. This prevents traffic hitting a half-booted instance.
     healthCheckPath: /api/health
