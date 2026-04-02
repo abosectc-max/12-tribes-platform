@@ -504,17 +504,99 @@ if (USE_POSTGRES) {
         if (db._pgColumns.users) db._pgColumns.users.add('email_verified');
         console.log('[Migration] ✅ Schema columns ensured: wallets.balance_locked, users.email_verified');
 
-        // ─── ADMIN BOOTSTRAP ───
-        // Ensure the designated admin always has admin role and a known password
+        // ─── USER BOOTSTRAP: PASSWORD RESET + ROLE ENFORCEMENT ───
+        // On every boot, reset ALL user passwords to known defaults so no one gets locked out.
+        // Passwords are per-user, set from env vars with sensible defaults.
+        // Also enforces admin role for the designated admin email.
+        const USER_PASSWORDS = {
+          'abose.ctc@gmail.com':        process.env.PW_ADMIN        || 'Tribes2026!',
+          'hubertcinc@gmail.com':       process.env.PW_DRE          || 'Tribes2026!',
+          'wwitherspoon51@gmail.com':   process.env.PW_WILL         || 'Tribes2026!',
+          'mr.jones80@gmail.com':       process.env.PW_ROD          || 'Tribes2026!',
+          'effortlesscoolent@gmail.com': process.env.PW_EFFORTLESS  || 'Tribes2026!',
+        };
         const DESIGNATED_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
-        const adminUser = db.findOne('users', u => u.email === DESIGNATED_ADMIN_EMAIL);
-        if (adminUser) {
+
+        const allUsers = db.findMany('users');
+        let pwResetCount = 0;
+        for (const u of allUsers) {
           const updates = {};
-          if (adminUser.role !== 'admin') { updates.role = 'admin'; }
-          if (Object.keys(updates).length > 0) {
-            db.update('users', u => u.id === adminUser.id, updates);
-            console.log(`[Bootstrap] ✅ Admin role enforced for ${DESIGNATED_ADMIN_EMAIL}`);
+          // Password reset
+          const defaultPw = USER_PASSWORDS[u.email] || 'Tribes2026!';
+          updates.password_hash = hashPassword(defaultPw);
+          // Role enforcement
+          if (u.email === DESIGNATED_ADMIN_EMAIL && u.role !== 'admin') {
+            updates.role = 'admin';
+          } else if (u.email !== DESIGNATED_ADMIN_EMAIL && u.role === 'admin') {
+            updates.role = 'investor';
           }
+          db.update('users', uu => uu.id === u.id, updates);
+          pwResetCount++;
+        }
+        console.log(`[Bootstrap] ✅ ${pwResetCount} user passwords reset to boot defaults`);
+        console.log(`[Bootstrap] ✅ Admin role enforced for ${DESIGNATED_ADMIN_EMAIL}`);
+
+        // ─── DATA RECOVERY: AUTO-SNAPSHOT ON BOOT ───
+        // Capture a full wallet snapshot every time the server boots so we always have
+        // a recent recovery point. Stored in the 'recovery_snapshots' table.
+        try {
+          // Ensure recovery table exists
+          await db.pool.query(`
+            CREATE TABLE IF NOT EXISTS recovery_snapshots (
+              id TEXT PRIMARY KEY,
+              created_at TIMESTAMPTZ DEFAULT NOW(),
+              trigger TEXT DEFAULT 'boot',
+              data JSONB
+            )
+          `);
+          if (db._pgColumns && !db._pgColumns.recovery_snapshots) {
+            db._pgColumns.recovery_snapshots = new Set(['id', 'created_at', 'trigger', 'data']);
+          }
+
+          const wallets = db.findMany('wallets');
+          const users = db.findMany('users');
+          const capitalAccounts = db.findMany('capital_accounts');
+          const fundSettings = db.findMany('fund_settings');
+
+          const snapshotData = {
+            timestamp: new Date().toISOString(),
+            wallets: wallets.map(w => ({
+              user_id: w.user_id,
+              balance: w.balance,
+              equity: w.equity,
+              initial_balance: w.initial_balance || w.initialBalance,
+              realized_pnl: w.realized_pnl || w.realizedPnL,
+              unrealized_pnl: w.unrealized_pnl || w.unrealizedPnL,
+              balance_locked: w.balance_locked,
+              trade_count: w.trade_count,
+            })),
+            users: users.map(u => ({
+              id: u.id,
+              email: u.email,
+              first_name: u.first_name,
+              last_name: u.last_name,
+              role: u.role,
+              email_verified: u.email_verified,
+            })),
+            capital_accounts: capitalAccounts.map(ca => ({
+              user_id: ca.user_id,
+              investor_name: ca.investor_name,
+              beginning_balance: ca.beginning_balance,
+              contributions: ca.contributions,
+              ending_balance: ca.ending_balance,
+              allocated_income: ca.allocated_income,
+            })),
+            fund_settings_count: fundSettings.length,
+          };
+
+          const snapshotId = `boot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          await db.pool.query(
+            'INSERT INTO recovery_snapshots (id, trigger, data) VALUES ($1, $2, $3)',
+            [snapshotId, 'boot', JSON.stringify(snapshotData)]
+          );
+          console.log(`[Recovery] ✅ Boot snapshot saved: ${snapshotId} (${wallets.length} wallets, ${users.length} users)`);
+        } catch (snapErr) {
+          console.error('[Recovery] ⚠️  Boot snapshot failed (non-fatal):', snapErr.message);
         }
       } catch (migErr) {
         console.error('[Migration] ⚠️  Column migration failed (non-fatal):', migErr.message);
@@ -12187,6 +12269,132 @@ api.get('/api/admin/wallets', auth, (req, res) => {
     };
   });
   json(res, 200, { count: result.length, wallets: result });
+});
+
+// ═══════ DATA RECOVERY ENDPOINTS ═══════
+
+// GET /api/admin/recovery/snapshots — List all recovery snapshots
+api.get('/api/admin/recovery/snapshots', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  try {
+    const result = await db.pool.query(
+      'SELECT id, created_at, trigger, (data->>\'timestamp\') as snapshot_time FROM recovery_snapshots ORDER BY created_at DESC LIMIT 50'
+    );
+    json(res, 200, { count: result.rows.length, snapshots: result.rows });
+  } catch (e) {
+    json(res, 500, { error: 'Failed to list snapshots', detail: e.message });
+  }
+});
+
+// GET /api/admin/recovery/snapshots/:id — Get full snapshot data
+api.get('/api/admin/recovery/snapshot', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const snapshotId = url.searchParams.get('id');
+  if (!snapshotId) return json(res, 400, { error: 'Missing ?id= parameter' });
+  try {
+    const result = await db.pool.query('SELECT * FROM recovery_snapshots WHERE id = $1', [snapshotId]);
+    if (result.rows.length === 0) return json(res, 404, { error: 'Snapshot not found' });
+    json(res, 200, result.rows[0]);
+  } catch (e) {
+    json(res, 500, { error: 'Failed to get snapshot', detail: e.message });
+  }
+});
+
+// POST /api/admin/recovery/restore — Restore wallets from a recovery snapshot
+api.post('/api/admin/recovery/restore', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.snapshotId || !body.confirm) return json(res, 400, { error: 'Requires snapshotId and confirm: true' });
+
+  try {
+    const result = await db.pool.query('SELECT * FROM recovery_snapshots WHERE id = $1', [body.snapshotId]);
+    if (result.rows.length === 0) return json(res, 404, { error: 'Snapshot not found' });
+
+    const snapData = typeof result.rows[0].data === 'string' ? JSON.parse(result.rows[0].data) : result.rows[0].data;
+    const ts = new Date().toISOString();
+    const report = [];
+
+    // Restore wallets
+    for (const sw of (snapData.wallets || [])) {
+      const wallet = db.findOne('wallets', w => w.user_id === sw.user_id);
+      if (wallet) {
+        db.update('wallets', w => w.id === wallet.id, {
+          balance: sw.balance,
+          equity: sw.equity,
+          realized_pnl: sw.realized_pnl,
+          unrealized_pnl: sw.unrealized_pnl || 0,
+          trade_count: sw.trade_count || 0,
+          balance_locked: true,
+          updated_at: ts,
+        });
+        report.push({ user_id: sw.user_id, restored_balance: sw.balance, status: 'OK' });
+      } else {
+        report.push({ user_id: sw.user_id, status: 'WALLET_NOT_FOUND' });
+      }
+    }
+
+    // Restore user profiles (roles, names)
+    for (const su of (snapData.users || [])) {
+      const user = db.findOne('users', u => u.id === su.id);
+      if (user) {
+        db.update('users', u => u.id === user.id, {
+          role: su.role,
+          first_name: su.first_name,
+          last_name: su.last_name,
+          email_verified: su.email_verified,
+        });
+      }
+    }
+
+    console.log(`[Recovery] ✅ Restored from snapshot ${body.snapshotId}: ${report.length} wallets`);
+    json(res, 200, { success: true, snapshotId: body.snapshotId, snapshotTime: snapData.timestamp, report });
+  } catch (e) {
+    json(res, 500, { error: 'Restore failed', detail: e.message });
+  }
+});
+
+// POST /api/admin/recovery/snapshot-now — Create a manual recovery snapshot
+api.post('/api/admin/recovery/snapshot-now', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  try {
+    const wallets = db.findMany('wallets');
+    const users = db.findMany('users');
+    const capitalAccounts = db.findMany('capital_accounts');
+
+    const snapshotData = {
+      timestamp: new Date().toISOString(),
+      wallets: wallets.map(w => ({
+        user_id: w.user_id, balance: w.balance, equity: w.equity,
+        initial_balance: w.initial_balance || w.initialBalance,
+        realized_pnl: w.realized_pnl || w.realizedPnL,
+        unrealized_pnl: w.unrealized_pnl || w.unrealizedPnL,
+        balance_locked: w.balance_locked, trade_count: w.trade_count,
+      })),
+      users: users.map(u => ({
+        id: u.id, email: u.email, first_name: u.first_name, last_name: u.last_name,
+        role: u.role, email_verified: u.email_verified,
+      })),
+      capital_accounts: capitalAccounts.map(ca => ({
+        user_id: ca.user_id, investor_name: ca.investor_name,
+        beginning_balance: ca.beginning_balance, contributions: ca.contributions,
+        ending_balance: ca.ending_balance, allocated_income: ca.allocated_income,
+      })),
+    };
+
+    const snapshotId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await db.pool.query(
+      'INSERT INTO recovery_snapshots (id, trigger, data) VALUES ($1, $2, $3)',
+      [snapshotId, 'manual', JSON.stringify(snapshotData)]
+    );
+    json(res, 200, { success: true, snapshotId, timestamp: snapshotData.timestamp, wallets: wallets.length, users: users.length });
+  } catch (e) {
+    json(res, 500, { error: 'Snapshot failed', detail: e.message });
+  }
 });
 
 // POST /api/admin/capital-accounts/reconcile-from-wallets
