@@ -4399,6 +4399,36 @@ api.post('/api/admin/backup/restore', auth, async (req, res) => {
   }
 });
 
+// ─── WALLET PG SYNC: Persist in-memory wallet state to PostgreSQL every 30s ───
+// CRITICAL FIX: _executeTrade and closePosition mutate wallet objects directly
+// then call db._save() which is a no-op in PG mode. Without this sync, all
+// trading P&L only lives in memory and is wiped on every server restart/deploy.
+// This interval writes the current in-memory wallet state to PG every 30 seconds,
+// ensuring balance, equity, realized_pnl, and win/loss counts survive restarts.
+setInterval(() => {
+  try {
+    const wallets = db.findMany('wallets');
+    let synced = 0;
+    for (const w of wallets) {
+      db.update('wallets', ww => ww.id === w.id, {
+        balance:        w.balance,
+        equity:         w.equity,
+        unrealized_pnl: w.unrealized_pnl,
+        realized_pnl:   w.realized_pnl,
+        trade_count:    w.trade_count,
+        win_count:      w.win_count,
+        loss_count:     w.loss_count,
+        peak_equity:    w.peak_equity,
+        kill_switch_active: w.kill_switch_active,
+      });
+      synced++;
+    }
+    if (synced > 0) console.log(`[WalletSync] ✅ Synced ${synced} wallets to PostgreSQL`);
+  } catch (err) {
+    console.error(`[WalletSync] ❌ Failed to sync wallets to PG: ${err.message}`);
+  }
+}, 30 * 1000); // Every 30 seconds
+
 // ─── AUTO PROFILE BACKUP: Runs every 30 minutes alongside DB rotation ───
 const PROFILE_BACKUP_INTERVAL_MS = 1800000; // 30 minutes
 const profileBackupInterval = setInterval(() => {
@@ -10714,20 +10744,27 @@ function applyPlatformErrorCorrection(adminUserId, mode = '24h', hoursBack = 24)
     if (openPositions.length > 0) db._save('positions');
 
     // ── Step 4: Apply corrected wallet state ──
+    // CRITICAL: Use db.update() — NOT direct mutation + db._save().
+    // db._save() is a no-op in PostgreSQL mode. Direct mutation only changes
+    // the in-memory cache; without db.update() the correction is lost on restart.
     const correctionAmount = roundTo(restoredBalance - preBalance, 2);
-    wallet.balance            = restoredBalance;
-    wallet.equity             = restoredBalance;
-    wallet.unrealized_pnl     = 0;
-    wallet.realized_pnl       = Math.max(restoredRealizedPnl, -(initialBal)); // floor at -initial
-    wallet.win_count          = mode === 'full' ? 0 : wallet.win_count;
-    wallet.loss_count         = mode === 'full' ? 0 : wallet.loss_count;
-    wallet.trade_count        = mode === 'full' ? 0 : wallet.trade_count;
-    wallet.peak_equity        = Math.max(restoredBalance, wallet.peak_equity || 0);
-    wallet.kill_switch_active = false;  // Re-enable trading with the fix in place
-    wallet.platform_correction_applied = correctionTimestamp;
-    wallet.platform_correction_amount  = correctionAmount;
-    wallet.platform_correction_mode    = mode;
-    db._save('wallets');
+    const walletPatch = {
+      balance:                          restoredBalance,
+      equity:                           restoredBalance,
+      unrealized_pnl:                   0,
+      realized_pnl:                     Math.max(restoredRealizedPnl, -(initialBal)),
+      win_count:                        mode === 'full' ? 0 : wallet.win_count,
+      loss_count:                       mode === 'full' ? 0 : wallet.loss_count,
+      trade_count:                      mode === 'full' ? 0 : wallet.trade_count,
+      peak_equity:                      Math.max(restoredBalance, wallet.peak_equity || 0),
+      kill_switch_active:               false,
+      platform_correction_applied:      correctionTimestamp,
+      platform_correction_amount:       correctionAmount,
+      platform_correction_mode:         mode,
+    };
+    db.update('wallets', w => w.id === wallet.id, walletPatch);
+    // Also apply patch to in-memory reference so subsequent loop iterations see updated state
+    Object.assign(wallet, walletPatch);
     totalCredited += correctionAmount;
 
     // ── Step 5: Immutable audit entry ──
