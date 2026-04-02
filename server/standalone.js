@@ -471,9 +471,29 @@ let db;
 const USE_POSTGRES = !!process.env.DATABASE_URL;
 if (USE_POSTGRES) {
   const { PostgresAdapter } = await import('./db/pg-adapter.js');
-  db = new PostgresAdapter();
-  await db.init();
-  console.log('[DB] ✅ PostgreSQL mode — persistent, scalable, no memory ceiling');
+  // Retry wrapper — Render PostgreSQL can take 20-30s to accept connections on cold deploy.
+  // Without retries: 2s connection timeout fires → init() throws → top-level ESM await
+  // crashes the process before server.listen() → Render marks deploy failed, rolls back.
+  let pgInitDone = false;
+  let pgAttempt = 0;
+  const PG_MAX_RETRIES = 3;
+  while (!pgInitDone && pgAttempt < PG_MAX_RETRIES) {
+    pgAttempt++;
+    try {
+      db = new PostgresAdapter({ connectionTimeoutMillis: 30000 });
+      await db.init();
+      pgInitDone = true;
+      console.log('[DB] ✅ PostgreSQL mode — persistent, scalable, no memory ceiling');
+    } catch (err) {
+      if (pgAttempt < PG_MAX_RETRIES) {
+        console.warn(`[DB] ⚠️  PG init attempt ${pgAttempt}/${PG_MAX_RETRIES} failed: ${err.message} — retrying in 10s`);
+        await new Promise(r => setTimeout(r, 10000));
+      } else {
+        console.error(`[DB] ❌ PG init failed after ${PG_MAX_RETRIES} attempts. Last error: ${err.message}`);
+        throw err;
+      }
+    }
+  }
 } else {
   db = new JsonDB(DATA_DIR);
   console.log('[DB] JSON file mode — suitable for dev/MVP');

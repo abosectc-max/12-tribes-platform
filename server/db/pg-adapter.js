@@ -57,7 +57,7 @@ export class PostgresAdapter {
     this.options = {
       maxConnections: options.maxConnections || 10,
       idleTimeoutMillis: options.idleTimeoutMillis || 30000,
-      connectionTimeoutMillis: options.connectionTimeoutMillis || 2000,
+      connectionTimeoutMillis: options.connectionTimeoutMillis || 30000, // 30s — allows for PG cold-start on Render deploy
     };
     this._initialized = false;
     this._pendingWrites = new Map(); // Track pending async writes for debugging
