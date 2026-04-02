@@ -3782,7 +3782,7 @@ api.get('/api/admin/users', auth, (req, res) => {
       firstName: u.firstName || u.first_name || '',
       lastName: u.lastName || u.last_name || '',
       role: u.role || 'investor',
-      emailVerified: u.emailVerified || false,
+      emailVerified: u.email_verified || u.emailVerified || false,
       tradingMode: u.tradingMode || 'paper',
       createdAt: u.created_at || u.createdAt || null,
       lastLogin: u.last_login || u.lastLogin || null,
@@ -5253,8 +5253,9 @@ api.post('/api/admin/cloud-sync/restore', auth, async (req, res) => {
 
   const result = restoreFromCloudSnapshot(snapshot);
 
-  // Ensure auto-trading stays active after restore
-  try { ensureAutoTradingActive(); } catch {}
+  // NOTE: ensureAutoTradingActive() intentionally NOT called here.
+  // Cloud snapshot restores may deliberately set wallets to trading-disabled state.
+  // Re-enabling at this point would undo the restore intent.
   // Reload agent intelligence
   try { loadAgentIntelligence(); } catch {}
 
@@ -5709,7 +5710,7 @@ api.get('/api/investors/roster', auth, (req, res) => {
       firstName: u.firstName || u.first_name || '',
       lastName: u.lastName || u.last_name || '',
       role: u.role || 'investor',
-      emailVerified: u.emailVerified || false,
+      emailVerified: u.email_verified || u.emailVerified || false,
       tradingMode: u.tradingMode || 'paper',
       createdAt: u.created_at || u.createdAt || null,
       lastLogin: u.last_login || u.lastLogin || null,
@@ -12585,6 +12586,14 @@ function ensureAutoTradingActive() {
       if (!settings.data.autoTrading) settings.data.autoTrading = {};
 
       if (!settings.data.autoTrading.isAutoTrading) {
+        // GUARD: Never re-enable trading on accounts that were deliberately paused via snapshot restore.
+        // wallet.platform_correction_mode === 'snapshot_restore' is the persistent signal that an
+        // admin manually restored this wallet and disabled trading. Respect that decision on boot.
+        if (wallet.platform_correction_mode === 'snapshot_restore') {
+          console.log(`[Boot] Skipping auto-trading re-enable for user ${user.id} — wallet is in snapshot_restore mode (trading was deliberately disabled by admin)`);
+          continue;
+        }
+
         settings.data.autoTrading.isAutoTrading = true;
         settings.data.autoTrading.tradingMode = settings.data.autoTrading.tradingMode || 'balanced';
         settings.data.autoTrading.tradingStartedAt = settings.data.autoTrading.tradingStartedAt || Date.now();
