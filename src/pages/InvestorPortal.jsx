@@ -315,8 +315,10 @@ function RequestAccessForm({ onSwitch, isMobile }) {
 
 // ═══════ LOGIN FORM ═══════
 function LoginForm({ onAuth, onSwitch, isMobile }) {
-  const [email, setEmail] = useState("");
+  const savedEmail = (() => { try { return localStorage.getItem('12tribes_remembered_email') || ''; } catch { return ''; } })();
+  const [email, setEmail] = useState(savedEmail);
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(!!savedEmail);
   const [error, setError] = useState("");
   const [resetMode, setResetMode] = useState(false); // forgot password flow
   const [resetStep, setResetStep] = useState(1); // 1: enter email, 2: enter code + new password
@@ -350,6 +352,14 @@ function LoginForm({ onAuth, onSwitch, isMobile }) {
       setLoading(false);
       if (result.success) {
         haptics.success();
+        // Remember Me: save or clear email for next visit
+        try {
+          if (rememberMe) {
+            localStorage.setItem('12tribes_remembered_email', email.toLowerCase().trim());
+          } else {
+            localStorage.removeItem('12tribes_remembered_email');
+          }
+        } catch {}
         onAuth(result.user);
       } else {
         haptics.error();
@@ -431,8 +441,23 @@ function LoginForm({ onAuth, onSwitch, isMobile }) {
               style={inputStyle}
             />
 
-            {/* Forgot Password Link */}
-            <div style={{ textAlign: "right", marginTop: -6 }}>
+            {/* Remember Me + Forgot Password Row */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: -6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", WebkitTapHighlightColor: "transparent" }}>
+                <div
+                  onClick={() => setRememberMe(!rememberMe)}
+                  style={{
+                    width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                    border: rememberMe ? "1px solid rgba(0,212,255,0.5)" : "1px solid rgba(255,255,255,0.15)",
+                    background: rememberMe ? "rgba(0,212,255,0.15)" : "rgba(255,255,255,0.04)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  {rememberMe && <span style={{ fontSize: 12, color: "#00D4FF", lineHeight: 1 }}>✓</span>}
+                </div>
+                <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", userSelect: "none" }}>Remember me</span>
+              </label>
               <span onClick={() => { setResetMode(true); setResetStep(1); setError(""); setResetMessage(""); }}
                 style={{ fontSize: 12, color: "#00D4FF", cursor: "pointer", opacity: 0.8 }}>
                 Forgot password?
