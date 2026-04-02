@@ -93,16 +93,24 @@ export class PostgresAdapter {
       conn.release();
       console.log(`[PG-ADAPTER] Connected to PostgreSQL at ${result.rows[0].now}`);
 
-      // MEMORY-SAFE: Load tables with row limits for high-volume tables
-      // Financial tables: load ALL data (critical for audit/compliance/tax accuracy)
-      // Operational tables: capped to prevent OOM on 512MB Render
-      // Memory budget: ~250MB for data + ~130MB for V8/Node overhead = 380MB (under 384MB heap)
+      // MEMORY-SAFE: Load tables with row limits for ALL high-volume tables
+      // Render Starter: 512MB total, --max-old-space-size=384MB heap
+      // Memory budget: ~200MB data + ~130MB V8/Node overhead + ~50MB headroom = 380MB
+      //
+      // FINANCIAL TABLES now capped at boot to prevent OOM after weeks of
+      // continuous auto-trading (6 agents × ~10s = ~50K+ trades/day).
+      // Full historical data remains in PG and can be queried directly via
+      // /api/admin/pg-query/:table when needed.
       const PG_LOAD_LIMITS = {
-        // ── FINANCIAL TABLES: Full restore (no limits) ──
-        // These are excluded from this map → loaded via unlimited SELECT * FROM table ORDER BY id
-        // trades, positions, tax_ledger, tax_lots, wash_sales — all loaded in full
+        // ── FINANCIAL TABLES: Capped for memory safety (PG retains all) ──
+        trades: 5000,           // Most recent 5K trades (~2-3 days of trading)
+        positions: 2000,        // Most recent 2K positions (includes all OPEN)
+        tax_ledger: 2000,       // Most recent 2K tax entries
+        tax_lots: 2000,         // Most recent 2K tax lots
+        wash_sales: 1000,       // Most recent 1K wash sale records
+        tax_allocations: 500,   // Most recent 500 allocations
 
-        // ── OPERATIONAL TABLES: Capped for memory safety ──
+        // ── OPERATIONAL TABLES: Tightly capped ──
         post_mortems: 200,
         signals: 300,
         risk_events: 200,
@@ -353,6 +361,14 @@ export class PostgresAdapter {
   pruneOperationalTables() {
     // In-memory limits for runtime safety (PG retains ALL rows permanently)
     const limits = {
+      // Financial tables — match boot load caps
+      trades: 5000,
+      positions: 2000,
+      tax_ledger: 2000,
+      tax_lots: 2000,
+      wash_sales: 1000,
+      tax_allocations: 500,
+      // Operational tables — tightly capped
       post_mortems: 200,
       signals: 300,
       risk_events: 200,
@@ -368,9 +384,6 @@ export class PostgresAdapter {
       audit_log: 300,
       symbol_performance: 300,
     };
-
-    // FINANCIAL TABLES EXCLUDED — trades, positions, tax_ledger, tax_lots,
-    // wash_sales are never pruned from memory (loaded with PG_LOAD_LIMITS at boot)
 
     let totalPruned = 0;
     for (const [table, maxRows] of Object.entries(limits)) {

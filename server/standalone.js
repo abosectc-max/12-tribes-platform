@@ -328,6 +328,15 @@ class JsonDB {
   //       they are bounded at boot by PG_LOAD_LIMITS and must be preserved.
   pruneOperationalTables() {
     const limits = {
+      // Financial tables — capped to prevent OOM on 512MB Render
+      // Full history remains in PG, accessible via /api/admin/pg-query/:table
+      trades: 5000,
+      positions: 2000,
+      tax_ledger: 2000,
+      tax_lots: 2000,
+      wash_sales: 1000,
+      tax_allocations: 500,
+      // Operational tables — tightly capped
       post_mortems: 200,
       signals: 300,
       risk_events: 200,
@@ -342,8 +351,6 @@ class JsonDB {
       verification_codes: 100,
       audit_log: 300,
       symbol_performance: 300,
-      // FINANCIAL TABLES REMOVED — never prune trades, positions,
-      // tax_ledger, tax_lots, wash_sales from memory or PG
     };
     let totalPruned = 0;
     for (const [table, maxRows] of Object.entries(limits)) {
