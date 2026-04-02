@@ -2926,14 +2926,6 @@ api.post('/api/auth/register', async (req, res) => {
   });
 });
 
-// ─── EMERGENCY: One-time admin token (remove after use) ───
-api.get('/api/auth/emergency-admin-token-x9k2m', (req, res) => {
-  const admin = db.findOne('users', u => u.role === 'admin');
-  if (!admin) return json(res, 404, { error: 'No admin user' });
-  const token = createJWT({ id: admin.id, email: admin.email, role: admin.role });
-  json(res, 200, { token, userId: admin.id, email: admin.email });
-});
-
 // ─── AUTH: LOGIN ───
 api.post('/api/auth/login', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
