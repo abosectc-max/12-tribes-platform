@@ -113,6 +113,61 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// ═══════ PUSH NOTIFICATIONS ═══════
+self.addEventListener('push', (event) => {
+  let data = { title: '12 Tribes', body: 'New update available', icon: '/icons/icon-192.png' };
+  try {
+    if (event.data) {
+      const payload = event.data.json();
+      data = { ...data, ...payload };
+    }
+  } catch (e) {
+    // If not JSON, use text
+    if (event.data) data.body = event.data.text();
+  }
+
+  const options = {
+    body: data.body,
+    icon: data.icon || '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    tag: data.tag || 'default',
+    vibrate: [100, 50, 100],
+    data: {
+      url: data.url || '/',
+      timestamp: Date.now(),
+    },
+    actions: data.actions || [
+      { action: 'open', title: 'Open Platform' },
+      { action: 'dismiss', title: 'Dismiss' },
+    ],
+  };
+
+  event.waitUntil(self.registration.showNotification(data.title, options));
+});
+
+// Handle notification click — open the app or focus existing tab
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  if (event.action === 'dismiss') return;
+
+  const targetUrl = event.notification.data?.url || '/investor-portal';
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      // Focus existing tab if open
+      for (const client of windowClients) {
+        if (client.url.includes(self.location.origin)) {
+          client.navigate(targetUrl);
+          return client.focus();
+        }
+      }
+      // Open new tab
+      return clients.openWindow(targetUrl);
+    })
+  );
+});
+
 // Handle messages from main app
 self.addEventListener('message', (event) => {
   if (event.data === 'skipWaiting') {

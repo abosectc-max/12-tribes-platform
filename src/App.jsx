@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
+import { haptics } from './hooks/useHaptics.js'
 
 // Pages
 import Landing from './pages/Landing.jsx'
@@ -139,7 +140,31 @@ function AppNav() {
   )
 }
 
+// ═══════ GLOBAL HAPTICS DELEGATE ═══════
+// Catches all clicks on interactive elements (buttons, links, inputs, selects)
+// and fires a light haptic. Individual components can still call haptics.heavy() etc.
+// for specific interactions — this is the safety net for uncovered surfaces.
+function useGlobalHaptics() {
+  useEffect(() => {
+    const handler = (e) => {
+      const tag = e.target?.tagName?.toLowerCase();
+      const role = e.target?.getAttribute?.('role');
+      const isInteractive = tag === 'button' || tag === 'a' || tag === 'select' ||
+        tag === 'input' || tag === 'textarea' || role === 'button' || role === 'tab' ||
+        role === 'menuitem' || role === 'option' ||
+        e.target?.closest?.('button, a, [role="button"], [role="tab"]');
+      if (isInteractive) {
+        haptics.light();
+      }
+    };
+    document.addEventListener('pointerdown', handler, { passive: true, capture: true });
+    return () => document.removeEventListener('pointerdown', handler, true);
+  }, []);
+}
+
 export default function App() {
+  useGlobalHaptics();
+
   return (
     <BrowserRouter>
       <div style={{ paddingBottom: 70 }}>

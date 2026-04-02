@@ -12220,6 +12220,100 @@ api.post('/api/admin/data/purge-corrupted', auth, async (req, res) => {
   json(res, 200, { success: true, report });
 });
 
+// POST /api/admin/wallets/reset-all
+// Full clean slate: purge ALL operational data + reset every wallet to a starting balance.
+// Body: { startingBalance: 10000, confirm: true }
+api.post('/api/admin/wallets/reset-all', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.confirm) return json(res, 400, { error: 'Requires confirm: true' });
+  const startBal = Number(body.startingBalance) || 10000;
+
+  // 1. Take a pre-reset recovery snapshot
+  try {
+    const walletSnap = db.findMany('wallets').map(w => ({
+      user_id: w.user_id, balance: w.balance, equity: w.equity,
+      initial_balance: w.initial_balance || w.initialBalance,
+      realized_pnl: w.realized_pnl || w.realizedPnL,
+      unrealized_pnl: w.unrealized_pnl || w.unrealizedPnL,
+      balance_locked: w.balance_locked, trade_count: w.trade_count,
+    }));
+    const snapId = `pre-reset-${Date.now()}`;
+    if (db.pool) {
+      await db.pool.query('INSERT INTO recovery_snapshots (id, trigger, data) VALUES ($1, $2, $3)',
+        [snapId, 'pre-reset', JSON.stringify({ timestamp: new Date().toISOString(), wallets: walletSnap })]);
+    }
+    console.log(`[Reset] Recovery snapshot saved: ${snapId}`);
+  } catch (e) { console.error('[Reset] Snapshot failed:', e.message); }
+
+  // 2. Purge all operational tables
+  const tablesToPurge = ['positions', 'trades', 'signals', 'auto_trade_log', 'trade_flags',
+    'post_mortems', 'risk_events', 'qa_reports', 'order_queue', 'tax_ledger', 'tax_lots', 'wash_sales'];
+  const report = { purged: {} };
+  for (const table of tablesToPurge) {
+    const before = db.findMany(table).length;
+    if (db.tables && db.tables[table]) db.tables[table] = [];
+    if (db.pool) { try { await db.pool.query(`DELETE FROM ${table}`); } catch (e) {} }
+    report.purged[table] = before;
+  }
+
+  // 3. Reset every wallet to starting balance
+  const ts = new Date().toISOString();
+  const wallets = db.findMany('wallets');
+  report.wallets = [];
+  for (const w of wallets) {
+    const prevBal = w.balance;
+    db.update('wallets', ww => ww.id === w.id, {
+      balance: startBal,
+      equity: startBal,
+      initial_balance: startBal,
+      initialBalance: startBal,
+      realized_pnl: 0, realizedPnL: 0,
+      unrealized_pnl: 0, unrealizedPnL: 0,
+      peak_equity: startBal, peakEquity: startBal,
+      max_drawdown: 0, maxDrawdown: 0,
+      trade_count: 0, win_count: 0, loss_count: 0,
+      balance_locked: false,
+      kill_switch_active: false,
+      first_trade_at: null, firstTradeAt: null,
+      deposit_timestamp: ts, depositTimestamp: ts,
+      updated_at: ts,
+    });
+    report.wallets.push({ user_id: w.user_id, previous: prevBal, new: startBal });
+  }
+
+  // 4. Reset capital accounts
+  const accounts = db.findMany('capital_accounts');
+  for (const ca of accounts) {
+    db.update('capital_accounts', c => c.id === ca.id, {
+      beginning_balance: startBal,
+      contributions: startBal,
+      distributions_total: 0,
+      allocated_income: 0,
+      allocated_losses: 0,
+      ending_balance: startBal,
+      updated_at: ts,
+    });
+  }
+  report.capital_accounts = { reset: accounts.length, starting_balance: startBal };
+
+  // 5. Reset fund_settings — disable trading for all
+  const fundSettings = db.findMany('fund_settings');
+  for (const fs of fundSettings) {
+    const newData = JSON.parse(JSON.stringify(fs.data || {}));
+    if (!newData.autoTrading) newData.autoTrading = {};
+    newData.autoTrading.isAutoTrading = false;
+    newData.autoTrading.agentsActive = [];
+    newData.autoTrading.tradingStartedAt = null;
+    db.update('fund_settings', f => f.id === fs.id, { data: newData, updated_at: ts });
+  }
+  report.fund_settings = { reset: fundSettings.length };
+
+  console.log(`[RESET] All wallets reset to $${startBal}:`, JSON.stringify(report));
+  json(res, 200, { success: true, startingBalance: startBal, report });
+});
+
 // POST /api/admin/users/fix-roles
 // Ensures only the designated admin email has role=admin; all others become investor.
 api.post('/api/admin/users/fix-roles', auth, async (req, res) => {

@@ -17,6 +17,7 @@ import {
 } from '../store/fundManager.js';
 import BrandLogo from '../components/BrandLogo.jsx';
 import { haptics } from '../hooks/useHaptics.js';
+import { isPushSupported, getPermissionState, requestPermission, notifications as pushNotify } from '../hooks/useNotifications.js';
 import { generateMonthlyStatement, openPrintView } from '../store/pdfGenerator.js';
 
 const {
@@ -4530,6 +4531,89 @@ function FeedbackView({ investor, isMobile }) {
 
 
 // ════════════════════════════════════════
+// ════════════════════════════════════════
+//   NOTIFICATIONS SECTION (Settings)
+// ════════════════════════════════════════
+
+function NotificationsSection() {
+  const [permState, setPermState] = useState(getPermissionState());
+  const [testSent, setTestSent] = useState(false);
+  const supported = isPushSupported();
+
+  const handleEnable = async () => {
+    haptics.medium();
+    const result = await requestPermission();
+    setPermState(result);
+    if (result === 'granted') {
+      haptics.success();
+    } else {
+      haptics.error();
+    }
+  };
+
+  const handleTest = async () => {
+    haptics.medium();
+    await pushNotify.systemAlert('Notifications are working! You\'ll receive trade alerts, signals, and portfolio updates here.');
+    setTestSent(true);
+    haptics.success();
+    setTimeout(() => setTestSent(false), 3000);
+  };
+
+  const sectionStyle = {
+    ...glass, padding: 28, marginBottom: 2, borderRadius: 20,
+  };
+
+  return (
+    <div style={sectionStyle}>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20, display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 20 }}>🔔</span> Notifications
+      </div>
+
+      {!supported ? (
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>
+          Push notifications are not supported on this device/browser. Install the app as a PWA for notification support.
+        </div>
+      ) : permState === 'granted' ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />
+            <span style={{ fontSize: 14, color: "#10B981", fontWeight: 600 }}>Notifications Enabled</span>
+          </div>
+          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0, lineHeight: 1.6 }}>
+            You'll receive alerts for trade executions, new signals, risk events, and portfolio updates.
+          </p>
+          <button onClick={handleTest} style={{
+            padding: "12px 20px", borderRadius: 14, border: "1px solid rgba(0,212,255,0.3)",
+            background: testSent ? "rgba(16,185,129,0.15)" : "rgba(0,212,255,0.08)",
+            color: testSent ? "#10B981" : "#00D4FF", fontSize: 13, fontWeight: 600,
+            cursor: "pointer", transition: "all 0.2s",
+          }}>
+            {testSent ? '✓ Test Sent' : 'Send Test Notification'}
+          </button>
+        </div>
+      ) : permState === 'denied' ? (
+        <div style={{ fontSize: 13, color: "rgba(239,68,68,0.8)", lineHeight: 1.6 }}>
+          Notifications are blocked. To enable them, go to your browser settings and allow notifications for this site.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0, lineHeight: 1.6 }}>
+            Enable push notifications to receive real-time trade alerts, signal updates, risk warnings, and portfolio changes on your device.
+          </p>
+          <button onClick={handleEnable} style={{
+            padding: "14px 20px", borderRadius: 14, border: "none", cursor: "pointer",
+            background: "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff",
+            fontSize: 14, fontWeight: 600, transition: "all 0.2s",
+            boxShadow: "0 4px 16px rgba(0,212,255,0.25)",
+          }}>
+            Enable Notifications
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 //   SETTINGS VIEW — Password, 2FA, Account
 // ════════════════════════════════════════
 
@@ -4700,6 +4784,9 @@ function SettingsView({ investor, isMobile }) {
           ))}
         </div>
       </div>
+
+      {/* Notifications */}
+      <NotificationsSection />
 
       {/* Change Password */}
       <div style={sectionStyle}>
