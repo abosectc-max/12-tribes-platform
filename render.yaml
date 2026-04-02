@@ -6,6 +6,11 @@ services:
     plan: starter
     buildCommand: npm install --production
     startCommand: node --max-old-space-size=384 --expose-gc server/standalone.js
+    # Health check: Render waits for this path to return 200 before marking deploy complete.
+    # Prevents "old build" window — traffic only routes to new instance once it's truly ready.
+    healthCheckPath: /api/health
+    # Auto-deploy on every push to main
+    autoDeploy: true
     disk:
       name: tribes-data
       mountPath: /data
@@ -19,3 +24,8 @@ services:
         value: /data
       - key: MARKET_DATA_MODE
         value: hybrid
+      - key: NODE_ENV
+        value: production
+      # Set to your Render service URL to enable keep-alive self-ping (prevents spin-down)
+      - key: KEEP_ALIVE_URL
+        value: https://one2-tribes-api.onrender.com

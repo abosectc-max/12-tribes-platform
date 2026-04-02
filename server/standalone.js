@@ -12178,6 +12178,22 @@ api.get('/api/agents/learning-insights', auth, (req, res) => {
 
 console.log('[TaxEngine] Tax Engine Module loaded — FIFO cost basis, wash sale detection ON, distribution tracking ACTIVE');
 
+// ─── KEEP-ALIVE: Prevent Render Starter spin-down ───────────────────────────
+// Render Starter plan spins down services after 15 min of inactivity, causing
+// 30-60s cold start delays and making deploys feel like "old builds still running."
+// Self-ping every 10 minutes keeps the instance warm at zero extra cost.
+if (process.env.KEEP_ALIVE_URL) {
+  const keepAliveUrl = process.env.KEEP_ALIVE_URL + '/api/health';
+  setInterval(() => {
+    const mod = keepAliveUrl.startsWith('https') ? require('https') : require('http');
+    mod.get(keepAliveUrl, (res) => {
+      // Drain response to free socket
+      res.resume();
+    }).on('error', () => { /* silent — non-critical */ });
+  }, 10 * 60 * 1000); // every 10 minutes
+  console.log(`[KeepAlive] Self-ping active → ${keepAliveUrl} (every 10 min)`);
+}
+
 // ─── AUTO-ENABLE TRADING ON STARTUP ───
 // Ensure all investors with wallets have auto-trading enabled.
 // This guarantees 24/7/365 trading survives server restarts.
