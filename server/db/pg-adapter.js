@@ -198,6 +198,9 @@ export class PostgresAdapter {
         }
       }
 
+      // BOOT PRUNE: Immediately trim oversized operational tables (matching JsonDB behavior)
+      this.pruneOperationalTables();
+
       this._initialized = true;
     } catch (err) {
       console.error('[PG-ADAPTER] Initialization failed:', err.message);

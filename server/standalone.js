@@ -3971,7 +3971,8 @@ api.post('/api/admin/qa-reports', async (req, res) => {
     const token = authHeader.replace('Bearer ', '');
     try {
       const payload = verifyJWT(token);
-      const user = db.findOne('users', u => u.id === payload.userId);
+      if (!payload) return json(res, 401, { error: 'Invalid or expired token' });
+      const user = db.findOne('users', u => u.id === payload.id);
       if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
     } catch { return json(res, 401, { error: 'Invalid token' }); }
   }
@@ -7368,8 +7369,9 @@ function computeSignal(symbol, agentStyle, agentName) {
 function runAutoTradeTick() {
   autoTradeTickCount++;
 
-  // ═══ MEMORY GUARD: Prune every 10 ticks (~100s) instead of only at reconciliation ═══
-  if (autoTradeTickCount % 10 === 0) {
+  // ═══ MEMORY GUARD: Prune every 3 ticks (~30s) — operational tables generate ~34 rows/sec ═══
+  // At 10-tick intervals, tables ballooned to 4800+ rows (300 limit) in 141s
+  if (autoTradeTickCount % 3 === 0) {
     db.pruneOperationalTables();
   }
 
@@ -10249,7 +10251,10 @@ api.get('/api/admin/agents/status', auth, (req, res) => {
 });
 
 // Trading debug — dry-run one tick for a sample user, expose full decision chain
-api.get('/api/trading/debug', (req, res) => {
+api.get('/api/trading/debug', auth, (req, res) => {
+  // Security: Admin only — exposes all user wallets, emails, trading data
+  const adminUser = db.findOne('users', u => u.id === req.userId);
+  if (!adminUser || adminUser.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
   const allSettings = db.findMany('fund_settings');
   const results = [];
 
@@ -10316,7 +10321,7 @@ api.get('/api/trading/debug', (req, res) => {
 
     results.push({
       userId, email: userEmail, name: userName, balance: wallet.balance, equity: wallet.equity, openCount: openPositions.length,
-      heldSymbols, todayOpens, signals,
+      heldSymbols, sessionOpens, signals,
     });
   }
 
