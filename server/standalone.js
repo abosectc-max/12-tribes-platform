@@ -12102,7 +12102,7 @@ api.post('/api/admin/data/purge-corrupted', auth, async (req, res) => {
   const body = await readBody(req);
   if (!body.confirm) return json(res, 400, { error: 'Requires confirm: true' });
 
-  const tablesToPurge = ['positions', 'trades', 'signals', 'auto_trade_log', 'trade_flags', 'post_mortems', 'risk_events', 'qa_reports', 'order_queue'];
+  const tablesToPurge = ['positions', 'trades', 'signals', 'auto_trade_log', 'trade_flags', 'post_mortems', 'risk_events', 'qa_reports', 'order_queue', 'tax_ledger', 'tax_lots', 'wash_sales'];
   const report = {};
 
   for (const table of tablesToPurge) {
@@ -12116,15 +12116,23 @@ api.post('/api/admin/data/purge-corrupted', auth, async (req, res) => {
     report[table] = { purged: before };
   }
 
-  // Reset wallet trade counters (keep balance/equity intact due to balance_locked)
+  // Reset wallet trade counters AND realized_pnl to match snapshot (balance - initial)
   const wallets = db.findMany('wallets');
   for (const w of wallets) {
+    const initBal = w.initial_balance || w.initialBalance || 100000;
+    const correctedPnl = Math.round(((w.balance || 0) - initBal) * 100) / 100;
     db.update('wallets', ww => ww.id === w.id, {
       trade_count: 0, win_count: 0, loss_count: 0,
       unrealized_pnl: 0,
+      realized_pnl: correctedPnl,
+      equity: w.balance || 0,
+      peak_equity: w.balance || 0,
+      peakEquity: w.balance || 0,
+      max_drawdown: 0,
+      maxDrawdown: 0,
     });
   }
-  report.wallets = { action: 'counters_reset', count: wallets.length };
+  report.wallets = { action: 'full_reset_to_snapshot', count: wallets.length };
 
   console.log('[PURGE] Corrupted data wiped:', JSON.stringify(report));
   json(res, 200, { success: true, report });
@@ -12154,6 +12162,31 @@ api.post('/api/admin/users/fix-roles', auth, async (req, res) => {
   }
   console.log('[FIX-ROLES]', JSON.stringify(fixes));
   json(res, 200, { success: true, fixed: fixes.length, details: fixes });
+});
+
+// GET /api/admin/wallets — List all wallets (admin diagnostic)
+api.get('/api/admin/wallets', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const wallets = db.findMany('wallets');
+  const users = db.findMany('users');
+  const result = wallets.map(w => {
+    const u = users.find(uu => uu.id === w.user_id);
+    return {
+      user_id: w.user_id,
+      name: u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() : '(unknown)',
+      email: u?.email,
+      role: u?.role,
+      balance: w.balance,
+      equity: w.equity,
+      initial_balance: w.initial_balance || w.initialBalance,
+      realized_pnl: w.realized_pnl || w.realizedPnL,
+      unrealized_pnl: w.unrealized_pnl || w.unrealizedPnL,
+      balance_locked: w.balance_locked,
+      trade_count: w.trade_count,
+    };
+  });
+  json(res, 200, { count: result.length, wallets: result });
 });
 
 // POST /api/admin/capital-accounts/reconcile-from-wallets
