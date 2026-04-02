@@ -2741,7 +2741,58 @@ api.get('/api/health', (req, res) => {
       blobId: BLOB_ID || null,
       lastSync: lastCloudSyncTime || null,
     },
+    rateLimit: {
+      maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour,
+      tradesThisHour: platformHourlyTradeCount,
+      windowResetsIn: Math.max(0, Math.ceil((platformHourlyWindowStart + 3600000 - Date.now()) / 60000)) + 'min',
+      maxPlatformDailyLoss: AUTO_TRADE_CONFIG.maxPlatformDailyLoss,
+      dailyLossHaltActive: platformDailyLossHaltActive,
+    },
   });
+});
+
+// ─── ADMIN: GET / SET RATE LIMIT CONFIG ───
+api.get('/api/admin/rate-limit', requireAdmin, (req, res) => {
+  const midnight = new Date(); midnight.setUTCHours(0,0,0,0);
+  const todayLosses = db.findMany('positions', p =>
+    p.status === 'CLOSED' && p.closed_at &&
+    new Date(p.closed_at).getTime() >= midnight.getTime() && (p.realized_pnl || 0) < 0
+  ).reduce((s, p) => s + Math.abs(p.realized_pnl || 0), 0);
+
+  json(res, 200, {
+    config: {
+      maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour,
+      maxPlatformDailyLoss: AUTO_TRADE_CONFIG.maxPlatformDailyLoss,
+    },
+    state: {
+      tradesThisHour: platformHourlyTradeCount,
+      windowResetsIn: Math.max(0, Math.ceil((platformHourlyWindowStart + 3600000 - Date.now()) / 60000)) + 'min',
+      todayRealizedLoss: +todayLosses.toFixed(2),
+      dailyLossHaltActive: platformDailyLossHaltActive,
+    },
+  });
+});
+
+api.post('/api/admin/rate-limit', requireAdmin, (req, res) => {
+  const { maxTradesPerHour, maxPlatformDailyLoss, resetHalt } = req.body || {};
+  const changes = [];
+  if (typeof maxTradesPerHour === 'number' && maxTradesPerHour >= 0) {
+    AUTO_TRADE_CONFIG.maxTradesPerHour = maxTradesPerHour;
+    changes.push(`maxTradesPerHour → ${maxTradesPerHour}`);
+  }
+  if (typeof maxPlatformDailyLoss === 'number' && maxPlatformDailyLoss >= 0) {
+    AUTO_TRADE_CONFIG.maxPlatformDailyLoss = maxPlatformDailyLoss;
+    changes.push(`maxPlatformDailyLoss → $${maxPlatformDailyLoss}`);
+  }
+  if (resetHalt === true) {
+    platformDailyLossHaltActive = false;
+    platformHourlyTradeCount = 0;
+    platformHourlyWindowStart = Date.now();
+    changes.push('daily loss halt cleared + hourly counter reset');
+  }
+  if (changes.length === 0) return json(res, 400, { error: 'No valid fields to update' });
+  console.log(`[RateLimit] Admin updated: ${changes.join(', ')}`);
+  json(res, 200, { updated: changes, config: { maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour, maxPlatformDailyLoss: AUTO_TRADE_CONFIG.maxPlatformDailyLoss } });
 });
 
 // ─── Email validation (RFC 5322 simplified) ───
@@ -6380,7 +6431,7 @@ const AI_AGENTS = [
 const AUTO_TRADE_CONFIG = {
   tickIntervalMs: 10000,       // Check every 10 seconds
   maxOpenPositions: 10,        // 10 positions — Sentinel/Titan now trade, need more slots
-  maxDailyTrades: 25,          // Increased for 6 active trading agents (was 20 for 4)
+  maxDailyTrades: 25,          // Max trades per user per day
   baseSizePct: 0.04,           // 4% of equity — slightly smaller base for tighter risk
   winnerSizePct: 0.06,         // 6% for high-conviction signals
   eliteSizePct: 0.08,          // 8% for multi-indicator confluence trades
@@ -6393,11 +6444,92 @@ const AUTO_TRADE_CONFIG = {
   minWinRateForTrading: 0.35,  // Lowered from 0.40 — new agents need runway to calibrate
   profitTargetPct: 1.2,        // TIGHTENED from 1.5% — take profits earlier, lock in more wins
   maxLossPct: 0.5,             // TIGHTENED from 0.6% — cut losers faster, preserve win rate
+  // ─── PLATFORM RATE LIMITER ─────────────────────────────────────────────────
+  // Caps total trades across ALL agents per hour — forces deliberate entries,
+  // spreads activity evenly, and bounds daily platform-wide loss exposure.
+  // At 6 trades/hour: 144 trades/day max across all users (one per agent/hour).
+  maxTradesPerHour: 6,         // Platform-wide hard cap per rolling 60-min window
+  maxPlatformDailyLoss: 50,    // Hard stop: halt ALL trading if total realized losses
+                               // across all wallets exceed this amount today ($50).
+                               // Resets at midnight UTC. Set to 0 to disable.
 };
 
 let autoTradeTickCount = 0;
 const SERVER_BOOT_TIME = new Date().toISOString(); // Track deploy time for daily limit scoping
 let globalSessionResetTime = SERVER_BOOT_TIME; // Initialize to boot time — prevents cloud-synced pre-boot positions from counting toward daily limit
+
+// ─── PLATFORM RATE LIMITER STATE ──────────────────────────────────────────────
+// Tracks platform-wide trades in the current rolling 60-minute window and
+// cumulative daily realized losses. Both reset automatically.
+let platformHourlyTradeCount = 0;
+let platformHourlyWindowStart = Date.now();
+let platformDailyLossHaltActive = false;   // true = all trading suspended
+
+/**
+ * Checks and increments the platform-wide hourly trade counter.
+ * Returns true if the trade is ALLOWED, false if the hourly cap is reached.
+ */
+function checkPlatformRateLimit() {
+  const now = Date.now();
+  // Roll the window every 60 minutes
+  if (now - platformHourlyWindowStart >= 60 * 60 * 1000) {
+    const prev = platformHourlyTradeCount;
+    platformHourlyTradeCount = 0;
+    platformHourlyWindowStart = now;
+    if (prev > 0) console.log(`[RateLimit] ⏱️  Hourly window reset. Previous window: ${prev} trades.`);
+  }
+  if (AUTO_TRADE_CONFIG.maxTradesPerHour > 0 &&
+      platformHourlyTradeCount >= AUTO_TRADE_CONFIG.maxTradesPerHour) {
+    return false; // Cap reached — defer trade to next window
+  }
+  platformHourlyTradeCount++;
+  return true;
+}
+
+/**
+ * Checks platform-wide daily loss halt.
+ * Computes total realized losses across all wallets since midnight UTC.
+ * If cumulative losses exceed maxPlatformDailyLoss, sets halt flag.
+ * Returns true if trading is ALLOWED, false if halted.
+ */
+function checkPlatformDailyLossLimit() {
+  if (!AUTO_TRADE_CONFIG.maxPlatformDailyLoss || AUTO_TRADE_CONFIG.maxPlatformDailyLoss <= 0) return true;
+  if (platformDailyLossHaltActive) return false;
+
+  const midnight = new Date();
+  midnight.setUTCHours(0, 0, 0, 0);
+  const midnightTs = midnight.getTime();
+
+  // Sum all realized losses from closed positions since midnight UTC
+  let totalLoss = 0;
+  const todayClosedTrades = db.findMany('positions', p =>
+    p.status === 'CLOSED' &&
+    p.closed_at &&
+    new Date(p.closed_at).getTime() >= midnightTs &&
+    (p.realized_pnl || 0) < 0
+  );
+  for (const t of todayClosedTrades) {
+    totalLoss += Math.abs(t.realized_pnl || 0);
+  }
+
+  if (totalLoss >= AUTO_TRADE_CONFIG.maxPlatformDailyLoss) {
+    platformDailyLossHaltActive = true;
+    console.warn(`[RateLimit] 🔴 DAILY LOSS HALT — Platform losses today: $${totalLoss.toFixed(2)} >= limit $${AUTO_TRADE_CONFIG.maxPlatformDailyLoss}. All auto-trading suspended until midnight UTC.`);
+    return false;
+  }
+  return true;
+}
+
+// Reset daily loss halt at midnight UTC
+setInterval(() => {
+  const now = new Date();
+  if (now.getUTCHours() === 0 && now.getUTCMinutes() === 0 && platformDailyLossHaltActive) {
+    platformDailyLossHaltActive = false;
+    platformHourlyTradeCount = 0;
+    platformHourlyWindowStart = Date.now();
+    console.log('[RateLimit] ✅ Midnight UTC reset — daily loss halt cleared. Trading resumed.');
+  }
+}, 60 * 1000); // Check every minute
 
 // ═══════════════════════════════════════════
 //   SELF-HEALING ADAPTIVE FEEDBACK SYSTEM
@@ -7856,6 +7988,23 @@ function runAllAgents(userId, fundData) {
       }
       continue;
     }
+
+    // ─── PLATFORM RATE LIMITER ───────────────────────────────────────────────
+    // Check daily loss halt first (cheap flag check), then hourly trade cap.
+    if (!checkPlatformDailyLossLimit()) {
+      if (autoTradeTickCount % 60 === 1) {
+        console.log(`[RateLimit] 🔴 Daily loss halt active — skipping all auto-trades this tick.`);
+      }
+      break; // Halt entire tick for all users
+    }
+    if (!checkPlatformRateLimit()) {
+      if (autoTradeTickCount % 10 === 1) {
+        const remaining = Math.ceil((platformHourlyWindowStart + 3600000 - Date.now()) / 60000);
+        console.log(`[RateLimit] ⏱️  Hourly cap reached (${platformHourlyTradeCount}/${AUTO_TRADE_CONFIG.maxTradesPerHour}). Next slot in ~${remaining}min.`);
+      }
+      continue; // Skip this user's trade but continue loop (don't block close-outs)
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const result = executeTrade(userId, { symbol: signal.symbol, side, quantity, agent: signal.agent, price });
     if (result.success) {
