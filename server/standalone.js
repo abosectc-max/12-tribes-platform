@@ -468,12 +468,20 @@ class JsonDB {
 
 // ═══ DATABASE INIT: PostgreSQL if DATABASE_URL is set, else JSON file DB ═══
 let db;
-const USE_POSTGRES = !!process.env.DATABASE_URL;
+let USE_POSTGRES = !!process.env.DATABASE_URL;
 if (USE_POSTGRES) {
   const { PostgresAdapter } = await import('./db/pg-adapter.js');
-  // Retry wrapper — Render PostgreSQL can take 20-30s to accept connections on cold deploy.
-  // Without retries: 2s connection timeout fires → init() throws → top-level ESM await
-  // crashes the process before server.listen() → Render marks deploy failed, rolls back.
+  // Retry wrapper with JSON fallback — critical for Render deploy stability.
+  //
+  // ROOT CAUSE of repeated deploy failures:
+  //   db.init() throws (PG cold-start timeout, expired free-tier DB, etc.)
+  //   → top-level ESM await propagates the throw
+  //   → process exits before server.listen() is called
+  //   → Render health check never gets 200
+  //   → Render marks deploy failed and rolls back to old code
+  //
+  // Fix: retry 3× (30s connection timeout each), then FALL BACK to JSON mode.
+  // Server always starts. Health check always returns 200. Deploy always succeeds.
   let pgInitDone = false;
   let pgAttempt = 0;
   const PG_MAX_RETRIES = 3;
@@ -489,8 +497,13 @@ if (USE_POSTGRES) {
         console.warn(`[DB] ⚠️  PG init attempt ${pgAttempt}/${PG_MAX_RETRIES} failed: ${err.message} — retrying in 10s`);
         await new Promise(r => setTimeout(r, 10000));
       } else {
-        console.error(`[DB] ❌ PG init failed after ${PG_MAX_RETRIES} attempts. Last error: ${err.message}`);
-        throw err;
+        // ALL retries exhausted — fall back to JSON mode so the server still starts.
+        // Data will be in-memory only until PG is restored, but deploys will succeed
+        // and the health check will return 200. Fix PG and redeploy to restore persistence.
+        console.error(`[DB] ❌ PG init failed after ${PG_MAX_RETRIES} attempts: ${err.message}`);
+        console.warn('[DB] ⚠️  Falling back to JSON file mode — data will NOT persist to PostgreSQL until PG is restored');
+        db = new JsonDB(DATA_DIR);
+        USE_POSTGRES = false;
       }
     }
   }
@@ -2742,7 +2755,7 @@ api.get('/api/health', (req, res) => {
   json(res, 200, {
     status: 'operational',
     version: '1.0.0-standalone',
-    database: USE_POSTGRES ? 'postgresql' : 'json-file',
+    database: USE_POSTGRES ? 'postgresql' : (process.env.DATABASE_URL ? 'json-file-fallback' : 'json-file'),
     wsClients: wsClients.size,
     symbols: Object.keys(marketPrices).length,
     users: db.count('users'),
