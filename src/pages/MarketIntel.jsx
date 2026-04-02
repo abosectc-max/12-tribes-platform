@@ -64,7 +64,7 @@ function RegimeBanner({ regime }) {
       <div style={{ display: "flex", gap: 12 }}>
         {Object.entries(regime.factors || {}).map(([k, v]) => (
           <div key={k} style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1 }}>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1 }}>
               {k === 'newsSentiment' ? 'News' : k === 'fearGreed' ? 'F&G' : 'Price'}
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, color: v >= 55 ? "#10B981" : v >= 45 ? "#F59E0B" : "#EF4444" }}>{Math.round(v)}</div>
@@ -128,23 +128,23 @@ function LiveNewsFeed({ news, filter, onFilterChange }) {
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                 <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{item.source}</span>
                 <span style={{
-                  padding: "1px 7px", borderRadius: 5, fontSize: 9, fontWeight: 600,
+                  padding: "1px 7px", borderRadius: 5, fontSize: 10, fontWeight: 600,
                   background: `${sentColors[item.sentiment?.label]}18`, color: sentColors[item.sentiment?.label],
                 }}>{(item.sentiment?.label || 'neutral').toUpperCase()}</span>
                 <span style={{
-                  padding: "1px 7px", borderRadius: 5, fontSize: 9, fontWeight: 600,
+                  padding: "1px 7px", borderRadius: 5, fontSize: 10, fontWeight: 600,
                   background: `${impactColors[item.sentiment?.impact]}18`, color: impactColors[item.sentiment?.impact],
                 }}>{(item.sentiment?.impact || 'low').toUpperCase()}</span>
                 {item.sentiment?.assetClasses?.map(cls => (
                   <span key={cls} style={{
-                    padding: "1px 6px", borderRadius: 4, fontSize: 8, fontWeight: 600,
+                    padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 600,
                     background: "rgba(0,212,255,0.08)", color: "rgba(0,212,255,0.6)",
                   }}>{cls}</span>
                 ))}
               </div>
             </div>
             <div style={{ flex: "0 0 36px", textAlign: "center" }}>
-              <div style={{ fontSize: 9, color: "rgba(255,255,255,0.2)", marginBottom: 2 }}>SCORE</div>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginBottom: 2 }}>SCORE</div>
               <div style={{
                 fontSize: 14, fontWeight: 700,
                 color: (item.sentiment?.score || 0) > 0 ? "#10B981" : (item.sentiment?.score || 0) < 0 ? "#EF4444" : "#6B7280",
@@ -249,11 +249,11 @@ function AgentIntelPanel({ agentIntel, tradeSignals }) {
               <div style={{ display: "flex", gap: 12, marginBottom: 8 }}>
                 <div style={{ flex: 1, textAlign: "center", padding: "6px 0", borderRadius: 8, background: "rgba(255,255,255,0.02)" }}>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>{alertCount}</div>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.3)" }}>ALERTS</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>ALERTS</div>
                 </div>
                 <div style={{ flex: 1, textAlign: "center", padding: "6px 0", borderRadius: 8, background: "rgba(255,255,255,0.02)" }}>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#FFD93D" }}>{signalCount}</div>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.3)" }}>SIGNALS</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>SIGNALS</div>
                 </div>
               </div>
               <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", lineHeight: 1.5 }}>{profile.description}</div>
@@ -357,7 +357,7 @@ function RiskEventsCalendar({ events }) {
               <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", lineHeight: 1.4 }}>{e.description}</div>
             </div>
             <span style={{
-              padding: "3px 8px", borderRadius: 6, fontSize: 9, fontWeight: 700,
+              padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700,
               background: `${impactColors[e.impact]}18`, color: impactColors[e.impact],
             }}>{e.impact.toUpperCase()}</span>
           </div>
@@ -393,7 +393,7 @@ function CompositeGauge({ composite }) {
         ].map(s => (
           <div key={s.label} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 12, background: `${s.color}10` }}>
             <div style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</div>
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>{s.label}</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>{s.label}</div>
           </div>
         ))}
       </div>
@@ -564,7 +564,7 @@ export default function TwelveTribes_MarketIntel() {
           <BrandLogo size={38} />
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1.5 }}>12 TRIBES</div>
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>Intelligence Command</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>Intelligence Command</div>
           </div>
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: isMobile ? "auto" : "visible" }}>

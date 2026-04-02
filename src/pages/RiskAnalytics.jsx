@@ -156,7 +156,7 @@ function CorrelationHeatmap({ data, isMobile = false }) {
       </div>
       <div style={{ display: "flex", justifyContent: "center", gap: isMobile ? 10 : 20, marginTop: 16, flexWrap: "wrap" }}>
         {[{ label: "Low (<0.2)", color: "#6B7280" }, { label: "Moderate (0.2-0.4)", color: "#10B981" }, { label: "High (0.4-0.7)", color: "#F59E0B" }, { label: "Critical (>0.7)", color: "#EF4444" }].map(l => (
-          <span key={l.label} style={{ fontSize: isMobile ? 9 : 10, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
+          <span key={l.label} style={{ fontSize: isMobile ? 10 : 10, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: l.color }} />{l.label}
           </span>
         ))}
@@ -215,17 +215,17 @@ function VaRChart({ data, isMobile = false }) {
       </div>
       <div style={{ display: "flex", gap: isMobile ? 10 : 20, justifyContent: "center", marginTop: 12, flexWrap: "wrap" }}>
         <div style={inner({ padding: isMobile ? "8px 14px" : "10px 20px", textAlign: "center", flex: isMobile ? "1 1 80px" : "none" })}>
-          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>VaR 95%</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>VaR 95%</div>
           <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "#F59E0B", marginTop: 2 }}>-$1,500</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{var95}% daily</div>
         </div>
         <div style={inner({ padding: isMobile ? "8px 14px" : "10px 20px", textAlign: "center", flex: isMobile ? "1 1 80px" : "none" })}>
-          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>VaR 99%</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>VaR 99%</div>
           <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "#EF4444", marginTop: 2 }}>-$2,280</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{var99}% daily</div>
         </div>
         <div style={inner({ padding: isMobile ? "8px 14px" : "10px 20px", textAlign: "center", flex: isMobile ? "1 1 80px" : "none" })}>
-          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>CVaR 95%</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>CVaR 95%</div>
           <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: "#EF4444", marginTop: 2 }}>-$2,040</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>Expected shortfall</div>
         </div>
@@ -314,7 +314,7 @@ function RiskRadar({ isMobile = false }) {
         <ResponsiveContainer>
           <RadarChart data={data}>
             <PolarGrid stroke="rgba(255,255,255,0.1)" />
-            <PolarAngleAxis dataKey="metric" tick={{ fill: "rgba(255,255,255,0.5)", fontSize: isMobile ? 8 : 10 }} />
+            <PolarAngleAxis dataKey="metric" tick={{ fill: "rgba(255,255,255,0.5)", fontSize: isMobile ? 10 : 10 }} />
             <PolarRadiusAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 9 }} domain={[0, 100]} />
             <Radar name="Risk Score" dataKey="value" stroke="#00D4FF" fill="#00D4FF" fillOpacity={0.15} strokeWidth={2} />
           </RadarChart>
@@ -401,7 +401,7 @@ export default function TwelveTribes_RiskAnalytics() {
           <BrandLogo size={38} />
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1.5 }}>12 TRIBES</div>
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>Risk Analytics</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>Risk Analytics</div>
           </div>
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: isMobile ? "auto" : "visible" }}>

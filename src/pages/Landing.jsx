@@ -185,7 +185,7 @@ export default function TwelveTribes_Landing() {
         <div style={{
           display: "inline-block", padding: "6px 20px", borderRadius: 20,
           background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)",
-          fontSize: isMobile ? 10 : 12, color: "#00D4FF", fontWeight: 600, letterSpacing: 1.5,
+          fontSize: isMobile ? 11 : 12, color: "#00D4FF", fontWeight: 600, letterSpacing: 1.5,
           textTransform: "uppercase", marginBottom: 32,
         }}>AI-Powered Investment Intelligence</div>
         <h1 style={{
@@ -235,7 +235,7 @@ export default function TwelveTribes_Landing() {
               <div style={{ fontSize: isMobile ? 24 : 42, fontWeight: 800, color: s.color }}>
                 <AnimatedCounter end={s.value} prefix={s.prefix || ""} />
               </div>
-              <div style={{ fontSize: isMobile ? 10 : 13, color: "rgba(255,255,255,0.4)", marginTop: 8 }}>{s.label}</div>
+              <div style={{ fontSize: isMobile ? 11 : 13, color: "rgba(255,255,255,0.4)", marginTop: 8 }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -311,7 +311,7 @@ export default function TwelveTribes_Landing() {
           <BrandLogo size={32} />
           <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: 1.5 }}>12 TRIBES</span>
         </div>
-        <div style={{ fontSize: isMobile ? 9 : 11, color: "rgba(255,255,255,0.2)", textAlign: isMobile ? "center" : "left" }}>
+        <div style={{ fontSize: isMobile ? 11 : 11, color: "rgba(255,255,255,0.2)", textAlign: isMobile ? "center" : "left" }}>
           12 Tribes Investments | AI-Powered Investment Platform | All data simulated for demonstration
         </div>
       </footer>

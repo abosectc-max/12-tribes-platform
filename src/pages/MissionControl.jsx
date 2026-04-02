@@ -241,7 +241,7 @@ function AllocationChart({ isMobile = false, liveTrades = [], groupData = {} }) 
         </div>
         <div style={{ flex: 1, width: isMobile ? "100%" : "auto" }}>
           {allocationData.map(a => (
-            <div key={a.name} style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 10, marginBottom: 8, fontSize: isMobile ? 12 : 13 }}>
+            <div key={a.name} style={{ display: "flex", alignItems: "center", gap: isMobile ? 10 : 10, marginBottom: 8, fontSize: isMobile ? 12 : 13 }}>
               <div style={{ width: 8, height: 8, borderRadius: 2, background: a.color, flexShrink: 0 }} />
               <span style={{ color: "rgba(255,255,255,0.7)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
               <span style={{ fontWeight: 600, color: "#fff", flexShrink: 0 }}>{a.pct}%</span>
@@ -257,9 +257,9 @@ function AllocationChart({ isMobile = false, liveTrades = [], groupData = {} }) 
 function GrowthProjection({ data, isMobile = false }) {
   return (
     <GlassCard>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 12, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 8 : 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 12, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 10 : 0 }}>
         <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Growth Projection (252 Trading Days)</div>
-        <div style={{ display: "flex", gap: isMobile ? 8 : 16, flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
+        <div style={{ display: "flex", gap: isMobile ? 10 : 16, flexWrap: "wrap", justifyContent: isMobile ? "flex-start" : "flex-end" }}>
           {[{ label: "Conservative", color: "#6B7280" }, { label: "Base (1.2%)", color: "#00D4FF" }, { label: "Aggressive", color: "#A855F7" }].map(l => (
             <span key={l.label} style={{ fontSize: isMobile ? 10 : 11, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 8, height: 2, background: l.color, display: "inline-block" }} /> {!isMobile && l.label}
@@ -368,7 +368,7 @@ function TradeLog({ trades, isMobile = false }) {
           <thead>
             <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
               {["Time", "Asset", "Side", "Qty", "Entry", "Close", "P&L", "Agent", "Investor"].map(h => (
-                <th key={h} style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 500, textTransform: "uppercase", letterSpacing: 1, fontSize: isMobile ? 9 : 10, whiteSpace: "nowrap" }}>{h}</th>
+                <th key={h} style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontWeight: 500, textTransform: "uppercase", letterSpacing: 1, fontSize: isMobile ? 10 : 10, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -382,7 +382,7 @@ function TradeLog({ trades, isMobile = false }) {
                   <td style={{ padding: isMobile ? "8px 10px" : "10px 12px", color: "#fff", fontWeight: 600, whiteSpace: "nowrap" }}>{t.symbol}</td>
                   <td style={{ padding: isMobile ? "8px 10px" : "10px 12px" }}>
                     <span style={{
-                      padding: "2px 8px", borderRadius: 6, fontSize: isMobile ? 9 : 10, fontWeight: 700,
+                      padding: "2px 8px", borderRadius: 6, fontSize: isMobile ? 10 : 10, fontWeight: 700,
                       background: t.side === "LONG" ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
                       color: t.side === "LONG" ? "#10B981" : "#EF4444",
                       whiteSpace: "nowrap"
@@ -439,8 +439,8 @@ function LiveTradeFeed({ trades = [], isMobile = false }) {
               {pnl !== 0 && <span style={{ color: isWin ? "#10B981" : "#EF4444", fontWeight: 600, flexShrink: 0 }}>
                 {isWin ? "+" : ""}{pnl < 1000 ? pnl.toFixed(2) : `${(pnl/1000).toFixed(1)}k`}
               </span>}
-              <span style={{ color: "rgba(255,255,255,0.5)", fontWeight: 600, flexShrink: 0, fontSize: isMobile ? 9 : 10 }}>{t.agent || ''}</span>
-              <span style={{ color: "rgba(255,255,255,0.2)", fontSize: 9, flexShrink: 0 }}>{timeStr}</span>
+              <span style={{ color: "rgba(255,255,255,0.5)", fontWeight: 600, flexShrink: 0, fontSize: isMobile ? 10 : 10 }}>{t.agent || ''}</span>
+              <span style={{ color: "rgba(255,255,255,0.2)", fontSize: 10, flexShrink: 0 }}>{timeStr}</span>
             </div>
           );
         })}
@@ -520,7 +520,7 @@ function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = fal
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: isMobile ? 13 : 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
                   <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.35)" }}>{user.email}</div>
-                  <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.25)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.25)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span>{user.role || 'investor'}</span>
                     <span>·</span>
                     <span>{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'N/A'}</span>
@@ -535,7 +535,7 @@ function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = fal
                   <div style={{ fontSize: isMobile ? 11 : 13, color: gain >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>
                     {gain >= 0 ? "+" : ""}{gainPct.toFixed(1)}%
                   </div>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.2)" }}>from ${initial.toLocaleString()}</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)" }}>from ${initial.toLocaleString()}</div>
                 </div>
               </div>
 
@@ -544,32 +544,32 @@ function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = fal
                 display: "grid", gridTemplateColumns: isMobile ? "repeat(3, 1fr)" : "repeat(6, 1fr)", gap: isMobile ? 6 : 8,
               }}>
                 <div style={{ padding: "6px 8px", borderRadius: 10, background: "rgba(0,212,255,0.06)", textAlign: "center" }}>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Open</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Open</div>
                   <div style={{ fontSize: isMobile ? 14 : 16, fontWeight: 700, color: "#00D4FF" }}>{openPos}</div>
                 </div>
                 <div style={{ padding: "6px 8px", borderRadius: 10, background: "rgba(168,85,247,0.06)", textAlign: "center" }}>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Trades</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Trades</div>
                   <div style={{ fontSize: isMobile ? 14 : 16, fontWeight: 700, color: "#A855F7" }}>{trades}</div>
                 </div>
                 <div style={{ padding: "6px 8px", borderRadius: 10, background: realized >= 0 ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)", textAlign: "center" }}>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Realized</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Realized</div>
                   <div style={{ fontSize: isMobile ? 12 : 14, fontWeight: 700, color: realized >= 0 ? "#10B981" : "#EF4444" }}>
                     {realized >= 0 ? "+" : ""}${Math.abs(realized) >= 1000 ? `${(realized/1000).toFixed(1)}k` : realized.toFixed(0)}
                   </div>
                 </div>
                 {!isMobile && <>
                 <div style={{ padding: "6px 8px", borderRadius: 10, background: unrealized >= 0 ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)", textAlign: "center" }}>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Unrealized</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Unrealized</div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: unrealized >= 0 ? "#10B981" : "#EF4444" }}>
                     {unrealized >= 0 ? "+" : ""}${Math.abs(unrealized) >= 1000 ? `${(unrealized/1000).toFixed(1)}k` : unrealized.toFixed(0)}
                   </div>
                 </div>
                 <div style={{ padding: "6px 8px", borderRadius: 10, background: "rgba(245,158,11,0.06)", textAlign: "center" }}>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>W/L</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>W/L</div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B" }}>{wins}/{losses}</div>
                 </div>
                 <div style={{ padding: "6px 8px", borderRadius: 10, background: recentPnL >= 0 ? "rgba(16,185,129,0.06)" : "rgba(239,68,68,0.06)", textAlign: "center" }}>
-                  <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Session</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.5 }}>Session</div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: recentPnL >= 0 ? "#10B981" : "#EF4444" }}>
                     {recentPnL >= 0 ? "+" : ""}${Math.abs(recentPnL) >= 1000 ? `${(recentPnL/1000).toFixed(1)}k` : recentPnL.toFixed(0)}
                   </div>
@@ -582,7 +582,7 @@ function InvestorTable({ serverUsers, groupData, liveTrades = [], isMobile = fal
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                   {userTrades.slice(0, 6).map((t, j) => (
                     <span key={j} style={{
-                      padding: "2px 6px", borderRadius: 6, fontSize: 9, fontWeight: 600,
+                      padding: "2px 6px", borderRadius: 6, fontSize: 10, fontWeight: 600,
                       background: (t.realized_pnl || 0) >= 0 ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)",
                       color: (t.realized_pnl || 0) >= 0 ? "#10B981" : "#EF4444",
                       border: `1px solid ${(t.realized_pnl || 0) >= 0 ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)"}`,
@@ -631,14 +631,14 @@ function RiskPanel({ isMobile = false, isTablet = false, groupData = {} }) {
   return (
     <GlassCard>
       <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Risk Command Center</div>
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : isTablet ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: isMobile ? 8 : 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : isTablet ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: isMobile ? 10 : 10 }}>
         {metrics.map(m => (
           <div key={m.label} style={{
             padding: isMobile ? 10 : 12, borderRadius: 14,
             background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
             display: "flex", flexDirection: "column", gap: 4,
           }}>
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.8 }}>{m.label}</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 0.8 }}>{m.label}</div>
             <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: statusColors[m.status] }}>{m.value}</div>
           </div>
         ))}
@@ -670,7 +670,7 @@ function SelfHealingPanel({ isMobile = false, liveAgents = [] }) {
 
   return (
     <GlassCard>
-      <div style={{ display: "flex", alignItems: isMobile ? "flex-start" : "center", gap: isMobile ? 8 : 10, marginBottom: 12, flexDirection: isMobile ? "column" : "row" }}>
+      <div style={{ display: "flex", alignItems: isMobile ? "flex-start" : "center", gap: isMobile ? 10 : 10, marginBottom: 12, flexDirection: isMobile ? "column" : "row" }}>
         <span style={{ fontSize: isMobile ? 18 : 20, flexShrink: 0 }}>🔥</span>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Phoenix Self-Healing Engine</div>
@@ -711,9 +711,9 @@ function GrowthTable({ isMobile = false, totalAUM = 0 }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 11 : 12, minWidth: isMobile ? 500 : "auto" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-              <th style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontSize: isMobile ? 9 : 10, letterSpacing: 1 }}>TIMEFRAME</th>
+              <th style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "left", color: "rgba(255,255,255,0.4)", fontSize: isMobile ? 10 : 10, letterSpacing: 1 }}>TIMEFRAME</th>
               {rates.map(r => (
-                <th key={r} style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "right", color: r === 0.012 ? "#00D4FF" : "rgba(255,255,255,0.4)", fontSize: isMobile ? 9 : 10, letterSpacing: 1, whiteSpace: "nowrap" }}>
+                <th key={r} style={{ padding: isMobile ? "8px 10px" : "10px 12px", textAlign: "right", color: r === 0.012 ? "#00D4FF" : "rgba(255,255,255,0.4)", fontSize: isMobile ? 10 : 10, letterSpacing: 1, whiteSpace: "nowrap" }}>
                   {(r * 100).toFixed(1)}%
                 </th>
               ))}
@@ -764,7 +764,7 @@ function AssetStrategyCards({ isMobile = false, isTablet = false }) {
             </div>
             <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
               <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: "#fff" }}>{asset.pct}%</div>
-              <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.4)" }}>allocation</div>
+              <div style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.4)" }}>allocation</div>
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: isMobile ? 6 : 8 }}>
@@ -775,7 +775,7 @@ function AssetStrategyCards({ isMobile = false, isTablet = false }) {
               { label: "Daily Ret", value: `${asset.dailyReturn.toFixed(1)}%` },
             ].map(m => (
               <div key={m.label} style={{ padding: isMobile ? 6 : 8, borderRadius: 10, background: "rgba(255,255,255,0.03)" }}>
-                <div style={{ fontSize: isMobile ? 8 : 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>{m.label}</div>
+                <div style={{ fontSize: isMobile ? 10 : 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>{m.label}</div>
                 <div style={{ fontSize: isMobile ? 12 : 14, fontWeight: 600, color: "#fff", marginTop: 2 }}>{m.value}</div>
               </div>
             ))}
@@ -1008,7 +1008,7 @@ export default function TwelveTribes_MissionControl() {
         padding: isMobile ? "10px 12px" : isTablet ? "14px 24px" : "16px 32px",
         display: "flex", alignItems: "center", justifyContent: "space-between",
         position: "sticky", top: 0, zIndex: 100,
-        gap: isMobile ? 8 : 16,
+        gap: isMobile ? 10 : 16,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 10 : 16, flexShrink: 0 }}>
           <BrandLogo size={isMobile ? 30 : 40} />
@@ -1035,12 +1035,12 @@ export default function TwelveTribes_MissionControl() {
               }}
             >
               <span style={{ fontSize: isMobile ? 16 : 13 }}>{item.icon}</span>
-              {isMobile ? <span style={{ fontSize: 9, lineHeight: 1 }}>{item.label}</span> : <span>{item.label}</span>}
+              {isMobile ? <span style={{ fontSize: 10, lineHeight: 1 }}>{item.label}</span> : <span>{item.label}</span>}
             </button>
           ))}
         </nav>
 
-        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 16, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 10 : 16, flexShrink: 0 }}>
           <div style={{
             padding: isMobile ? "4px 8px" : "6px 14px", borderRadius: 10,
             background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)",
@@ -1069,7 +1069,7 @@ export default function TwelveTribes_MissionControl() {
       </div>
 
       {/* Footer */}
-      <div style={{ padding: isMobile ? "12px 16px 32px" : "16px 32px", textAlign: "center", fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.2)" }}>
+      <div style={{ padding: isMobile ? "12px 16px 32px" : "16px 32px", textAlign: "center", fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.2)" }}>
         12 TRIBES v1.0 | AI-Powered Investment Platform | Mission Control
       </div>
     </div>

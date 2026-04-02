@@ -115,9 +115,9 @@ function generateEquityCurve(days) {
 function BenchmarkChart({ data, isMobile = false }) {
   return (
     <div style={glass()}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 16, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 8 : 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 16, flexDirection: isMobile ? "column" : "row", gap: isMobile ? 10 : 0 }}>
         <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 600, color: "#fff" }}>Performance vs Benchmarks (Normalized)</div>
-        <div style={{ display: "flex", gap: isMobile ? 8 : 14, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: isMobile ? 10 : 14, flexWrap: "wrap" }}>
           {[{ label: "12 Tribes", color: "#00D4FF" }, { label: "S&P 500", color: "#F59E0B" }, { label: "BTC", color: "#A855F7" }, { label: "Bonds", color: "#6B7280" }].map(l => (
             <span key={l.label} style={{ fontSize: 10, color: l.color, display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ width: 10, height: 2, background: l.color, display: "inline-block" }} />{l.label}
@@ -214,7 +214,7 @@ function AgentLeaderboard({ agents, isMobile = false }) {
             <span style={{ fontSize: isMobile ? 20 : 24 }}>{a.icon}</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 700, color: "#fff" }}>{a.agent}</div>
-              <div style={{ display: "flex", gap: isMobile ? 8 : 16, marginTop: 4, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: isMobile ? 10 : 16, marginTop: 4, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Trades: <span style={{ color: "#00D4FF" }}>{(a.trades || 0).toLocaleString()}</span></span>
                 <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Win Rate: <span style={{ color: "#10B981" }}>{a.winRate || 0}%</span></span>
                 {!isMobile && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Avg Return: <span style={{ color: "#A855F7" }}>{a.avgReturn || 0}%</span></span>}
@@ -296,10 +296,10 @@ function KeyMetricsGrid({ isMobile = false }) {
     { label: "Alpha", value: "+38.1%", sub: "vs S&P 500 ann.", color: "#F59E0B" },
   ];
   return (
-    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(170px, 1fr))", gap: isMobile ? 8 : 12 }}>
+    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fill, minmax(170px, 1fr))", gap: isMobile ? 10 : 12 }}>
       {metrics.map(m => (
         <div key={m.label} style={glass({ padding: isMobile ? 12 : 16 })}>
-          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{m.label}</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{m.label}</div>
           <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 800, color: m.color }}>{m.value}</div>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 4 }}>{m.sub}</div>
         </div>
@@ -349,7 +349,7 @@ export default function TwelveTribes_Performance() {
           <BrandLogo size={38} />
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1.5 }}>12 TRIBES</div>
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>Performance Analytics</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>Performance Analytics</div>
           </div>
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: isMobile ? "auto" : "visible" }}>

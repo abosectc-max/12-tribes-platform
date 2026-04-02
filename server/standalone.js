@@ -5544,6 +5544,16 @@ api.get('/api/feedback', auth, (req, res) => {
   json(res, 200, { feedback: sorted });
 });
 
+// Delete own feedback
+api.delete('/api/feedback/:feedbackId', auth, (req, res) => {
+  const fbId = req.params.feedbackId;
+  const fb = (db.tables.feedback || []).find(f => f.id === fbId);
+  if (!fb) return json(res, 404, { error: 'Feedback not found' });
+  if (fb.userId !== req.userId) return json(res, 403, { error: 'You can only delete your own feedback' });
+  db.remove('feedback', f => f.id === fbId);
+  json(res, 200, { success: true, message: 'Feedback deleted' });
+});
+
 // ─── WITHDRAWAL REQUESTS ───
 
 // Submit a withdrawal request (any authenticated investor)

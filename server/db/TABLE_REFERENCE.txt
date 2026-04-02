@@ -1,0 +1,246 @@
+════════════════════════════════════════════════════════════════════════════════
+  12 TRIBES INVESTMENT PLATFORM — TABLE REFERENCE QUICK GUIDE
+════════════════════════════════════════════════════════════════════════════════
+
+AUTHENTICATION & USERS
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: users                                                                 │
+│ Purpose: Core user profiles, authentication, roles                           │
+│ Key Fields: id (UUID), email (UNIQUE), password_hash, role, status          │
+│ Indexes: email, status, created_at                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: login_log                                                             │
+│ Purpose: Audit trail of authentication events                               │
+│ Key Fields: user_id (FK), method, ip, success, created_at                  │
+│ Indexes: user_id, created_at DESC                                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: passkey_credentials                                                   │
+│ Purpose: WebAuthn/passkey storage for passwordless auth                     │
+│ Key Fields: user_id (FK), credential_id, public_key, counter                │
+│ Indexes: user_id                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: access_requests                                                       │
+│ Purpose: Investor onboarding and access control                             │
+│ Key Fields: user_id (FK), email, status, reviewed_by                        │
+│ Indexes: user_id, status                                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+FINANCIAL ACCOUNTS
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: wallets (ONE PER USER)                                               │
+│ Purpose: Account balance, equity, P&L, trading statistics                   │
+│ Key Fields: user_id (FK UNIQUE), balance, equity, unrealized_pnl, realized_pnl
+│ Indexes: user_id (UNIQUE)                                                    │
+│ Critical: Always check kill_switch_active before trades                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: equity_snapshots                                                      │
+│ Purpose: Daily/hourly performance snapshots for charting                    │
+│ Key Fields: user_id (FK), equity, balance, date (YYYY-MM-DD), hour          │
+│ Indexes: (user_id, date DESC, hour DESC), user_id                           │
+│ Unique: (user_id, date, hour)                                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: fund_settings                                                         │
+│ Purpose: User-configurable account settings (JSONB)                         │
+│ Key Fields: user_id (FK UNIQUE), data (JSONB auto-trading config)           │
+│ Indexes: user_id                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+TRADING INFRASTRUCTURE
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: positions (LARGEST TABLE ~9500 ROWS)                                 │
+│ Purpose: Open/closed trading positions                                      │
+│ Key Fields: id, user_id, wallet_id, symbol, side (LONG|SHORT),             │
+│            quantity, entry_price, current_price, unrealized_pnl             │
+│ Indexes: user_id, (user_id, status), (symbol, status), opened_at, agent    │
+│ Critical: (user_id, status) = PRIMARY HOT PATH                              │
+│ Status: OPEN | CLOSED                                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: trades                                                                │
+│ Purpose: Closed trade history with full P&L                                 │
+│ Key Fields: id, user_id, wallet_id, position_id, symbol, side,             │
+│            entry_price, close_price, realized_pnl, return_pct               │
+│ Indexes: user_id, (user_id, closed_at), closed_at, symbol, agent           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: order_queue                                                           │
+│ Purpose: Pending orders awaiting execution or confirmation                  │
+│ Key Fields: id, user_id, symbol, side, quantity, price, status             │
+│ Indexes: user_id, status                                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: broker_connections                                                    │
+│ Purpose: Third-party broker integrations (Alpaca, IBKR, etc.)               │
+│ Key Fields: id, user_id, broker_name, status, api_key_hash, connected_at   │
+│ Indexes: user_id                                                             │
+│ Unique: (user_id, broker_name)                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: signals                                                               │
+│ Purpose: AI trading signals with technical indicators                       │
+│ Key Fields: user_id, agent, symbol, side, strength (0-100),                │
+│            price, indicators (JSONB)                                         │
+│ Indexes: user_id, agent, created_at DESC                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RISK & COMPLIANCE
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: risk_events                                                           │
+│ Purpose: Kill switches, position limits, daily loss alerts                  │
+│ Key Fields: user_id, event_type, severity, message, details (JSONB)        │
+│ Indexes: user_id, event_type, created_at DESC                               │
+│ Severity: info | warning | critical                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: trade_flags                                                           │
+│ Purpose: Trade quality flags and validation issues                          │
+│ Key Fields: user_id, symbol, side, quantity, flag_type, status             │
+│ Indexes: user_id, status                                                     │
+│ Status: active | resolved | ignored                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: qa_reports                                                            │
+│ Purpose: QA and compliance reporting (JSONB)                                │
+│ Key Fields: id, report_data (JSONB), tick_number                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+AI & AUTOMATION
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: agent_stats                                                           │
+│ Purpose: Per-agent performance aggregates                                   │
+│ Key Fields: agent_name (UNIQUE), total_trades, wins, losses, total_pnl,     │
+│            best_trade, worst_trade, avg_return                              │
+│ Agents: Viper | Oracle | Spectre | Sentinel | Phoenix | Titan              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: agent_preferences                                                     │
+│ Purpose: Per-user AI agent configuration and tuning                         │
+│ Key Fields: user_id, agent_name, preferences (JSONB)                        │
+│ Indexes: user_id, agent_name                                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: auto_trade_log                                                        │
+│ Purpose: Execution log for automated AI trading (audit trail)               │
+│ Key Fields: user_id, agent, symbol, side, quantity, price, pnl, action    │
+│ Indexes: user_id, agent, created_at DESC                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: post_mortems                                                          │
+│ Purpose: Post-trade analysis and AI self-healing insights                   │
+│ Key Fields: user_id, position_id, agent, symbol, side, entry_price,        │
+│            close_price, pnl, return_pct, outcome, patterns (JSONB)         │
+│ Indexes: user_id, outcome, agent                                            │
+│ Outcome: WIN | LOSS | BREAKEVEN                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+TAX ACCOUNTING & COMPLIANCE
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: tax_ledger                                                            │
+│ Purpose: Detailed tax lot accounting (Form 8949 Schedule D detail)          │
+│ Key Fields: user_id, tax_lot_id, position_id, symbol, side,                │
+│            quantity, acquired_at, disposed_at, hold_days, holding_period,   │
+│            cost_basis, proceeds, gain_loss, wash_sale_disallowed,           │
+│            wash_sale_id, tax_year                                            │
+│ Indexes: user_id, (user_id, tax_year), disposed_at                         │
+│ Holding Period: short_term | long_term                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: tax_lots                                                              │
+│ Purpose: Open tax lots for cost basis tracking (FIFO/LIFO/Avg)              │
+│ Key Fields: position_id, user_id, symbol, side, quantity,                   │
+│            remaining_quantity, price_per_unit, cost_basis,                  │
+│            adjusted_cost_basis, wash_sale_adjustment, status                │
+│ Indexes: user_id, (user_id, status), position_id                            │
+│ Status: OPEN | CLOSED | PARTIAL                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: wash_sales                                                            │
+│ Purpose: Wash sale rule detection and disallowed loss tracking              │
+│ Key Fields: user_id, symbol, loss_ledger_id, loss_position_id,             │
+│            replacement_lot_id, replacement_position_id,                     │
+│            disallowed_loss, original_loss, loss_disposed_at,                │
+│            replacement_acquired_at, window_start, window_end                │
+│ Indexes: user_id, symbol                                                     │
+│ 30-Day Window: [loss_disposed_at - 30 days] to [loss_disposed_at + 30 days]│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: tax_allocations                                                       │
+│ Purpose: K-1 Schedule partnership tax allocation reporting                  │
+│ Key Fields: user_id, investor_name, tax_year, ownership_pct,               │
+│            ordinary_income, capital_gains, qualified_div, deductions        │
+│ Indexes: user_id, tax_year                                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+FUND OPERATIONS
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: distributions                                                         │
+│ Purpose: Fund distributions with tax basis and K-1 reporting impact        │
+│ Key Fields: user_id, investor_name, withdrawal_request_id, amount,         │
+│            type, method, capital_account_before, capital_account_after,     │
+│            wallet_equity_at_distribution, tax_year, is_return_of_capital,  │
+│            adjusted_basis_at_distribution, basis_exceeded                   │
+│ Indexes: user_id, tax_year                                                   │
+│ Type: ordinary | return_of_capital | qualified_div                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: capital_accounts (ONE PER USER)                                       │
+│ Purpose: Partner/investor capital account balances and tax basis             │
+│ Key Fields: user_id (FK UNIQUE), investor_name, beginning_balance,          │
+│            contributions, distributions_total, allocated_income,            │
+│            allocated_losses, ending_balance, ownership_pct                  │
+│ Indexes: user_id                                                             │
+│ Unique: user_id                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+SUPPORT & SECURITY
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TABLE: withdrawal_requests                                                   │
+│ Purpose: Fund withdrawal processing workflow                                │
+│ Key Fields: userId, amount, method, status, reviewed_by, reviewed_at       │
+│ Indexes: userId, status                                                      │
+│ Status: pending | approved | processing | completed | denied                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: feedback                                                              │
+│ Purpose: User feedback and support tickets                                  │
+│ Key Fields: user_id, message, status                                        │
+│ Indexes: user_id, status                                                     │
+│ Status: new | reviewed | resolved                                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: verification_codes                                                    │
+│ Purpose: Email and 2FA verification codes                                   │
+│ Key Fields: user_id, email, code (6-digit), type, expires_at, used         │
+│ Indexes: user_id, code, expires_at                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ TABLE: system_config                                                         │
+│ Purpose: Global system configuration and feature flags                      │
+│ Key Fields: key (UNIQUE), value (JSONB)                                     │
+│ Indexes: key                                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════
+KEY DESIGN PRINCIPLES
+════════════════════════════════════════════════════════════════════════════════
+
+✓ UUID Primary Keys: gen_random_uuid() for all tables
+✓ Monetary Precision: NUMERIC(18,4) for all currency
+✓ Timezone Aware: TIMESTAMPTZ for all timestamps (stored UTC)
+✓ Flexible Data: JSONB for config, indicators, metadata
+✓ Audit Trail: created_at + updated_at on all records
+✓ Referential Integrity: ON DELETE CASCADE for all foreign keys
+✓ Performance: Composite indexes on hot paths (user_id, status)
+✓ Idempotent: DROP IF EXISTS + CREATE IF NOT EXISTS for migrations
+
+════════════════════════════════════════════════════════════════════════════════
+CRITICAL HOT PATHS
+════════════════════════════════════════════════════════════════════════════════
+
+1. Find User Open Positions:
+   SELECT * FROM positions WHERE user_id = $1 AND status = 'OPEN'
+   → Index: (user_id, status)
+
+2. Market Exposure by Symbol:
+   SELECT * FROM positions WHERE symbol = $1 AND status = 'OPEN'
+   → Index: (symbol, status)
+
+3. Trade History with Dates:
+   SELECT * FROM trades WHERE user_id = $1 AND closed_at > $2 ORDER BY closed_at DESC
+   → Index: (user_id, closed_at DESC)
+
+4. Tax Year Reporting:
+   SELECT * FROM tax_ledger WHERE user_id = $1 AND tax_year = $2
+   → Index: (user_id, tax_year)
+
+5. Daily Performance Charts:
+   SELECT * FROM equity_snapshots WHERE user_id = $1 AND date BETWEEN $2 AND $3
+   → Index: (user_id, date DESC, hour DESC)
+
+════════════════════════════════════════════════════════════════════════════════
+Generated: 2026-04-01
+Schema Version: 2.0

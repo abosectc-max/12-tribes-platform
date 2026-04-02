@@ -1229,14 +1229,19 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
           ))}
         </div>
 
-        {/* Sign Out */}
-        <div style={{ padding: "12px 12px 20px" }}>
+        {/* Sign Out — always visible, pinned to bottom with safe area */}
+        <div style={{
+          padding: `12px 12px calc(12px + ${safeAreaBottom})`,
+          borderTop: "1px solid rgba(255,255,255,0.06)",
+          flexShrink: 0,
+        }}>
           <button onClick={() => { haptics.heavy(); onLogout(); }}
             style={{
-              width: "100%", padding: "12px 16px", borderRadius: 14, cursor: "pointer",
+              width: "100%", padding: "14px 16px", borderRadius: 14, cursor: "pointer",
               border: "1px solid rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)",
-              color: "#EF4444", fontSize: 13, fontWeight: 600,
+              color: "#EF4444", fontSize: 14, fontWeight: 600,
               display: "flex", alignItems: "center", gap: 10, justifyContent: "center",
+              WebkitTapHighlightColor: "transparent",
             }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
@@ -4319,6 +4324,7 @@ function FeedbackView({ investor, isMobile }) {
   const [error, setError] = useState('');
   const [myFeedback, setMyFeedback] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [deletingId, setDeletingId] = useState(null);
 
   const API = (() => {
     if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
@@ -4369,6 +4375,27 @@ function FeedbackView({ investor, isMobile }) {
       }
     } catch { haptics.error(); setError('Network error. Please try again.'); }
     setSubmitting(false);
+  };
+
+  const handleDelete = async (fbId) => {
+    if (!confirm('Delete this feedback? This cannot be undone.')) return;
+    haptics.heavy();
+    setDeletingId(fbId);
+    try {
+      const r = await fetch(`${API}/feedback/${fbId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) {
+        haptics.success();
+        setMyFeedback(prev => prev.filter(f => f.id !== fbId));
+      } else {
+        haptics.error();
+        const data = await r.json().catch(() => ({}));
+        alert(data.error || 'Failed to delete feedback');
+      }
+    } catch { haptics.error(); alert('Network error. Please try again.'); }
+    setDeletingId(null);
   };
 
   const glassStyle = {
@@ -4501,9 +4528,23 @@ function FeedbackView({ investor, isMobile }) {
                       <span style={{ fontSize: 11, padding: "3px 8px", borderRadius: 8, background: sc.bg, color: sc.color, fontWeight: 600 }}>{sc.label}</span>
                       {cat && <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>{cat.icon} {cat.label}</span>}
                     </div>
-                    <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)" }}>
-                      {new Date(fb.createdAt).toLocaleDateString()}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 10, color: "rgba(255,255,255,0.2)" }}>
+                        {new Date(fb.createdAt).toLocaleDateString()}
+                      </span>
+                      <button
+                        onClick={() => handleDelete(fb.id)}
+                        disabled={deletingId === fb.id}
+                        style={{
+                          padding: "4px 10px", borderRadius: 8, cursor: deletingId === fb.id ? "wait" : "pointer",
+                          border: "1px solid rgba(239,68,68,0.15)", background: "rgba(239,68,68,0.08)",
+                          color: "#EF4444", fontSize: 10, fontWeight: 600, transition: "all 0.15s",
+                          opacity: deletingId === fb.id ? 0.5 : 1,
+                        }}
+                      >
+                        {deletingId === fb.id ? '...' : '✕ Delete'}
+                      </button>
+                    </div>
                   </div>
                   <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
                     {fb.message}

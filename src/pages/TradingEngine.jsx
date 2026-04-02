@@ -180,28 +180,28 @@ function SignalCard({ signal }) {
           fontSize: isMobile ? 18 : 24, fontWeight: 800,
           color: signal.type === "LONG" ? "#10B981" : "#EF4444",
         }}>{signal.type === "LONG" ? "▲" : "▼"}</div>
-        <div style={{ fontSize: isMobile ? 8 : 10, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{signal.type}</div>
+        <div style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{signal.type}</div>
       </div>
       <div style={{ flex: isMobile ? "1 1 100%" : 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
           <span style={{ fontSize: isMobile ? 13 : 15, fontWeight: 700, color: "#fff" }}>{signal.symbol}</span>
           <span style={{
-            padding: "2px 8px", borderRadius: 8, fontSize: isMobile ? 8 : 10, fontWeight: 600,
+            padding: "2px 8px", borderRadius: 8, fontSize: isMobile ? 10 : 10, fontWeight: 600,
             background: `${sColor}22`, color: sColor,
           }}>{signal.status}</span>
         </div>
         <div style={{ fontSize: isMobile ? 10 : 11, color: "rgba(255,255,255,0.5)" }}>{signal.strategy} — via {signal.agent}</div>
-        <div style={{ display: "flex", gap: isMobile ? 8 : 14, marginTop: 6, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)" }}>SL: <span style={{ color: "#EF4444" }}>{signal.stopLoss}%</span></span>
-          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)" }}>TP: <span style={{ color: "#10B981" }}>{signal.takeProfit}%</span></span>
-          <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)" }}>Risk: <span style={{ color: parseFloat(signal.riskScore) > 3 ? "#F59E0B" : "#10B981" }}>{signal.riskScore}/10</span></span>
+        <div style={{ display: "flex", gap: isMobile ? 10 : 14, marginTop: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>SL: <span style={{ color: "#EF4444" }}>{signal.stopLoss}%</span></span>
+          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>TP: <span style={{ color: "#10B981" }}>{signal.takeProfit}%</span></span>
+          <span style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Risk: <span style={{ color: parseFloat(signal.riskScore) > 3 ? "#F59E0B" : "#10B981" }}>{signal.riskScore}/10</span></span>
         </div>
       </div>
       <div style={{ textAlign: "right", flex: isMobile ? "0 0 auto" : undefined }}>
         <div style={{ fontSize: isMobile ? 20 : 28, fontWeight: 800, color: parseFloat(signal.confidence) > 85 ? "#10B981" : parseFloat(signal.confidence) > 75 ? "#F59E0B" : "#EF4444" }}>
           {signal.confidence}
         </div>
-        <div style={{ fontSize: 8, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1 }}>Confidence</div>
+        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1 }}>Confidence</div>
       </div>
     </div>
   );
@@ -225,14 +225,14 @@ function PipelineView({ pipeline }) {
                   <div style={{ fontSize: isMobile ? 11 : 13, fontWeight: 700, color: "#fff" }}>{stage.name}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                     <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10B981", boxShadow: "0 0 6px #10B981" }} />
-                    <span style={{ fontSize: 8, color: "#10B981", textTransform: "uppercase" }}>Active</span>
+                    <span style={{ fontSize: 10, color: "#10B981", textTransform: "uppercase" }}>Active</span>
                   </div>
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr" + (isMobile ? "" : " 1fr"), gap: 6, flex: 1 }}>
                 {Object.entries(stage.metrics).map(([k, v]) => (
                   <div key={k} style={{ padding: "6px 8px", borderRadius: 8, background: "rgba(255,255,255,0.02)" }}>
-                    <div style={{ fontSize: 8, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 0.5 }}>
                       {k.replace(/([A-Z])/g, " $1").trim()}
                     </div>
                     <div style={{ fontSize: 12, fontWeight: 600, color: "#00D4FF", marginTop: 2 }}>{v}</div>
@@ -261,7 +261,7 @@ function OrderBookView({ book }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
         <div>
-          <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
+          <div style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
             <span>Bids</span><span>Size</span>
           </div>
           {book.bids.map((b, i) => (
@@ -273,7 +273,7 @@ function OrderBookView({ book }) {
           ))}
         </div>
         <div>
-          <div style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
+          <div style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
             <span>Asks</span><span>Size</span>
           </div>
           {book.asks.map((a, i) => (
@@ -298,18 +298,18 @@ function ExecutionQueueView({ orders }) {
         <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>Execution Queue</div>
         <div style={{ display: "flex", gap: isMobile ? 4 : 8, flexWrap: "wrap" }}>
           {Object.entries(statusColors).map(([s, c]) => (
-            <span key={s} style={{ fontSize: isMobile ? 8 : 9, color: c, display: "flex", alignItems: "center", gap: 3 }}>
+            <span key={s} style={{ fontSize: isMobile ? 10 : 9, color: c, display: "flex", alignItems: "center", gap: 3 }}>
               <span style={{ width: 6, height: 6, borderRadius: 2, background: c }} />{isMobile ? s.substring(0, 3) : s}
             </span>
           ))}
         </div>
       </div>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 9 : 11 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: isMobile ? 10 : 11 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
               {["Time", "Order ID", "Symbol", "Side", "Qty", "Filled", "Price", "Venue", "Slippage", "Latency", "Status"].map(h => (
-                <th key={h} style={{ padding: isMobile ? "6px 8px" : "8px 10px", textAlign: "left", color: "rgba(255,255,255,0.35)", fontSize: isMobile ? 8 : 9, textTransform: "uppercase", letterSpacing: 1, fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>
+                <th key={h} style={{ padding: isMobile ? "6px 8px" : "8px 10px", textAlign: "left", color: "rgba(255,255,255,0.35)", fontSize: isMobile ? 10 : 9, textTransform: "uppercase", letterSpacing: 1, fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -317,11 +317,11 @@ function ExecutionQueueView({ orders }) {
             {orders.map((o, i) => (
               <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: "rgba(255,255,255,0.4)" }}>{o.time}</td>
-                <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: "rgba(255,255,255,0.3)", fontSize: isMobile ? 8 : 9 }}>{o.id}</td>
+                <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: "rgba(255,255,255,0.3)", fontSize: isMobile ? 10 : 9 }}>{o.id}</td>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontWeight: 600, color: "#fff" }}>{o.symbol}</td>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px" }}>
                   <span style={{
-                    padding: "2px 6px", borderRadius: 4, fontSize: isMobile ? 8 : 9, fontWeight: 700,
+                    padding: "2px 6px", borderRadius: 4, fontSize: isMobile ? 10 : 9, fontWeight: 700,
                     background: o.side === "BUY" ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)",
                     color: o.side === "BUY" ? "#10B981" : "#EF4444",
                   }}>{o.side}</span>
@@ -329,12 +329,12 @@ function ExecutionQueueView({ orders }) {
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: "rgba(255,255,255,0.5)" }}>{o.qty}</td>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: o.filledQty === o.qty ? "#10B981" : "rgba(255,255,255,0.5)" }}>{o.filledQty}</td>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: "rgba(255,255,255,0.6)" }}>${o.price}</td>
-                <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontSize: isMobile ? 9 : 10, color: "#A855F7" }}>{o.venue}</td>
+                <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontSize: isMobile ? 10 : 10, color: "#A855F7" }}>{o.venue}</td>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: o.slippage !== "—" && parseFloat(o.slippage) > 1 ? "#F59E0B" : "rgba(255,255,255,0.4)" }}>{o.slippage}{o.slippage !== "—" ? "bps" : ""}</td>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px", fontFamily: "monospace", color: "rgba(255,255,255,0.4)" }}>{o.latency}</td>
                 <td style={{ padding: isMobile ? "6px 8px" : "8px 10px" }}>
                   <span style={{
-                    padding: "2px 8px", borderRadius: 6, fontSize: isMobile ? 8 : 9, fontWeight: 600,
+                    padding: "2px 8px", borderRadius: 6, fontSize: isMobile ? 10 : 9, fontWeight: 600,
                     background: `${statusColors[o.status]}18`, color: statusColors[o.status],
                   }}>{o.status}</span>
                 </td>
@@ -361,7 +361,7 @@ function PriceChart({ data }) {
             <button key={tf} style={{
               padding: isMobile ? "3px 6px" : "4px 10px", borderRadius: 8, border: "none", cursor: "pointer",
               background: i === 2 ? "rgba(0,212,255,0.15)" : "transparent",
-              color: i === 2 ? "#00D4FF" : "rgba(255,255,255,0.4)", fontSize: isMobile ? 9 : 11,
+              color: i === 2 ? "#00D4FF" : "rgba(255,255,255,0.4)", fontSize: isMobile ? 10 : 11,
               whiteSpace: "nowrap",
             }}>{tf}</button>
           ))}
@@ -424,15 +424,15 @@ function KellyCalculator() {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 14 }}>
         <div style={glassInner({ textAlign: "center", padding: isMobile ? 12 : 16 })}>
-          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>Full Kelly</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>Full Kelly</div>
           <div style={{ fontSize: isMobile ? 20 : 28, fontWeight: 800, color: kellyFull > 0 ? "#10B981" : "#EF4444", marginTop: 4 }}>{(kellyFull * 100).toFixed(1)}%</div>
         </div>
         <div style={glassInner({ textAlign: "center", padding: isMobile ? 12 : 16, borderColor: "rgba(0,212,255,0.2)" })}>
-          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>Half Kelly (Used)</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>Half Kelly (Used)</div>
           <div style={{ fontSize: isMobile ? 20 : 28, fontWeight: 800, color: "#00D4FF", marginTop: 4 }}>{(kellyHalf * 100).toFixed(1)}%</div>
         </div>
         <div style={glassInner({ textAlign: "center", padding: isMobile ? 12 : 16 })}>
-          <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>Position Size ($60k)</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1 }}>Position Size ($60k)</div>
           <div style={{ fontSize: isMobile ? 16 : 28, fontWeight: 800, color: "#A855F7", marginTop: 4 }}>${(60000 * Math.max(kellyHalf, 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
         </div>
       </div>
@@ -457,7 +457,7 @@ function LiveMetricBar() {
     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
       {metrics.map(m => (
         <div key={m.label} style={{ ...glass({ padding: isMobile ? 12 : 16 }), flex: isMobile ? "1 1 calc(50% - 6px)" : "1 1 140px", minWidth: isMobile ? undefined : 140 }}>
-          <div style={{ fontSize: 8, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{m.label}</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>{m.label}</div>
           <div style={{ fontSize: isMobile ? 18 : 26, fontWeight: 700, color: m.color }}>{m.value}</div>
         </div>
       ))}
@@ -502,13 +502,13 @@ export default function TwelveTribes_TradingEngine() {
         display: "flex", alignItems: "center", justifyContent: "space-between",
         position: "sticky", top: 0, zIndex: 100,
         flexWrap: isMobile ? "wrap" : "nowrap",
-        gap: isMobile ? 8 : 0,
+        gap: isMobile ? 10 : 0,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <BrandLogo size={38} />
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1.5 }}>12 TRIBES</div>
-            <div style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>AI Trading Engine</div>
+            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", letterSpacing: 2, textTransform: "uppercase" }}>AI Trading Engine</div>
           </div>
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: "auto", flexBasis: isMobile ? "100%" : "auto", order: isMobile ? 3 : 0 }}>
@@ -556,7 +556,7 @@ export default function TwelveTribes_TradingEngine() {
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     {["All", "Approved", "Review", "Rejected"].map((f, i) => (
                       <span key={f} style={{
-                        padding: isMobile ? "3px 6px" : "4px 10px", borderRadius: 8, fontSize: isMobile ? 9 : 10, cursor: "pointer",
+                        padding: isMobile ? "3px 6px" : "4px 10px", borderRadius: 8, fontSize: isMobile ? 10 : 10, cursor: "pointer",
                         background: i === 0 ? "rgba(0,212,255,0.12)" : "transparent",
                         color: i === 0 ? "#00D4FF" : "rgba(255,255,255,0.4)",
                         whiteSpace: "nowrap",
@@ -605,7 +605,7 @@ export default function TwelveTribes_TradingEngine() {
                       <span style={{ fontSize: isMobile ? 11 : 12, color: "rgba(255,255,255,0.5)" }}>{m.label}</span>
                       <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10 }}>
                         <span style={{ fontSize: isMobile ? 11 : 13, fontWeight: 600, color: "#10B981" }}>{m.value}</span>
-                        <span style={{ fontSize: isMobile ? 9 : 10, color: "rgba(255,255,255,0.25)" }}>target: {m.benchmark}</span>
+                        <span style={{ fontSize: isMobile ? 10 : 10, color: "rgba(255,255,255,0.25)" }}>target: {m.benchmark}</span>
                       </div>
                     </div>
                   ))}
