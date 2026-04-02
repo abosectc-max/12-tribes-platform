@@ -2745,54 +2745,58 @@ api.get('/api/health', (req, res) => {
       maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour,
       tradesThisHour: platformHourlyTradeCount,
       windowResetsIn: Math.max(0, Math.ceil((platformHourlyWindowStart + 3600000 - Date.now()) / 60000)) + 'min',
-      maxPlatformDailyLoss: AUTO_TRADE_CONFIG.maxPlatformDailyLoss,
-      dailyLossHaltActive: platformDailyLossHaltActive,
+      maxPlatformMonthlyLoss: AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss,
+      monthlyLossHaltActive: platformMonthlyLossHaltActive,
     },
   });
 });
 
 // ─── ADMIN: GET / SET RATE LIMIT CONFIG ───
 api.get('/api/admin/rate-limit', requireAdmin, (req, res) => {
-  const midnight = new Date(); midnight.setUTCHours(0,0,0,0);
-  const todayLosses = db.findMany('positions', p =>
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const monthLosses = db.findMany('positions', p =>
     p.status === 'CLOSED' && p.closed_at &&
-    new Date(p.closed_at).getTime() >= midnight.getTime() && (p.realized_pnl || 0) < 0
+    new Date(p.closed_at).getTime() >= monthStart.getTime() && (p.realized_pnl || 0) < 0
   ).reduce((s, p) => s + Math.abs(p.realized_pnl || 0), 0);
+  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const daysUntilReset = Math.ceil((nextMonth - now) / (1000 * 60 * 60 * 24));
 
   json(res, 200, {
     config: {
       maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour,
-      maxPlatformDailyLoss: AUTO_TRADE_CONFIG.maxPlatformDailyLoss,
+      maxPlatformMonthlyLoss: AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss,
     },
     state: {
       tradesThisHour: platformHourlyTradeCount,
       windowResetsIn: Math.max(0, Math.ceil((platformHourlyWindowStart + 3600000 - Date.now()) / 60000)) + 'min',
-      todayRealizedLoss: +todayLosses.toFixed(2),
-      dailyLossHaltActive: platformDailyLossHaltActive,
+      monthRealizedLoss: +monthLosses.toFixed(2),
+      monthlyLossHaltActive: platformMonthlyLossHaltActive,
+      monthResetsIn: daysUntilReset + ' days',
     },
   });
 });
 
 api.post('/api/admin/rate-limit', requireAdmin, (req, res) => {
-  const { maxTradesPerHour, maxPlatformDailyLoss, resetHalt } = req.body || {};
+  const { maxTradesPerHour, maxPlatformMonthlyLoss, resetHalt } = req.body || {};
   const changes = [];
   if (typeof maxTradesPerHour === 'number' && maxTradesPerHour >= 0) {
     AUTO_TRADE_CONFIG.maxTradesPerHour = maxTradesPerHour;
     changes.push(`maxTradesPerHour → ${maxTradesPerHour}`);
   }
-  if (typeof maxPlatformDailyLoss === 'number' && maxPlatformDailyLoss >= 0) {
-    AUTO_TRADE_CONFIG.maxPlatformDailyLoss = maxPlatformDailyLoss;
-    changes.push(`maxPlatformDailyLoss → $${maxPlatformDailyLoss}`);
+  if (typeof maxPlatformMonthlyLoss === 'number' && maxPlatformMonthlyLoss >= 0) {
+    AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss = maxPlatformMonthlyLoss;
+    changes.push(`maxPlatformMonthlyLoss → $${maxPlatformMonthlyLoss}`);
   }
   if (resetHalt === true) {
-    platformDailyLossHaltActive = false;
+    platformMonthlyLossHaltActive = false;
     platformHourlyTradeCount = 0;
     platformHourlyWindowStart = Date.now();
-    changes.push('daily loss halt cleared + hourly counter reset');
+    changes.push('monthly loss halt cleared + hourly counter reset');
   }
   if (changes.length === 0) return json(res, 400, { error: 'No valid fields to update' });
   console.log(`[RateLimit] Admin updated: ${changes.join(', ')}`);
-  json(res, 200, { updated: changes, config: { maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour, maxPlatformDailyLoss: AUTO_TRADE_CONFIG.maxPlatformDailyLoss } });
+  json(res, 200, { updated: changes, config: { maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour, maxPlatformMonthlyLoss: AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss } });
 });
 
 // ─── Email validation (RFC 5322 simplified) ───
@@ -6448,10 +6452,10 @@ const AUTO_TRADE_CONFIG = {
   // Caps total trades across ALL agents per hour — forces deliberate entries,
   // spreads activity evenly, and bounds daily platform-wide loss exposure.
   // At 6 trades/hour: 144 trades/day max across all users (one per agent/hour).
-  maxTradesPerHour: 6,         // Platform-wide hard cap per rolling 60-min window
-  maxPlatformDailyLoss: 50,    // Hard stop: halt ALL trading if total realized losses
-                               // across all wallets exceed this amount today ($50).
-                               // Resets at midnight UTC. Set to 0 to disable.
+  maxTradesPerHour: 6,          // Platform-wide hard cap per rolling 60-min window
+  maxPlatformMonthlyLoss: 50,   // Hard stop: halt ALL trading if total realized losses
+                                // across all wallets exceed this amount this calendar month ($50).
+                                // Resets on the 1st of each month UTC. Set to 0 to disable.
 };
 
 let autoTradeTickCount = 0;
@@ -6463,7 +6467,7 @@ let globalSessionResetTime = SERVER_BOOT_TIME; // Initialize to boot time — pr
 // cumulative daily realized losses. Both reset automatically.
 let platformHourlyTradeCount = 0;
 let platformHourlyWindowStart = Date.now();
-let platformDailyLossHaltActive = false;   // true = all trading suspended
+let platformMonthlyLossHaltActive = false;  // true = all trading suspended for remainder of month
 
 /**
  * Checks and increments the platform-wide hourly trade counter.
@@ -6487,47 +6491,48 @@ function checkPlatformRateLimit() {
 }
 
 /**
- * Checks platform-wide daily loss halt.
- * Computes total realized losses across all wallets since midnight UTC.
- * If cumulative losses exceed maxPlatformDailyLoss, sets halt flag.
+ * Checks platform-wide monthly loss halt.
+ * Computes total realized losses across all wallets since the 1st of the current UTC month.
+ * If cumulative losses exceed maxPlatformMonthlyLoss, sets halt flag until month rolls over.
  * Returns true if trading is ALLOWED, false if halted.
  */
-function checkPlatformDailyLossLimit() {
-  if (!AUTO_TRADE_CONFIG.maxPlatformDailyLoss || AUTO_TRADE_CONFIG.maxPlatformDailyLoss <= 0) return true;
-  if (platformDailyLossHaltActive) return false;
+function checkPlatformMonthlyLossLimit() {
+  if (!AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss || AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss <= 0) return true;
+  if (platformMonthlyLossHaltActive) return false;
 
-  const midnight = new Date();
-  midnight.setUTCHours(0, 0, 0, 0);
-  const midnightTs = midnight.getTime();
+  // Start of current UTC month
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const monthStartTs = monthStart.getTime();
 
-  // Sum all realized losses from closed positions since midnight UTC
+  // Sum all realized losses from closed positions since 1st of month UTC
   let totalLoss = 0;
-  const todayClosedTrades = db.findMany('positions', p =>
+  const monthClosedTrades = db.findMany('positions', p =>
     p.status === 'CLOSED' &&
     p.closed_at &&
-    new Date(p.closed_at).getTime() >= midnightTs &&
+    new Date(p.closed_at).getTime() >= monthStartTs &&
     (p.realized_pnl || 0) < 0
   );
-  for (const t of todayClosedTrades) {
+  for (const t of monthClosedTrades) {
     totalLoss += Math.abs(t.realized_pnl || 0);
   }
 
-  if (totalLoss >= AUTO_TRADE_CONFIG.maxPlatformDailyLoss) {
-    platformDailyLossHaltActive = true;
-    console.warn(`[RateLimit] 🔴 DAILY LOSS HALT — Platform losses today: $${totalLoss.toFixed(2)} >= limit $${AUTO_TRADE_CONFIG.maxPlatformDailyLoss}. All auto-trading suspended until midnight UTC.`);
+  if (totalLoss >= AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss) {
+    platformMonthlyLossHaltActive = true;
+    console.warn(`[RateLimit] 🔴 MONTHLY LOSS HALT — Platform losses this month: $${totalLoss.toFixed(2)} >= limit $${AUTO_TRADE_CONFIG.maxPlatformMonthlyLoss}. All auto-trading suspended until 1st of next month UTC.`);
     return false;
   }
   return true;
 }
 
-// Reset daily loss halt at midnight UTC
+// Reset monthly loss halt on the 1st of each month UTC
 setInterval(() => {
   const now = new Date();
-  if (now.getUTCHours() === 0 && now.getUTCMinutes() === 0 && platformDailyLossHaltActive) {
-    platformDailyLossHaltActive = false;
+  if (now.getUTCDate() === 1 && now.getUTCHours() === 0 && now.getUTCMinutes() === 0 && platformMonthlyLossHaltActive) {
+    platformMonthlyLossHaltActive = false;
     platformHourlyTradeCount = 0;
     platformHourlyWindowStart = Date.now();
-    console.log('[RateLimit] ✅ Midnight UTC reset — daily loss halt cleared. Trading resumed.');
+    console.log('[RateLimit] ✅ Month rollover — monthly loss halt cleared. Trading resumed.');
   }
 }, 60 * 1000); // Check every minute
 
@@ -7991,9 +7996,9 @@ function runAllAgents(userId, fundData) {
 
     // ─── PLATFORM RATE LIMITER ───────────────────────────────────────────────
     // Check daily loss halt first (cheap flag check), then hourly trade cap.
-    if (!checkPlatformDailyLossLimit()) {
+    if (!checkPlatformMonthlyLossLimit()) {
       if (autoTradeTickCount % 60 === 1) {
-        console.log(`[RateLimit] 🔴 Daily loss halt active — skipping all auto-trades this tick.`);
+        console.log(`[RateLimit] 🔴 Monthly loss halt active — skipping all auto-trades this tick.`);
       }
       break; // Halt entire tick for all users
     }
