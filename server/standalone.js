@@ -10596,30 +10596,28 @@ function applyPlatformErrorCorrection(adminUserId, mode = '24h', hoursBack = 24)
         t => t.user_id === wallet.user_id && new Date(t.closed_at || t.created_at || 0).getTime() > cutoffMs
       );
 
+      // CRITICAL FIX: Use realized_pnl only — NOT returnBack.
+      // wallet.balance net-changes by exactly realized_pnl per closed trade:
+      //   open:  wallet.balance -= cost (margin deducted)
+      //   close: wallet.balance += returnBack = cost + pnl  →  net = pnl
+      // Reversing returnBack would double-count the cost basis across thousands
+      // of trades, producing billion-scale subtraction that zeros all wallets.
+      // Correct formula: wallet_T-Nh = wallet_now - sum(realized_pnl last Nh)
       for (const t of recentTrades) {
-        const cost = (t.entry_price || 0) * (t.quantity || 0);
-        let appliedReturnBack;
-        if (t.side === 'LONG') {
-          appliedReturnBack = cost + (t.realized_pnl || 0);
-        } else {
-          // Bug 3: returnBack was (cost*0.5)+pnl, possibly deeply negative
-          appliedReturnBack = (cost * 0.5) + (t.realized_pnl || 0);
-        }
-        reversedPnl += appliedReturnBack;
+        reversedPnl += (t.realized_pnl || 0);
         tradesReversed++;
       }
 
-      // Also account for unrealized P&L on currently open positions
-      // (those were entered AFTER the cutoff and shouldn't exist in the restored state)
+      // Also strip out unrealized P&L — those positions will be closed at $0
       const openPosUnrealized = wallet.unrealized_pnl || 0;
 
-      // Restored balance = current balance minus everything accumulated since cutoff
-      restoredRealizedPnl = roundTo(preRealizedPnl - recentTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0), 2);
+      // wallet_36h_ago = current_balance - pnl_since_cutoff - current_unrealized
+      restoredRealizedPnl = roundTo(preRealizedPnl - reversedPnl, 2);
       restoredBalance = roundTo(preBalance - reversedPnl - openPosUnrealized, 2);
 
       // Floor at 0 — investors cannot owe money to the platform
       restoredBalance = Math.max(0, restoredBalance);
-      rollbackNotes = `24h rollback: reversed ${tradesReversed} trades (returnBack sum: $${reversedPnl.toFixed(2)}), unrealized cleared: $${openPosUnrealized.toFixed(2)}`;
+      rollbackNotes = `${hoursBack}h rollback: reversed ${tradesReversed} trades (net pnl sum: $${reversedPnl.toFixed(2)}), unrealized cleared: $${openPosUnrealized.toFixed(2)}`;
     } else {
       // ── FULL MODE: Restore to initial_balance minus completed withdrawals ──
       restoredBalance = Math.max(0, initialBal - totalWithdrawn);
