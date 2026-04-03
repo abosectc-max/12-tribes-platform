@@ -333,18 +333,23 @@ html[data-theme="light"] #root,
 }
 
 /* ── 3b. DARK PAGE-ROOT GRADIENT BACKGROUNDS → LIGHT ─────────── */
-/* Every page root div uses a linear/radial-gradient containing    */
-/* these dark navy hex values as inline styles. Compound           */
-/* [style*=] selectors override them directly with the light       */
-/* gradient so that background-attachment:fixed on html is not     */
-/* relied upon (unreliable through overflow:auto scroll contexts). */
-[data-theme="light"] [style*="linear-gradient"][style*="#0a0a1a"],
-[data-theme="light"] [style*="linear-gradient"][style*="#0d1117"],
-[data-theme="light"] [style*="linear-gradient"][style*="#0a0f1e"],
-[data-theme="light"] [style*="linear-gradient"][style*="#0D1335"],
-[data-theme="light"] [style*="linear-gradient"][style*="#111827"],
-[data-theme="light"] [style*="linear-gradient"][style*="#08091A"],
-[data-theme="light"] [style*="radial-gradient"][style*="#0a0a1a"] {
+/* Chrome normalizes hex colors in inline styles to rgb(), so      */
+/* [style*="#0a0a1a"] never matches. Instead target the ONE string */
+/* Chrome does NOT normalize: "min-height: 100vh".                 */
+/* Every page root div has this property → reliable catch-all.     */
+html[data-theme="light"] [style*="min-height: 100vh"],
+html[data-theme="light"] [style*="min-height:100vh"],
+[data-theme="light"] [style*="min-height: 100vh"],
+[data-theme="light"] [style*="min-height:100vh"] {
+  background: linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
+}
+
+/* Also keep rgb()-normalized versions as belt-and-suspenders      */
+[data-theme="light"] [style*="linear-gradient"][style*="rgb(10, 10, 26)"],
+[data-theme="light"] [style*="linear-gradient"][style*="rgb(13, 17, 23)"],
+[data-theme="light"] [style*="linear-gradient"][style*="rgb(10, 15, 30)"],
+[data-theme="light"] [style*="linear-gradient"][style*="rgb(5, 5, 16)"],
+[data-theme="light"] [style*="radial-gradient"][style*="rgb(10, 10, 26)"] {
   background: linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
 }
 
