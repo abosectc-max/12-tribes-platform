@@ -24,6 +24,10 @@ import PaperTrading from './pages/PaperTrading.jsx'
 import TermsConditions from './pages/TermsConditions.jsx'
 import InstallPrompt from './components/InstallPrompt.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import { initializeTheme } from './store/themeService.js'
+
+// Initialize theme immediately on module load (before first render)
+initializeTheme();
 
 const glass = {
   background: "rgba(255,255,255,0.035)",

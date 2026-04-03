@@ -19,6 +19,7 @@ import BrandLogo from '../components/BrandLogo.jsx';
 import { haptics } from '../hooks/useHaptics.js';
 import { isPushSupported, getPermissionState, requestPermission, notifications as pushNotify } from '../hooks/useNotifications.js';
 import { generateMonthlyStatement, openPrintView } from '../store/pdfGenerator.js';
+import { getTheme, setTheme, getAvailableThemes, applyTheme } from '../store/themeService.js';
 
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -4743,6 +4744,104 @@ function NotificationsSection() {
 //   SETTINGS VIEW — Password, 2FA, Account
 // ════════════════════════════════════════
 
+// ════════════════════════════════════════
+//   APPEARANCE / THEME SELECTOR
+// ════════════════════════════════════════
+
+function AppearanceSection({ glass, sectionStyle, isMobile }) {
+  const [currentTheme, setCurrentTheme] = useState(() => getTheme());
+  const themes = getAvailableThemes();
+
+  const handleThemeChange = (themeId) => {
+    haptics.medium();
+    setTheme(themeId);
+    setCurrentTheme(themeId);
+  };
+
+  const themeOptions = [
+    {
+      id: 'dark',
+      label: 'Dark',
+      icon: '🌙',
+      desc: 'Default dark interface — easy on the eyes',
+      colors: { bg: '#0a0a1a', surface: '#161630', accent: '#00D4FF', text: '#fff' },
+    },
+    {
+      id: 'light',
+      label: 'Light',
+      icon: '☀️',
+      desc: 'Clean light interface — high contrast',
+      colors: { bg: '#F5F7FA', surface: '#ffffff', accent: '#0077CC', text: '#111827' },
+    },
+    {
+      id: 'midnight',
+      label: 'Midnight',
+      icon: '🌑',
+      desc: 'Pure black — OLED battery saver',
+      colors: { bg: '#000000', surface: '#0a0a14', accent: '#00D4FF', text: '#fff' },
+    },
+  ];
+
+  return (
+    <div style={{ ...sectionStyle }}>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 20 }}>🎨</span> Appearance
+      </div>
+      <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", marginBottom: 24, lineHeight: 1.6 }}>
+        Choose how the platform looks. Your preference is saved to this device.
+      </p>
+
+      <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 12 }}>
+        {themeOptions.map(t => {
+          const isActive = currentTheme === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => handleThemeChange(t.id)}
+              style={{
+                flex: 1, padding: 20, borderRadius: 18, cursor: "pointer",
+                border: isActive ? `2px solid ${t.colors.accent}` : "2px solid rgba(255,255,255,0.06)",
+                background: isActive ? `${t.colors.accent}10` : "rgba(255,255,255,0.03)",
+                transition: "all 0.25s ease",
+                textAlign: "left",
+                outline: "none",
+                position: "relative",
+              }}
+            >
+              {/* Active indicator */}
+              {isActive && (
+                <div style={{
+                  position: "absolute", top: 10, right: 10, width: 20, height: 20,
+                  borderRadius: "50%", background: t.colors.accent,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 11, color: t.id === 'light' ? '#fff' : '#000', fontWeight: 800,
+                }}>✓</div>
+              )}
+
+              {/* Theme preview swatch */}
+              <div style={{
+                width: "100%", height: 48, borderRadius: 10, marginBottom: 14, overflow: "hidden",
+                display: "flex", border: `1px solid ${t.id === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)'}`,
+              }}>
+                <div style={{ flex: 2, background: t.colors.bg }} />
+                <div style={{ flex: 1, background: t.colors.surface }} />
+                <div style={{ flex: 0.5, background: t.colors.accent }} />
+              </div>
+
+              {/* Label */}
+              <div style={{ fontSize: 15, fontWeight: 700, color: isActive ? t.colors.accent : "rgba(255,255,255,0.8)", marginBottom: 4 }}>
+                <span style={{ marginRight: 6 }}>{t.icon}</span>{t.label}
+              </div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", lineHeight: 1.4 }}>{t.desc}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 function SettingsView({ investor, isMobile }) {
   // Password Change
   const [currentPw, setCurrentPw] = useState("");
@@ -4910,6 +5009,9 @@ function SettingsView({ investor, isMobile }) {
           ))}
         </div>
       </div>
+
+      {/* Appearance / Theme */}
+      <AppearanceSection glass={glass} sectionStyle={sectionStyle} isMobile={isMobile} />
 
       {/* Notifications */}
       <NotificationsSection />

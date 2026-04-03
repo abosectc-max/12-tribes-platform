@@ -40,6 +40,45 @@ const THEMES = {
       accent: '#ffffff'
     }
   },
+  light: {
+    name: 'Light',
+    label: 'light',
+    colors: {
+      background: '#F5F7FA',
+      surface: 'rgba(255, 255, 255, 0.85)',
+      glass: 'rgba(255, 255, 255, 0.65)',
+      text: '#111827',
+      textSecondary: 'rgba(17, 24, 39, 0.6)',
+      textTertiary: 'rgba(17, 24, 39, 0.4)',
+      accent: '#0077CC',
+      accentHover: '#005FA3',
+      accentActive: '#004D85',
+      success: '#059669',
+      danger: '#DC2626',
+      warning: '#D97706',
+      border: 'rgba(0, 0, 0, 0.1)',
+      borderLight: 'rgba(0, 0, 0, 0.05)',
+      glow: 'rgba(0, 119, 204, 0.08)',
+      glowIntense: 'rgba(0, 119, 204, 0.2)',
+      overlay: 'rgba(245, 247, 250, 0.85)',
+      scrollbar: 'rgba(0, 119, 204, 0.3)',
+      scrollbarTrack: 'rgba(0, 0, 0, 0.05)',
+      glassBg: 'rgba(255, 255, 255, 0.7)',
+      glassBorder: 'rgba(0, 0, 0, 0.08)',
+      glassShadow: '0 4px 24px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04)',
+      cardBg: '#ffffff',
+      navText: 'rgba(17, 24, 39, 0.5)',
+      navActive: '#0077CC',
+      navActiveBg: 'rgba(0, 119, 204, 0.1)',
+      inputBg: 'rgba(0, 0, 0, 0.03)',
+      inputBorder: 'rgba(0, 0, 0, 0.08)',
+    },
+    preview: {
+      primary: '#0077CC',
+      secondary: '#F5F7FA',
+      accent: '#111827'
+    }
+  },
   midnight: {
     name: 'Midnight',
     label: 'midnight',
@@ -165,9 +204,10 @@ function injectThemeStyles(theme) {
     document.head.appendChild(styleEl);
   }
 
+  const colorScheme = theme.label === 'light' ? 'light' : 'dark';
   styleEl.textContent = `
     :root[data-theme="${theme.label}"] {
-      color-scheme: dark;
+      color-scheme: ${colorScheme};
     }
 
     [data-theme="${theme.label}"] {

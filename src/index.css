@@ -94,3 +94,165 @@ a {
   background: rgba(0, 212, 255, 0.4);
   color: var(--text-primary);
 }
+
+/* ═══════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   Transforms the dark-themed inline styles
+   via CSS specificity on [data-theme="light"]
+   ═══════════════════════════════════════════ */
+
+/* Root background + text */
+[data-theme="light"] html,
+[data-theme="light"] body,
+html[data-theme="light"],
+html[data-theme="light"] body,
+html[data-theme="light"] #root {
+  background: #F5F7FA !important;
+  color: #111827 !important;
+}
+
+/* Glass morphism cards — the entire UI uses inline rgba(255,255,255,0.03-0.07) backgrounds.
+   In light mode, these become white cards with subtle borders. */
+[data-theme="light"] [style*="rgba(255,255,255,0.0"],
+[data-theme="light"] [style*="rgba(255, 255, 255, 0.0"] {
+  background: rgba(255, 255, 255, 0.8) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04) !important;
+}
+
+/* Slightly stronger glass for surfaces (0.1+) */
+[data-theme="light"] [style*="rgba(255,255,255,0.1"],
+[data-theme="light"] [style*="rgba(255, 255, 255, 0.1"] {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Dark background containers */
+[data-theme="light"] [style*="background: #0a0a1a"],
+[data-theme="light"] [style*="background: rgb(10, 10, 26)"],
+[data-theme="light"] [style*="background:#0a0a1a"],
+[data-theme="light"] [style*="background: #0B1A3B"],
+[data-theme="light"] [style*="background:#0B1A3B"],
+[data-theme="light"] [style*="background: #000"],
+[data-theme="light"] [style*="background:#000"] {
+  background: #F5F7FA !important;
+}
+
+/* Dark surface containers */
+[data-theme="light"] [style*="rgba(10, 10, 26"],
+[data-theme="light"] [style*="rgba(10,10,26"],
+[data-theme="light"] [style*="rgba(20, 20, 40"],
+[data-theme="light"] [style*="rgba(20,20,40"] {
+  background: rgba(255, 255, 255, 0.85) !important;
+}
+
+/* White text → dark text */
+[data-theme="light"] [style*="color: #fff"],
+[data-theme="light"] [style*="color:#fff"],
+[data-theme="light"] [style*="color: #FFF"],
+[data-theme="light"] [style*="color: rgb(255, 255, 255)"],
+[data-theme="light"] [style*="color: white"] {
+  color: #111827 !important;
+}
+
+/* Muted white text → muted dark text */
+[data-theme="light"] [style*="color: rgba(255,255,255,0.4"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.4"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.35"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.35"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.3"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.3"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.25"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.25"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.15"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.15"] {
+  color: rgba(17, 24, 39, 0.45) !important;
+}
+
+[data-theme="light"] [style*="color: rgba(255,255,255,0.5"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.5"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.6"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.6"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.7"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.7"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.8"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.8"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.85"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.85"],
+[data-theme="light"] [style*="color: rgba(255,255,255,0.9"],
+[data-theme="light"] [style*="color: rgba(255, 255, 255, 0.9"] {
+  color: rgba(17, 24, 39, 0.75) !important;
+}
+
+/* Accent color stays vibrant but slightly deeper for light bg contrast */
+[data-theme="light"] [style*="color: #00D4FF"],
+[data-theme="light"] [style*="color:#00D4FF"] {
+  color: #0077CC !important;
+}
+
+[data-theme="light"] [style*="background: rgba(0,212,255"],
+[data-theme="light"] [style*="background: rgba(0, 212, 255"],
+[data-theme="light"] [style*="background:rgba(0,212,255"] {
+  background: rgba(0, 119, 204, 0.1) !important;
+}
+
+/* Gradient buttons — keep them vibrant */
+[data-theme="light"] [style*="linear-gradient(135deg, #00D4FF"] {
+  background: linear-gradient(135deg, #0077CC, #7C3AED) !important;
+  box-shadow: 0 4px 16px rgba(0,119,204,0.25) !important;
+}
+
+/* Glow effects — soften for light mode */
+[data-theme="light"] [style*="box-shadow: 0 0 20px rgba(0, 212, 255"],
+[data-theme="light"] [style*="box-shadow: 0 0 16px rgba(0,212,255"] {
+  box-shadow: 0 2px 8px rgba(0,119,204,0.12) !important;
+}
+
+/* Black overlays → light overlays */
+[data-theme="light"] [style*="background: rgba(0,0,0,0.5"],
+[data-theme="light"] [style*="background: rgba(0, 0, 0, 0.5"] {
+  background: rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Scrollbar */
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15) !important;
+}
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3) !important;
+}
+[data-theme="light"] ::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Selection */
+[data-theme="light"] ::selection {
+  background: rgba(0, 119, 204, 0.3) !important;
+  color: #111827 !important;
+}
+
+/* Input fields */
+[data-theme="light"] input,
+[data-theme="light"] textarea,
+[data-theme="light"] select {
+  background: rgba(0, 0, 0, 0.03) !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  color: #111827 !important;
+}
+
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+  color: rgba(17, 24, 39, 0.35) !important;
+}
+
+/* Success/danger/warning badges remain the same — they're already colored */
+
+/* Chart backgrounds */
+[data-theme="light"] canvas {
+  filter: none;
+}
+
+/* Smooth transition on theme change */
+html, body, #root, [style] {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
