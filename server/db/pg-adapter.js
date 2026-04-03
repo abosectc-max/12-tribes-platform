@@ -34,7 +34,7 @@ const DB_TABLES = [
   'wash_sales', 'distributions', 'capital_accounts', 'passkey_credentials',
   'symbol_performance', 'audit_log', 'trade_audit', 'compliance_alerts',
   'fee_ledger', 'capital_calls', 'distribution_records', 'messages',
-  'recovery_snapshots',
+  'recovery_snapshots', 'settlements',
 ];
 
 // Columns that should be stored as JSON in PostgreSQL

@@ -126,8 +126,8 @@ const DB_TABLES = [
   'agent_preferences', 'post_mortems',
   // Symbol performance tracking — cooldowns after losses
   'symbol_performance',
-  // Compliance audit log + trade audit + alerts
-  'audit_log', 'trade_audit', 'compliance_alerts',
+  // Compliance audit log + trade audit + alerts + settlements
+  'audit_log', 'trade_audit', 'compliance_alerts', 'settlements',
   // Fee engine
   'fee_ledger',
   // Capital calls & distributions
@@ -597,6 +597,12 @@ if (USE_POSTGRES) {
           symbol TEXT, details JSONB, resolved BOOLEAN DEFAULT FALSE, created_at TEXT
         )`);
         if (!db._pgColumns.compliance_alerts) db._pgColumns.compliance_alerts = new Set(['id','type','severity','user_id','symbol','details','resolved','created_at']);
+        // ─── SETTLEMENTS TABLE (Reg SHO) ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS settlements (
+          id TEXT PRIMARY KEY, position_id TEXT, symbol TEXT, quantity REAL,
+          side TEXT, settlement_status TEXT, settlement_date TEXT, details JSONB, created_at TEXT
+        )`);
+        if (!db._pgColumns.settlements) db._pgColumns.settlements = new Set(['id','position_id','symbol','quantity','side','settlement_status','settlement_date','details','created_at']);
         console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages, audit_log, trade_audit schemas ensured');
 
         // ─── PRODUCTION READINESS VALIDATION ───
