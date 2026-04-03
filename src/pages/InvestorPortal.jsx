@@ -1174,6 +1174,7 @@ const SIDEBAR_ITEMS = [
   { id: "messages", label: "Messages", icon: "💬" },
   { id: "capital-calls", label: "Capital Calls", icon: "💰" },
   { id: "fees", label: "Fees", icon: "📊" },
+  { id: "documents", label: "Documents", icon: "📁" },
   { id: "feedback", label: "Feedback", icon: "✉" },
   { id: "settings", label: "Settings", icon: "◇" },
 ];
@@ -3939,6 +3940,11 @@ function PortfolioDashboard({ investor, onLogout }) {
             <FeesView investor={investor} isMobile={isMobile} />
           )}
 
+          {/* ═══ DOCUMENT VAULT VIEW ═══ */}
+          {activeTab === "documents" && (
+            <DocumentVaultView investor={investor} isMobile={isMobile} />
+          )}
+
           {/* ═══ FEEDBACK VIEW ═══ */}
           {activeTab === "feedback" && (
             <FeedbackView investor={investor} isMobile={isMobile} />
@@ -5343,7 +5349,7 @@ export default function TwelveTribes_InvestorPortal() {
     if (!savedSession) return "auth";
     if (!checkTermsAccepted(savedSession.id)) return "terms";
     return "dashboard";
-  }); // "auth" | "terms" | "2fa" | "onboarding" | "dashboard"
+  }); // "auth" | "terms" | "2fa" | "onboarding" | "kyc" | "dashboard"
 
   const handleAuth = (authenticatedUser) => {
     // Ensure wallet exists for returning users (creates $100K wallet if missing)
@@ -5397,7 +5403,11 @@ export default function TwelveTribes_InvestorPortal() {
   }
 
   if (phase === "onboarding") {
-    return <OnboardingTutorial investor={user} onComplete={() => setPhase("dashboard")} />;
+    return <OnboardingTutorial investor={user} onComplete={() => setPhase("kyc")} />;
+  }
+
+  if (phase === "kyc") {
+    return <KYCOnboardingWizard investor={user} onComplete={() => setPhase("dashboard")} />;
   }
 
   return <PortfolioDashboard investor={user} onLogout={handleLogout} />;
@@ -7359,6 +7369,365 @@ function FeesView({ investor, isMobile }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+//   DOCUMENT VAULT VIEW
+// ════════════════════════════════════════
+
+function DocumentVaultView({ investor, isMobile }) {
+  const [documents, setDocuments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedDoc, setSelectedDoc] = useState(null);
+  const [docDetail, setDocDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const API_BASE = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    if (window.location.hostname === 'localhost') return 'http://localhost:4000/api';
+    return 'https://one2-tribes-api.onrender.com/api';
+  })();
+  const token = localStorage.getItem('12tribes_auth_token');
+  const hdrs = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  useEffect(() => {
+    fetch(`${API_BASE}/documents`, { headers: hdrs })
+      .then(r => r.ok ? r.json() : { documents: [] })
+      .then(data => setDocuments(data.documents || []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const viewDocument = (doc) => {
+    setSelectedDoc(doc);
+    setDetailLoading(true);
+    fetch(`${API_BASE}/documents/${doc.type}/${doc.id}`, { headers: hdrs })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => setDocDetail(data))
+      .catch(() => setDocDetail(null))
+      .finally(() => setDetailLoading(false));
+  };
+
+  const typeIcons = { trades: '📈', wallet: '💰', tax: '📋', fees: '💳', capital: '🏦' };
+  const typeColors = { trades: '#00d4aa', wallet: '#00D4FF', tax: '#a855f7', fees: '#ffa502', capital: '#10B981' };
+
+  if (loading) return <div style={{ padding: 32, textAlign: 'center', color: 'rgba(255,255,255,0.4)' }}>Loading documents...</div>;
+
+  return (
+    <div style={{ padding: isMobile ? 16 : 24 }}>
+      <h2 style={{ fontSize: isMobile ? 20 : 24, fontWeight: 800, color: '#fff', marginBottom: 8 }}>Document Vault</h2>
+      <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 24 }}>Your investment documents — trade confirmations, tax statements, fee reports, and wallet statements.</p>
+
+      {selectedDoc && docDetail ? (
+        <div>
+          <button onClick={() => { setSelectedDoc(null); setDocDetail(null); }} style={{ padding: '8px 16px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.6)', fontSize: 12, cursor: 'pointer', marginBottom: 20 }}>← Back to Documents</button>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: isMobile ? 16 : 24 }}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: '#fff', marginBottom: 16 }}>{selectedDoc.title}</h3>
+            {detailLoading ? (
+              <div style={{ color: 'rgba(255,255,255,0.4)' }}>Loading...</div>
+            ) : docDetail.summary ? (
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+                {Object.entries(docDetail.summary).map(([key, val]) => (
+                  <div key={key} style={{ padding: 14, borderRadius: 12, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>{key.replace(/_/g, ' ')}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: '#00D4FF' }}>{typeof val === 'number' ? (val > 100 ? `$${val.toLocaleString()}` : val) : val}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {(docDetail.trades || docDetail.entries || []).length > 0 && (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <th style={{ padding: '8px 10px', textAlign: 'left', color: 'rgba(255,255,255,0.35)', fontWeight: 600 }}>Date</th>
+                      <th style={{ padding: '8px 10px', textAlign: 'left', color: 'rgba(255,255,255,0.35)', fontWeight: 600 }}>Description</th>
+                      <th style={{ padding: '8px 10px', textAlign: 'right', color: 'rgba(255,255,255,0.35)', fontWeight: 600 }}>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(docDetail.trades || docDetail.entries || []).slice(0, 50).map((item, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <td style={{ padding: '8px 10px', color: 'rgba(255,255,255,0.5)' }}>{new Date(item.created_at || item.date).toLocaleDateString()}</td>
+                        <td style={{ padding: '8px 10px', color: '#fff' }}>{item.symbol ? `${item.side} ${item.quantity} ${item.symbol}` : item.description || item.fee_type || 'Entry'}</td>
+                        <td style={{ padding: '8px 10px', textAlign: 'right', color: '#00d4aa', fontWeight: 600 }}>${(item.quantity && item.entry_price ? item.quantity * item.entry_price : item.amount || item.gains || 0).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div>
+          {documents.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 48, color: 'rgba(255,255,255,0.3)' }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>📁</div>
+              <p>No documents available yet. Documents will appear as you trade and accrue fees.</p>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: 12 }}>
+              {documents.map(doc => (
+                <div key={doc.id} onClick={() => viewDocument(doc)} style={{ padding: 16, borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: 14 }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.borderColor = typeColors[doc.type] || '#00D4FF'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'; }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: `${typeColors[doc.type] || '#00D4FF'}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{typeIcons[doc.type] || '📄'}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#fff', marginBottom: 4 }}>{doc.title}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>
+                      {new Date(doc.date).toLocaleDateString()} {doc.count ? `• ${doc.count} entries` : ''} {doc.balance !== undefined ? `• $${doc.balance.toLocaleString()}` : ''}
+                    </div>
+                  </div>
+                  <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 16 }}>→</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+//   KYC ONBOARDING WIZARD
+// ════════════════════════════════════════
+
+function KYCOnboardingWizard({ investor, onComplete }) {
+  const { isMobile } = useResponsive();
+  const [step, setStep] = useState(1);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const [address, setAddress] = useState({ street: '', city: '', state: '', zip: '' });
+  const [riskAnswers, setRiskAnswers] = useState({ experience: null, tolerance: null, timeHorizon: null, lossReaction: null, income: null });
+  const [riskProfile, setRiskProfile] = useState(null);
+  const [accreditedChecks, setAccreditedChecks] = useState({ income: false, netWorth: false, certification: false, institutional: false });
+  const [fundingAck, setFundingAck] = useState(false);
+
+  const API_BASE = (() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    if (window.location.hostname === 'localhost') return 'http://localhost:4000/api';
+    return 'https://one2-tribes-api.onrender.com/api';
+  })();
+  const token = localStorage.getItem('12tribes_auth_token');
+  const hdrs = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+
+  const calculateRisk = () => {
+    let s = 0;
+    s += { none: 0, '1-3': 1, '3-10': 2, '10plus': 3 }[riskAnswers.experience] || 0;
+    s += { conservative: 0, moderate: 3, aggressive: 5, veryAggressive: 7 }[riskAnswers.tolerance] || 0;
+    s += { lessThan1: 0, '1-5': 2, '5-10': 4, '10plus': 5 }[riskAnswers.timeHorizon] || 0;
+    s += { sellAll: 0, sellSome: 2, hold: 4, buyMore: 5 }[riskAnswers.lossReaction] || 0;
+    s += { '50-100': 0, '100-200': 2, '200-500': 3, '500plus': 5 }[riskAnswers.income] || 0;
+    if (s <= 5) return 'Conservative';
+    if (s <= 10) return 'Moderate';
+    if (s <= 15) return 'Aggressive';
+    return 'Very Aggressive';
+  };
+
+  const isStep2Valid = dateOfBirth && address.street && address.city && address.state && address.zip;
+  const isStep3Valid = Object.values(riskAnswers).every(v => v !== null);
+  const isStep4Valid = Object.values(accreditedChecks).some(v => v);
+
+  const handleNext = () => {
+    setError('');
+    if (step === 2 && !isStep2Valid) { setError('Please fill in all fields'); return; }
+    if (step === 3 && !isStep3Valid) { setError('Please answer all questions'); return; }
+    if (step === 3) setRiskProfile(calculateRisk());
+    if (step === 4 && !isStep4Valid) { setError('Please confirm at least one criterion'); return; }
+    if (step === 5 && !fundingAck) { setError('Please acknowledge funding requirements'); return; }
+    if (step < 6) setStep(step + 1);
+  };
+
+  const handleComplete = async () => {
+    setLoading(true);
+    try {
+      const resp = await fetch(`${API_BASE}/onboarding/save`, {
+        method: 'POST', headers: hdrs,
+        body: JSON.stringify({ complete: true, riskProfile: riskProfile || calculateRisk(), accreditedInvestor: true, onboardingData: { dateOfBirth, address, riskProfile: riskProfile || calculateRisk(), riskAnswers, accreditedChecks } })
+      });
+      if (!resp.ok) throw new Error('Save failed');
+      onComplete();
+    } catch (e) {
+      setError(e.message);
+      setLoading(false);
+    }
+  };
+
+  const gCard = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: isMobile ? 16 : 24 };
+  const iSt = { width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 12, color: 'rgba(255,255,255,0.9)', fontSize: 14, fontFamily: 'inherit', marginBottom: 12, boxSizing: 'border-box' };
+  const btnP = { background: 'linear-gradient(135deg, #00d4aa 0%, #00a886 100%)', border: 'none', color: '#0a0a1a', padding: '12px 28px', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' };
+  const btnS = { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.9)', padding: '12px 28px', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' };
+
+  const OptionBtn = ({ label, selected, onClick }) => (
+    <button onClick={onClick} style={{ padding: '10px 16px', borderRadius: 8, border: `1px solid ${selected ? '#00d4aa' : 'rgba(255,255,255,0.1)'}`, background: selected ? 'rgba(0,212,170,0.1)' : 'rgba(255,255,255,0.02)', color: selected ? '#00d4aa' : 'rgba(255,255,255,0.7)', fontSize: 13, cursor: 'pointer', textAlign: 'left', width: '100%', marginBottom: 8, fontWeight: selected ? 600 : 400, transition: 'all 0.2s' }}>{label}</button>
+  );
+
+  const CheckItem = ({ label, checked, onChange }) => (
+    <div onClick={onChange} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, marginBottom: 8, background: checked ? 'rgba(0,212,170,0.05)' : 'rgba(255,255,255,0.02)', borderRadius: 8, border: `1px solid ${checked ? 'rgba(0,212,170,0.3)' : 'rgba(255,255,255,0.05)'}`, cursor: 'pointer' }}>
+      <div style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${checked ? '#00d4aa' : 'rgba(255,255,255,0.2)'}`, background: checked ? '#00d4aa' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: '#0a0a1a', flexShrink: 0 }}>{checked ? '✓' : ''}</div>
+      <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)' }}>{label}</span>
+    </div>
+  );
+
+  const ProgressDots = () => (
+    <div style={{ display: 'flex', justifyContent: 'center', gap: isMobile ? 8 : 12, marginBottom: 24 }}>
+      {[1,2,3,4,5,6].map((s, i) => (
+        <div key={s} style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 4 : 8 }}>
+          <div style={{ width: 28, height: 28, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, background: s < step ? '#00d4aa' : s === step ? '#a855f7' : 'transparent', border: `2px solid ${s < step ? '#00d4aa' : s === step ? '#a855f7' : 'rgba(255,255,255,0.15)'}`, color: '#fff' }}>
+            {s < step ? '✓' : s}
+          </div>
+          {i < 5 && <div style={{ width: isMobile ? 12 : 20, height: 2, background: 'rgba(255,255,255,0.08)' }} />}
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'linear-gradient(160deg, #0a0a1a 0%, #0d1117 30%, #0a0f1e 60%, #111827 100%)', padding: isMobile ? 16 : 32, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif", color: '#fff' }}>
+      <div style={{ ...gCard, maxWidth: isMobile ? '100%' : 560, width: '100%' }}>
+        {step > 1 && <ProgressDots />}
+
+        {error && <div style={{ background: 'rgba(255,71,87,0.1)', border: '1px solid #ff4757', borderRadius: 8, padding: 12, marginBottom: 16, color: '#ff4757', fontSize: 13 }}>{error}</div>}
+
+        {/* Step 1: Welcome */}
+        {step === 1 && (
+          <div style={{ textAlign: 'center' }}>
+            <h1 style={{ fontSize: isMobile ? 22 : 28, fontWeight: 700, marginBottom: 8 }}>Complete Your Profile</h1>
+            <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', marginBottom: 24 }}>We need a few details to set up your investment account.</p>
+            <div style={{ textAlign: 'left', marginBottom: 24 }}>
+              {['Personal details & identity', 'Risk profile assessment', 'Accredited investor verification', 'Funding acknowledgment'].map((t, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                  <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#00d4aa', color: '#0a0a1a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>✓</div>
+                  <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>{t}</span>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setStep(2)} style={{ ...btnP, width: '100%' }}>Begin Setup</button>
+            <button onClick={onComplete} style={{ marginTop: 12, background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: 12, cursor: 'pointer' }}>Skip for now</button>
+          </div>
+        )}
+
+        {/* Step 2: Personal Details */}
+        {step === 2 && (
+          <div>
+            <h2 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, marginBottom: 4, textAlign: 'center' }}>Personal Details</h2>
+            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 20, textAlign: 'center' }}>Step 2 of 6</p>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 6, textTransform: 'uppercase' }}>Date of Birth</label>
+            <input type="date" value={dateOfBirth} onChange={e => setDateOfBirth(e.target.value)} style={iSt} />
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 6, textTransform: 'uppercase' }}>Street Address</label>
+            <input type="text" value={address.street} onChange={e => setAddress({...address, street: e.target.value})} placeholder="123 Main Street" style={iSt} />
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 8 }}>
+              <div><label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 6 }}>CITY</label><input type="text" value={address.city} onChange={e => setAddress({...address, city: e.target.value})} style={{...iSt, marginBottom: 0}} /></div>
+              <div><label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 6 }}>STATE</label><input type="text" value={address.state} onChange={e => setAddress({...address, state: e.target.value})} style={{...iSt, marginBottom: 0}} /></div>
+              <div><label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.5)', marginBottom: 6 }}>ZIP</label><input type="text" value={address.zip} onChange={e => setAddress({...address, zip: e.target.value})} style={{...iSt, marginBottom: 0}} /></div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
+              <button onClick={() => setStep(1)} style={btnS}>Back</button>
+              <button onClick={handleNext} disabled={!isStep2Valid} style={{ ...btnP, opacity: isStep2Valid ? 1 : 0.4 }}>Continue</button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Risk Profile */}
+        {step === 3 && (
+          <div>
+            <h2 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, marginBottom: 4, textAlign: 'center' }}>Risk Profile</h2>
+            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 20, textAlign: 'center' }}>Step 3 of 6</p>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 8 }}>Investment Experience</label>
+              {[['none','No experience'],['1-3','1-3 years'],['3-10','3-10 years'],['10plus','10+ years']].map(([v,l]) => <OptionBtn key={v} label={l} selected={riskAnswers.experience===v} onClick={() => setRiskAnswers({...riskAnswers, experience: v})} />)}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 8 }}>Risk Tolerance</label>
+              {[['conservative','Conservative — Preserve capital'],['moderate','Moderate — Balanced growth'],['aggressive','Aggressive — High growth'],['veryAggressive','Very Aggressive — Maximum returns']].map(([v,l]) => <OptionBtn key={v} label={l} selected={riskAnswers.tolerance===v} onClick={() => setRiskAnswers({...riskAnswers, tolerance: v})} />)}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 8 }}>Investment Time Horizon</label>
+              {[['lessThan1','Less than 1 year'],['1-5','1-5 years'],['5-10','5-10 years'],['10plus','10+ years']].map(([v,l]) => <OptionBtn key={v} label={l} selected={riskAnswers.timeHorizon===v} onClick={() => setRiskAnswers({...riskAnswers, timeHorizon: v})} />)}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 8 }}>If your portfolio dropped 20%, you would:</label>
+              {[['sellAll','Sell everything'],['sellSome','Sell some positions'],['hold','Hold and wait'],['buyMore','Buy more at lower prices']].map(([v,l]) => <OptionBtn key={v} label={l} selected={riskAnswers.lossReaction===v} onClick={() => setRiskAnswers({...riskAnswers, lossReaction: v})} />)}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.6)', marginBottom: 8 }}>Annual Income Range</label>
+              {[['50-100','$50K - $100K'],['100-200','$100K - $200K'],['200-500','$200K - $500K'],['500plus','$500K+']].map(([v,l]) => <OptionBtn key={v} label={l} selected={riskAnswers.income===v} onClick={() => setRiskAnswers({...riskAnswers, income: v})} />)}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
+              <button onClick={() => setStep(2)} style={btnS}>Back</button>
+              <button onClick={handleNext} disabled={!isStep3Valid} style={{ ...btnP, opacity: isStep3Valid ? 1 : 0.4 }}>Continue</button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Accredited Investor */}
+        {step === 4 && (
+          <div>
+            <h2 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, marginBottom: 4, textAlign: 'center' }}>Accredited Investor</h2>
+            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 8, textAlign: 'center' }}>Step 4 of 6</p>
+            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginBottom: 16, textAlign: 'center' }}>Please confirm you meet at least one of the following criteria:</p>
+            <CheckItem label="Annual income over $200K (or $300K jointly) for the last 2 years" checked={accreditedChecks.income} onChange={() => setAccreditedChecks({...accreditedChecks, income: !accreditedChecks.income})} />
+            <CheckItem label="Net worth over $1M (excluding primary residence)" checked={accreditedChecks.netWorth} onChange={() => setAccreditedChecks({...accreditedChecks, netWorth: !accreditedChecks.netWorth})} />
+            <CheckItem label="Hold Series 7, 65, or 82 license in good standing" checked={accreditedChecks.certification} onChange={() => setAccreditedChecks({...accreditedChecks, certification: !accreditedChecks.certification})} />
+            <CheckItem label="Qualified institutional buyer or entity with $5M+ in assets" checked={accreditedChecks.institutional} onChange={() => setAccreditedChecks({...accreditedChecks, institutional: !accreditedChecks.institutional})} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
+              <button onClick={() => setStep(3)} style={btnS}>Back</button>
+              <button onClick={handleNext} disabled={!isStep4Valid} style={{ ...btnP, opacity: isStep4Valid ? 1 : 0.4 }}>Continue</button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 5: Funding Acknowledgment */}
+        {step === 5 && (
+          <div>
+            <h2 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, marginBottom: 4, textAlign: 'center' }}>Funding</h2>
+            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 20, textAlign: 'center' }}>Step 5 of 6</p>
+            <div style={{ background: 'rgba(0,212,170,0.05)', border: '1px solid rgba(0,212,170,0.15)', borderRadius: 12, padding: 16, marginBottom: 16 }}>
+              <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.7, margin: 0 }}>Capital contributions are made via wire transfer or ACH after account approval. Minimum investment is subject to fund terms. You will receive funding instructions upon account activation.</p>
+            </div>
+            <CheckItem label="I understand the funding process and minimum investment requirements" checked={fundingAck} onChange={() => setFundingAck(!fundingAck)} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
+              <button onClick={() => setStep(4)} style={btnS}>Back</button>
+              <button onClick={handleNext} disabled={!fundingAck} style={{ ...btnP, opacity: fundingAck ? 1 : 0.4 }}>Continue</button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 6: Review & Complete */}
+        {step === 6 && (
+          <div>
+            <h2 style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, marginBottom: 4, textAlign: 'center' }}>Review & Complete</h2>
+            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 20, textAlign: 'center' }}>Step 6 of 6</p>
+            <div style={{ marginBottom: 20 }}>
+              {[
+                ['Name', `${investor?.firstName || ''} ${investor?.lastName || ''}`],
+                ['Email', investor?.email || ''],
+                ['Date of Birth', dateOfBirth],
+                ['Address', `${address.street}, ${address.city}, ${address.state} ${address.zip}`],
+                ['Risk Profile', riskProfile || calculateRisk()],
+                ['Accredited', 'Verified'],
+              ].map(([label, value]) => (
+                <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>{label}</span>
+                  <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>{value}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ background: 'rgba(168,85,247,0.05)', border: '1px solid rgba(168,85,247,0.15)', borderRadius: 12, padding: 14, marginBottom: 20 }}>
+              <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', margin: 0, lineHeight: 1.6 }}>By completing setup, you certify the information provided is accurate and agree to the fund's terms and conditions.</p>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <button onClick={() => setStep(5)} style={btnS}>Back</button>
+              <button onClick={handleComplete} disabled={loading} style={{ ...btnP, opacity: loading ? 0.5 : 1 }}>{loading ? 'Saving...' : 'Complete Setup'}</button>
+            </div>
           </div>
         )}
       </div>

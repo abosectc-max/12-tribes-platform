@@ -29,6 +29,15 @@ import compliance from './compliance.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ═══════ ERROR TRACKING (captures all server errors) ═══════
+const errorLog = [];
+const _origConsoleError = console.error;
+console.error = function(...args) {
+  errorLog.push({ timestamp: new Date().toISOString(), message: args.map(a => typeof a === 'object' ? JSON.stringify(a).substring(0, 500) : String(a)).join(' ') });
+  if (errorLog.length > 500) errorLog.shift();
+  _origConsoleError.apply(console, args);
+};
+
 // ═══════ CONFIG ═══════
 const PORT = parseInt(process.env.PORT || '4000', 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -561,6 +570,16 @@ if (USE_POSTGRES) {
         )`);
         if (!db._pgColumns.messages) db._pgColumns.messages = new Set(['id','from_user_id','to_user_id','subject','body','read','parent_id','created_at']);
         console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages schemas ensured');
+
+        // ─── PRODUCTION READINESS VALIDATION ───
+        let prodChecks = 0;
+        const prodTotal = 5;
+        if (RESEND_API_KEY) { prodChecks++; } else { console.warn('[Boot] ⚠️ RESEND_API_KEY not set — email notifications disabled'); }
+        if (ALPACA_API_KEY) { prodChecks++; } else { console.warn('[Boot] ⚠️ ALPACA_API_KEY not set — live trading disabled, paper mode only'); }
+        if (process.env.JWT_SECRET) { prodChecks++; } else { console.warn('[Boot] ⚠️ JWT_SECRET not set — using ephemeral secret, sessions reset on restart'); }
+        if (process.env.DATABASE_URL) { prodChecks++; } else { console.warn('[Boot] ⚠️ DATABASE_URL not set — using file-based database'); }
+        if (process.env.RENDER_INSTANCE_ID) { prodChecks++; } else { console.warn('[Boot] ⚠️ Not running on Render — local/dev environment detected'); }
+        console.log(`[Boot] 🏁 Production readiness: ${prodChecks}/${prodTotal} checks passed`);
 
         // ─── USER BOOTSTRAP: PASSWORD RESET + ROLE ENFORCEMENT ───
         // On every boot, reset ALL user passwords to known defaults so no one gets locked out.
@@ -2975,6 +2994,8 @@ api.get('/api/health', (req, res) => {
       tradesThisHour: platformHourlyTradeCount,
       windowResetsIn: Math.max(0, Math.ceil((platformHourlyWindowStart + 3600000 - Date.now()) / 60000)) + 'min',
     },
+    errorTracking: { recentErrors: errorLog.length, lastError: errorLog.length > 0 ? errorLog[errorLog.length - 1].timestamp : null },
+    productionReady: { alpaca: !!ALPACA_API_KEY, email: !!RESEND_API_KEY, database: !!process.env.DATABASE_URL, jwt: !!process.env.JWT_SECRET },
   });
 });
 
@@ -6098,6 +6119,99 @@ api.post('/api/onboarding/save', auth, async (req, res) => {
   if (body.complete) updates.onboarding_complete = true;
   db.update('users', u => u.id === req.userId, updates);
   json(res, 200, { success: true, message: 'Onboarding data saved' });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//   INVESTOR DOCUMENT VAULT
+// ═══════════════════════════════════════════════════════════════
+
+api.get('/api/documents', auth, (req, res) => {
+  const documents = [];
+  const trades = db.find('trades', t => t.user_id === req.userId);
+  const fees = db.find('fee_ledger', f => f.user_id === req.userId);
+  const taxEntries = db.find('tax_ledger', t => t.user_id === req.userId);
+  const capitalAcct = db.findOne('capital_accounts', c => c.user_id === req.userId);
+  const wallet = db.findOne('wallets', w => w.user_id === req.userId);
+
+  // Monthly statements from trade history
+  const months = new Set();
+  trades.forEach(t => { const m = (t.created_at || t.opened_at || '')?.substring(0, 7); if (m) months.add(m); });
+  [...months].sort().reverse().forEach(m => documents.push({ id: `stmt-${m}`, type: 'statement', title: `Monthly Statement — ${m}`, date: `${m}-01`, status: 'available', count: trades.filter(t => (t.created_at || '').startsWith(m)).length }));
+
+  // Tax documents
+  if (taxEntries.length > 0) {
+    const years = new Set(); taxEntries.forEach(t => { const y = (t.created_at || '').substring(0, 4); if (y) years.add(y); });
+    [...years].forEach(y => documents.push({ id: `tax-${y}`, type: 'tax', title: `Tax Summary ${y}`, date: `${y}-12-31`, status: 'available' }));
+  }
+
+  // Fee reports
+  if (fees.length > 0) documents.push({ id: 'fees-ytd', type: 'fee-report', title: 'Fee Report YTD', date: new Date().toISOString(), status: 'available', totalFees: fees.reduce((s, f) => s + (f.amount || 0), 0) });
+
+  // Capital account
+  if (capitalAcct) documents.push({ id: 'capital-acct', type: 'capital-account', title: 'Capital Account Statement', date: new Date().toISOString(), status: 'available', ownershipPct: capitalAcct.ownership_percentage });
+
+  // Wallet statement
+  if (wallet) documents.push({ id: 'wallet-current', type: 'wallet', title: 'Current Portfolio Summary', date: new Date().toISOString(), status: 'available', balance: wallet.balance, equity: wallet.equity });
+
+  json(res, 200, { success: true, documents: documents.sort((a, b) => new Date(b.date) - new Date(a.date)) });
+});
+
+// Document detail endpoint
+api.get('/api/documents/:type/:id', auth, (req, res) => {
+  const { type, id } = req.params;
+  const userId = req.userId;
+  let documentData = null;
+
+  if (type === 'statement') {
+    const month = id.replace('stmt-', '');
+    const trades = db.find('trades', t => t.user_id === userId && (t.created_at || '').startsWith(month));
+    documentData = { type: 'statement', month, trades, summary: { total_trades: trades.length, total_value: trades.reduce((s, t) => s + ((t.quantity || 0) * (t.entry_price || 0)), 0) } };
+  } else if (type === 'tax') {
+    const year = id.replace('tax-', '');
+    const entries = db.find('tax_ledger', t => t.user_id === userId && (t.created_at || '').startsWith(year));
+    documentData = { type: 'tax', year, entries, summary: { total_entries: entries.length, total_gains: entries.reduce((s, t) => s + (t.gains || 0), 0), total_losses: entries.reduce((s, t) => s + (t.losses || 0), 0) } };
+  } else if (type === 'fee-report') {
+    const fees = db.find('fee_ledger', f => f.user_id === userId);
+    documentData = { type: 'fee-report', entries: fees, summary: { total_entries: fees.length, total_fees: fees.reduce((s, f) => s + (f.amount || 0), 0) } };
+  } else if (type === 'wallet') {
+    const wallet = db.findOne('wallets', w => w.user_id === userId);
+    documentData = { type: 'wallet', snapshot: wallet || {}, summary: { balance: wallet?.balance || 0, equity: wallet?.equity || 0, positions: (wallet?.positions || []).length } };
+  } else if (type === 'capital-account') {
+    const ca = db.findOne('capital_accounts', c => c.user_id === userId);
+    documentData = { type: 'capital-account', summary: { ownership_pct: ca?.ownership_percentage || 0, contributed: ca?.contributed_capital || 0, distributed: ca?.distributed_capital || 0 } };
+  }
+
+  if (!documentData) return json(res, 404, { error: 'Document not found' });
+  json(res, 200, documentData);
+});
+
+api.get('/api/admin/documents', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const allUsers = db.find('users', () => true);
+  const docs = allUsers.map(u => {
+    const trades = db.find('trades', t => t.user_id === u.id);
+    const fees = db.find('fee_ledger', f => f.user_id === u.id);
+    return { userId: u.id, email: u.email, name: `${u.firstName || ''} ${u.lastName || ''}`.trim(), tradeCount: trades.length, feeCount: fees.length };
+  });
+  json(res, 200, { success: true, investors: docs });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//   ERROR LOG & MONITORING ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
+
+api.get('/api/admin/error-log', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  json(res, 200, { success: true, errors: errorLog.slice(-100).reverse(), total: errorLog.length });
+});
+
+api.post('/api/admin/error-log/clear', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  errorLog.length = 0;
+  json(res, 200, { success: true, message: 'Error log cleared' });
 });
 
 // ─── WITHDRAWAL REQUESTS ───
@@ -10649,6 +10763,26 @@ setTimeout(calculateDailyFees, 30000); // First accrual 30s after boot
 // ─── ALPACA: Position reconciliation every 60s ───
 const alpacaReconcileInterval = setInterval(reconcileAlpacaPositions, 60000);
 
+// ─── AUTOMATED BACKUPS: Every 6 hours ───
+function automatedBackup() {
+  try {
+    db.flushAll();
+    const wallets = db.find('wallets', () => true);
+    const users = db.find('users', () => true);
+    const positions = db.find('positions', p => p.status === 'OPEN');
+    const snapshot = {
+      id: randomUUID(), type: 'auto_backup', created_at: new Date().toISOString(),
+      wallet_count: wallets.length, user_count: users.length, position_count: positions.length,
+      wallets: wallets.map(w => ({ user_id: w.user_id, balance: w.balance, equity: w.equity, realized_pnl: w.realized_pnl })),
+      total_equity: wallets.reduce((s, w) => s + (w.equity || w.balance || 0), 0)
+    };
+    db.insert('recovery_snapshots', snapshot);
+    console.log(`[AutoBackup] ✅ Snapshot: wallets=${wallets.length}, users=${users.length}, positions=${positions.length}, equity=$${snapshot.total_equity.toFixed(2)}`);
+  } catch (e) { console.error('[AutoBackup] Failed:', e.message); }
+}
+const autoBackupInterval = setInterval(automatedBackup, 6 * 60 * 60 * 1000); // Every 6h
+setTimeout(automatedBackup, 60000); // First backup 60s after boot
+
 // ─── BOOT SELF-TEST: Comprehensive system validation at 15s ───
 setTimeout(() => {
   console.log(`[QA BOOT] Running comprehensive boot validation...`);
@@ -13934,6 +14068,7 @@ async function shutdown(sig) {
   clearInterval(profileBackupInterval);
   clearInterval(feeAccrualInterval);
   clearInterval(alpacaReconcileInterval);
+  clearInterval(autoBackupInterval);
   if (cloudSyncInterval) clearInterval(cloudSyncInterval);
   if (typeof marketRefreshInterval !== 'undefined') clearInterval(marketRefreshInterval);
   if (keepAliveInterval) clearInterval(keepAliveInterval);
