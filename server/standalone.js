@@ -57,6 +57,17 @@ const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'; // Resend 
 const APP_NAME = '12 Tribes Investments';
 const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://12-tribes-platform.vercel.app';
 
+// ─── KNOWN USER PASSWORDS (module-level) ───
+// Used at boot to reset known accounts, and by admin-create to set the correct
+// stable password so the welcome email remains valid across server restarts.
+const KNOWN_USER_PASSWORDS = {
+  'abose.ctc@gmail.com':         process.env.PW_ADMIN        || 'Tribes2026!',
+  'hubertcinc@gmail.com':        process.env.PW_DRE          || 'Tribes2026!',
+  'wwitherspoon51@gmail.com':    process.env.PW_WILL         || 'Tribes2026!',
+  'mr.jones80@gmail.com':        process.env.PW_ROD          || 'Tribes2026!',
+  'effortlesscoolent@gmail.com': process.env.PW_EFFORTLESS   || 'Tribes2026!',
+};
+
 // ═══ ALPACA BROKERAGE CONFIG ═══
 const ALPACA_API_KEY = process.env.ALPACA_API_KEY || '';
 const ALPACA_API_SECRET = process.env.ALPACA_API_SECRET || '';
@@ -628,13 +639,7 @@ if (USE_POSTGRES) {
         // On every boot, reset ALL user passwords to known defaults so no one gets locked out.
         // Passwords are per-user, set from env vars with sensible defaults.
         // Also enforces admin role for the designated admin email.
-        const USER_PASSWORDS = {
-          'abose.ctc@gmail.com':        process.env.PW_ADMIN        || 'Tribes2026!',
-          'hubertcinc@gmail.com':       process.env.PW_DRE          || 'Tribes2026!',
-          'wwitherspoon51@gmail.com':   process.env.PW_WILL         || 'Tribes2026!',
-          'mr.jones80@gmail.com':       process.env.PW_ROD          || 'Tribes2026!',
-          'effortlesscoolent@gmail.com': process.env.PW_EFFORTLESS  || 'Tribes2026!',
-        };
+        const USER_PASSWORDS = KNOWN_USER_PASSWORDS; // use module-level map
         const DESIGNATED_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
 
         const allUsers = db.findMany('users');
@@ -4466,8 +4471,9 @@ api.post('/api/admin/users', auth, async (req, res) => {
     return json(res, 409, { error: 'Email already registered' });
   }
 
-  // Auto-generate a secure temporary password
-  const tempPassword = randomBytes(6).toString('base64url'); // ~8 chars, URL-safe
+  // Use the known stable password if the email is a recognized account (so boot-reset
+  // won't immediately invalidate the welcome email), otherwise generate a random temp.
+  const tempPassword = KNOWN_USER_PASSWORDS[emailKey] || randomBytes(6).toString('base64url');
 
   const userRole = ['admin', 'investor'].includes(role) ? role : 'investor';
   const user = db.insert('users', {
@@ -4496,13 +4502,18 @@ api.post('/api/admin/users', auth, async (req, res) => {
   // Send welcome email with temporary password — transactional, always sends (user needs it to log in)
   if (RESEND_API_KEY) {
     try {
+      const isKnownUser = !!KNOWN_USER_PASSWORDS[emailKey];
       await sendEmail(emailKey, `Welcome to ${APP_NAME}`,
         `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:20px;">
           <h2 style="color:#00D4FF;">Welcome to ${APP_NAME}</h2>
           <p>An admin has created an account for you.</p>
           <p><strong>Email:</strong> ${emailKey}</p>
-          <p><strong>Temporary Password:</strong> <code style="background:#f0f0f0;padding:4px 8px;border-radius:4px;font-size:16px;">${tempPassword}</code></p>
-          <p>Please sign in and change your password immediately.</p>
+          <p><strong>Password:</strong> <code style="background:#f0f0f0;padding:4px 8px;border-radius:4px;font-size:16px;">${tempPassword}</code></p>
+          ${isKnownUser
+            ? '<p>This password is your permanent login password. You can change it anytime from your account settings.</p>'
+            : '<p>This is a temporary password. Please sign in and change it immediately from your account settings.</p>'
+          }
+          <p><a href="${FRONTEND_ORIGIN}/investor-portal" style="display:inline-block;margin-top:8px;padding:10px 20px;background:#00D4FF;color:#000;border-radius:8px;text-decoration:none;font-weight:600;">Sign In Now</a></p>
           <p style="margin-top:24px;color:#888;font-size:12px;">— ${APP_NAME} Team</p>
         </div>`
       );
