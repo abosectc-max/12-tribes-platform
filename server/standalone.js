@@ -1098,7 +1098,7 @@ function flushSignalBuffer() {
     try {
       const userSignals = db.findMany('signals', s => s.user_id === uid);
       if (userSignals.length > 10000) {
-        const sorted = userSignals.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+        const sorted = userSignals.sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
         const toDelete = sorted.slice(0, userSignals.length - 10000);
         for (const s of toDelete) db.remove('signals', r => r.id === s.id);
       }
@@ -11249,7 +11249,7 @@ api.get('/api/auto-trades', auth, (req, res) => {
   const limit = Math.min(parseInt(req.query?.limit) || 500, 5000);
   const offset = parseInt(req.query?.offset) || 0;
   const allLogs = db.findMany('auto_trade_log', l => l.user_id === req.userId)
-    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
   const logs = allLogs.slice(offset, offset + limit);
   json(res, 200, { total: allLogs.length, offset, limit, logs });
 });
@@ -11342,7 +11342,7 @@ api.get('/api/qa/reports', auth, (req, res) => {
   const limit = Math.min(parseInt(req.query?.limit) || 50, 200);
 
   let reports = db.findMany('qa_reports')
-    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
 
   if (severity) reports = reports.filter(r => r.severity === severity.toUpperCase());
   if (type) reports = reports.filter(r => r.type === type.toUpperCase());
@@ -12769,8 +12769,8 @@ function generateForm8949(userId, taxYear) {
   for (const e of entries) {
     const line = {
       description: `${e.quantity} ${e.symbol} (${e.side}) via ${e.agent || 'Manual'}`,
-      date_acquired: e.acquired_at.split('T')[0],
-      date_sold: e.disposed_at.split('T')[0],
+      date_acquired: String(e.acquired_at || '').split('T')[0],
+      date_sold: String(e.disposed_at || '').split('T')[0],
       proceeds: e.proceeds,
       cost_basis: e.cost_basis,
       adjustment_code: e.is_wash_sale ? 'W' : '',
