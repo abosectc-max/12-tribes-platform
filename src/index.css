@@ -319,6 +319,7 @@ html[data-theme="light"] #root,
 }
 
 /* ── 3. DARK BACKGROUND CONTAINERS → LIGHT FILLS ────────────── */
+/* Flat dark colours */
 [data-theme="light"] [style*="background: #0a0a1a"],
 [data-theme="light"] [style*="background: rgb(10, 10, 26)"],
 [data-theme="light"] [style*="background:#0a0a1a"],
@@ -329,6 +330,22 @@ html[data-theme="light"] #root,
 [data-theme="light"] [style*="background: #000"],
 [data-theme="light"] [style*="background:#000"] {
   background: rgba(248, 250, 255, 0.9) !important;
+}
+
+/* ── 3b. DARK PAGE-ROOT GRADIENT BACKGROUNDS → LIGHT ─────────── */
+/* Every page root div uses a linear/radial-gradient containing    */
+/* these dark navy hex values as inline styles. Compound           */
+/* [style*=] selectors override them directly with the light       */
+/* gradient so that background-attachment:fixed on html is not     */
+/* relied upon (unreliable through overflow:auto scroll contexts). */
+[data-theme="light"] [style*="linear-gradient"][style*="#0a0a1a"],
+[data-theme="light"] [style*="linear-gradient"][style*="#0d1117"],
+[data-theme="light"] [style*="linear-gradient"][style*="#0a0f1e"],
+[data-theme="light"] [style*="linear-gradient"][style*="#0D1335"],
+[data-theme="light"] [style*="linear-gradient"][style*="#111827"],
+[data-theme="light"] [style*="linear-gradient"][style*="#08091A"],
+[data-theme="light"] [style*="radial-gradient"][style*="#0a0a1a"] {
+  background: linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
 }
 
 [data-theme="light"] [style*="rgba(10, 10, 26"],
