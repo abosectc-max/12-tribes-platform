@@ -569,7 +569,20 @@ if (USE_POSTGRES) {
           parent_id TEXT, created_at TEXT
         )`);
         if (!db._pgColumns.messages) db._pgColumns.messages = new Set(['id','from_user_id','to_user_id','subject','body','read','parent_id','created_at']);
-        console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages schemas ensured');
+        // ─── AUDIT LOG TABLE ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS audit_log (
+          id TEXT PRIMARY KEY, event_type TEXT, user_id TEXT, entity_type TEXT,
+          entity_id TEXT, details JSONB, ip_address TEXT, created_at TEXT
+        )`);
+        if (!db._pgColumns.audit_log) db._pgColumns.audit_log = new Set(['id','event_type','user_id','entity_type','entity_id','details','ip_address','created_at']);
+        // ─── TRADE AUDIT TABLE ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS trade_audit (
+          id TEXT PRIMARY KEY, trade_id TEXT, user_id TEXT, action TEXT,
+          symbol TEXT, side TEXT, qty REAL, price REAL, status TEXT,
+          details JSONB, created_at TEXT
+        )`);
+        if (!db._pgColumns.trade_audit) db._pgColumns.trade_audit = new Set(['id','trade_id','user_id','action','symbol','side','qty','price','status','details','created_at']);
+        console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages, audit_log, trade_audit schemas ensured');
 
         // ─── PRODUCTION READINESS VALIDATION ───
         let prodChecks = 0;
@@ -5674,7 +5687,7 @@ api.delete('/api/feedback/:feedbackId', auth, (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 function calculateDailyFees() {
-  const wallets = db.find('wallets', () => true);
+  const wallets = db.findMany('wallets', () => true);
   let mgmtTotal = 0, perfTotal = 0;
   const today = new Date().toISOString().split('T')[0];
   for (const wallet of wallets) {
@@ -5732,7 +5745,7 @@ function calculateDailyFees() {
 api.get('/api/admin/fees', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
-  const fees = db.find('fee_ledger', () => true);
+  const fees = db.findMany('fee_ledger', () => true);
   const sorted = [...fees].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   json(res, 200, { success: true, fees: sorted });
 });
@@ -5740,7 +5753,7 @@ api.get('/api/admin/fees', auth, (req, res) => {
 api.get('/api/admin/fees/summary', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
-  const fees = db.find('fee_ledger', () => true);
+  const fees = db.findMany('fee_ledger', () => true);
   const accrued = fees.filter(f => f.status === 'accrued').reduce((s, f) => s + (f.amount || 0), 0);
   const collected = fees.filter(f => f.status === 'collected').reduce((s, f) => s + (f.amount || 0), 0);
   const waived = fees.filter(f => f.status === 'waived').reduce((s, f) => s + (f.amount || 0), 0);
@@ -5754,7 +5767,7 @@ api.post('/api/admin/fees/collect', auth, async (req, res) => {
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
   const body = await readBody(req);
   const targetUserId = body.userId || null;
-  const accrued = db.find('fee_ledger', f => f.status === 'accrued' && (!targetUserId || f.user_id === targetUserId));
+  const accrued = db.findMany('fee_ledger', f => f.status === 'accrued' && (!targetUserId || f.user_id === targetUserId));
   let totalCollected = 0;
   for (const fee of accrued) {
     db.update('fee_ledger', f => f.id === fee.id, { status: 'collected', collected_at: new Date().toISOString() });
@@ -5802,14 +5815,14 @@ api.put('/api/admin/fees/rates', auth, async (req, res) => {
 
 // Investor fee endpoints
 api.get('/api/fees', auth, (req, res) => {
-  const fees = db.find('fee_ledger', f => f.user_id === req.userId);
+  const fees = db.findMany('fee_ledger', f => f.user_id === req.userId);
   const sorted = [...fees].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   json(res, 200, { success: true, fees: sorted });
 });
 
 api.get('/api/fees/summary', auth, (req, res) => {
   const wallet = db.findOne('wallets', w => w.user_id === req.userId);
-  const fees = db.find('fee_ledger', f => f.user_id === req.userId);
+  const fees = db.findMany('fee_ledger', f => f.user_id === req.userId);
   const accrued = fees.filter(f => f.status === 'accrued').reduce((s, f) => s + (f.amount || 0), 0);
   const collected = fees.filter(f => f.status === 'collected').reduce((s, f) => s + (f.amount || 0), 0);
   json(res, 200, {
@@ -5882,7 +5895,7 @@ async function reconcileAlpacaPositions() {
   try {
     const alpacaPositions = await alpacaRequest('/v2/positions');
     if (alpacaPositions.error || !Array.isArray(alpacaPositions)) return;
-    const livePositions = db.find('positions', p => p.execution_mode === 'live' && p.status === 'OPEN');
+    const livePositions = db.findMany('positions', p => p.execution_mode === 'live' && p.status === 'OPEN');
     for (const ap of alpacaPositions) {
       const local = livePositions.find(p => p.symbol === ap.symbol);
       if (local) {
@@ -5957,7 +5970,7 @@ api.post('/api/admin/capital-calls', auth, async (req, res) => {
 api.get('/api/admin/capital-calls', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
-  const calls = db.find('capital_calls', () => true);
+  const calls = db.findMany('capital_calls', () => true);
   json(res, 200, { success: true, capitalCalls: calls.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
@@ -5980,7 +5993,7 @@ api.put('/api/admin/capital-calls/:id', auth, async (req, res) => {
 });
 
 api.get('/api/capital-calls', auth, (req, res) => {
-  const calls = db.find('capital_calls', c => c.user_id === req.userId);
+  const calls = db.findMany('capital_calls', c => c.user_id === req.userId);
   json(res, 200, { success: true, capitalCalls: calls.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
@@ -5990,7 +6003,7 @@ api.post('/api/admin/distributions', auth, async (req, res) => {
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
   const body = await readBody(req);
   if (!body.totalAmount) return json(res, 400, { error: 'totalAmount required' });
-  const accounts = db.find('capital_accounts', () => true);
+  const accounts = db.findMany('capital_accounts', () => true);
   const totalOwnership = accounts.reduce((s, a) => s + (a.ownership_percentage || 0), 0);
   const perInvestor = accounts.map(a => ({
     userId: a.user_id, ownershipPct: a.ownership_percentage || 0,
@@ -6007,7 +6020,7 @@ api.post('/api/admin/distributions', auth, async (req, res) => {
 api.get('/api/admin/distributions', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
-  const dists = db.find('distribution_records', () => true);
+  const dists = db.findMany('distribution_records', () => true);
   json(res, 200, { success: true, distributions: dists.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
@@ -6036,7 +6049,7 @@ api.post('/api/admin/distributions/:id/approve', auth, async (req, res) => {
 });
 
 api.get('/api/distributions', auth, (req, res) => {
-  const dists = db.find('distribution_records', () => true);
+  const dists = db.findMany('distribution_records', () => true);
   const myDists = dists.filter(d => d.status === 'distributed' && (d.per_investor || []).some(i => i.userId === req.userId));
   json(res, 200, { success: true, distributions: myDists });
 });
@@ -6057,12 +6070,12 @@ api.post('/api/messages', auth, async (req, res) => {
 });
 
 api.get('/api/messages', auth, (req, res) => {
-  const msgs = db.find('messages', m => m.to_user_id === req.userId || (m.to_user_id === null && m.from_user_id !== req.userId));
+  const msgs = db.findMany('messages', m => m.to_user_id === req.userId || (m.to_user_id === null && m.from_user_id !== req.userId));
   json(res, 200, { success: true, messages: msgs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
 api.get('/api/messages/sent', auth, (req, res) => {
-  const msgs = db.find('messages', m => m.from_user_id === req.userId);
+  const msgs = db.findMany('messages', m => m.from_user_id === req.userId);
   json(res, 200, { success: true, messages: msgs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
@@ -6086,7 +6099,7 @@ api.post('/api/admin/messages/broadcast', auth, async (req, res) => {
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
   const body = await readBody(req);
   if (!body.body) return json(res, 400, { error: 'Message body required' });
-  const investors = db.find('users', u => u.role !== 'admin');
+  const investors = db.findMany('users', u => u.role !== 'admin');
   const msgs = [];
   for (const inv of investors) {
     msgs.push(db.insert('messages', {
@@ -6132,9 +6145,9 @@ api.post('/api/onboarding/save', auth, async (req, res) => {
 
 api.get('/api/documents', auth, (req, res) => {
   const documents = [];
-  const trades = db.find('trades', t => t.user_id === req.userId);
-  const fees = db.find('fee_ledger', f => f.user_id === req.userId);
-  const taxEntries = db.find('tax_ledger', t => t.user_id === req.userId);
+  const trades = db.findMany('trades', t => t.user_id === req.userId);
+  const fees = db.findMany('fee_ledger', f => f.user_id === req.userId);
+  const taxEntries = db.findMany('tax_ledger', t => t.user_id === req.userId);
   const capitalAcct = db.findOne('capital_accounts', c => c.user_id === req.userId);
   const wallet = db.findOne('wallets', w => w.user_id === req.userId);
 
@@ -6169,14 +6182,14 @@ api.get('/api/documents/:type/:id', auth, (req, res) => {
 
   if (type === 'statement') {
     const month = id.replace('stmt-', '');
-    const trades = db.find('trades', t => t.user_id === userId && (t.created_at || '').startsWith(month));
+    const trades = db.findMany('trades', t => t.user_id === userId && (t.created_at || '').startsWith(month));
     documentData = { type: 'statement', month, trades, summary: { total_trades: trades.length, total_value: trades.reduce((s, t) => s + ((t.quantity || 0) * (t.entry_price || 0)), 0) } };
   } else if (type === 'tax') {
     const year = id.replace('tax-', '');
-    const entries = db.find('tax_ledger', t => t.user_id === userId && (t.created_at || '').startsWith(year));
+    const entries = db.findMany('tax_ledger', t => t.user_id === userId && (t.created_at || '').startsWith(year));
     documentData = { type: 'tax', year, entries, summary: { total_entries: entries.length, total_gains: entries.reduce((s, t) => s + (t.gains || 0), 0), total_losses: entries.reduce((s, t) => s + (t.losses || 0), 0) } };
   } else if (type === 'fee-report') {
-    const fees = db.find('fee_ledger', f => f.user_id === userId);
+    const fees = db.findMany('fee_ledger', f => f.user_id === userId);
     documentData = { type: 'fee-report', entries: fees, summary: { total_entries: fees.length, total_fees: fees.reduce((s, f) => s + (f.amount || 0), 0) } };
   } else if (type === 'wallet') {
     const wallet = db.findOne('wallets', w => w.user_id === userId);
@@ -6193,10 +6206,10 @@ api.get('/api/documents/:type/:id', auth, (req, res) => {
 api.get('/api/admin/documents', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
-  const allUsers = db.find('users', () => true);
+  const allUsers = db.findMany('users', () => true);
   const docs = allUsers.map(u => {
-    const trades = db.find('trades', t => t.user_id === u.id);
-    const fees = db.find('fee_ledger', f => f.user_id === u.id);
+    const trades = db.findMany('trades', t => t.user_id === u.id);
+    const fees = db.findMany('fee_ledger', f => f.user_id === u.id);
     return { userId: u.id, email: u.email, name: `${u.firstName || ''} ${u.lastName || ''}`.trim(), tradeCount: trades.length, feeCount: fees.length };
   });
   json(res, 200, { success: true, investors: docs });
@@ -10837,9 +10850,9 @@ const alpacaReconcileInterval = setInterval(reconcileAlpacaPositions, 60000);
 function automatedBackup() {
   try {
     db.flushAll();
-    const wallets = db.find('wallets', () => true);
-    const users = db.find('users', () => true);
-    const positions = db.find('positions', p => p.status === 'OPEN');
+    const wallets = db.findMany('wallets', () => true);
+    const users = db.findMany('users', () => true);
+    const positions = db.findMany('positions', p => p.status === 'OPEN');
     const snapshot = {
       id: randomUUID(), type: 'auto_backup', created_at: new Date().toISOString(),
       wallet_count: wallets.length, user_count: users.length, position_count: positions.length,
