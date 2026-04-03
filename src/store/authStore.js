@@ -56,7 +56,7 @@ async function apiFetch(path, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4000); // 4s timeout
   try {
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
     const res = await fetch(`${API_BASE}${path}`, {
@@ -308,7 +308,7 @@ function recordLogin(user) {
 }
 
 // ═══════ REGISTRATION ═══════
-export async function registerUser({ firstName, lastName, email, phone, password }) {
+export async function registerUser({ firstName, lastName, email, phone, password, tosAccepted, privacyConsent }) {
   const emailKey = email.toLowerCase().trim();
 
   if (!password || password.length < 6) {
@@ -323,7 +323,7 @@ export async function registerUser({ firstName, lastName, email, phone, password
     if (serverUp) {
       const apiResult = await apiFetch('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ email: emailKey, password, firstName: firstName.trim(), lastName: lastName.trim(), phone: phone.trim() }),
+        body: JSON.stringify({ email: emailKey, password, firstName: firstName.trim(), lastName: lastName.trim(), phone: phone.trim(), tosAccepted: !!tosAccepted, privacyConsent: !!privacyConsent }),
       });
 
       // Server says account exists (409) — this is a real duplicate

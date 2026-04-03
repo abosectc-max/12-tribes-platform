@@ -629,7 +629,9 @@ function RegisterForm({ onAuth, onSwitch, isMobile }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [registeredUser, setRegisteredUser] = useState(null);
-  const [passkeyStatus, setPasskeyStatus] = useState("pending"); // pending | success | skipped | error
+  const [passkeyStatus, setPasskeyStatus] = useState("pending");
+  const [tosAccepted, setTosAccepted] = useState(false);
+  const [privacyConsent, setPrivacyConsent] = useState(false); // pending | success | skipped | error
 
   const formatPhone = (value) => {
     const digits = value.replace(/\D/g, '').slice(0, 10);
@@ -644,6 +646,8 @@ function RegisterForm({ onAuth, onSwitch, isMobile }) {
     if (!email.includes("@") || !email.includes(".")) return "Enter a valid email address";
     if (phone.replace(/\D/g, '').length < 10) return "Enter a valid 10-digit phone number";
     if (password.length < 6) return "Password must be at least 6 characters";
+    if (!tosAccepted) return "You must accept the Terms of Service";
+    if (!privacyConsent) return "You must consent to the Privacy Policy";
     return null;
   };
 
@@ -656,7 +660,7 @@ function RegisterForm({ onAuth, onSwitch, isMobile }) {
     if (err) { setError(err); return; }
     setError(""); setLoading(true);
 
-    const result = await registerUser({ firstName, lastName, email, phone: formatPhone(phone), password });
+    const result = await registerUser({ firstName, lastName, email, phone: formatPhone(phone), password, tosAccepted, privacyConsent });
     setLoading(false);
     if (!result.success) { setError(result.error); return; }
 
@@ -789,14 +793,46 @@ function RegisterForm({ onAuth, onSwitch, isMobile }) {
                 style={inputStyle} />
             </div>
 
+            {/* Consent Checkboxes */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", WebkitTapHighlightColor: "transparent" }}>
+                <div onClick={() => setTosAccepted(!tosAccepted)} style={{
+                  width: 20, height: 20, borderRadius: 6, flexShrink: 0, marginTop: 1,
+                  border: tosAccepted ? "1px solid rgba(0,212,255,0.5)" : "1px solid rgba(255,255,255,0.15)",
+                  background: tosAccepted ? "rgba(0,212,255,0.15)" : "rgba(255,255,255,0.04)",
+                  display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s",
+                }}>
+                  {tosAccepted && <span style={{ fontSize: 13, color: "#00D4FF", lineHeight: 1 }}>✓</span>}
+                </div>
+                <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 1.4 }}>
+                  I accept the <a href="/terms" target="_blank" style={{ color: "#00D4FF", textDecoration: "none" }}>Terms of Service</a> and acknowledge the risk disclosures
+                </span>
+              </label>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", WebkitTapHighlightColor: "transparent" }}>
+                <div onClick={() => setPrivacyConsent(!privacyConsent)} style={{
+                  width: 20, height: 20, borderRadius: 6, flexShrink: 0, marginTop: 1,
+                  border: privacyConsent ? "1px solid rgba(168,85,247,0.5)" : "1px solid rgba(255,255,255,0.15)",
+                  background: privacyConsent ? "rgba(168,85,247,0.15)" : "rgba(255,255,255,0.04)",
+                  display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s",
+                }}>
+                  {privacyConsent && <span style={{ fontSize: 13, color: "#A855F7", lineHeight: 1 }}>✓</span>}
+                </div>
+                <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 1.4 }}>
+                  I consent to the <a href="/terms" target="_blank" style={{ color: "#A855F7", textDecoration: "none" }}>Privacy Policy</a> and data processing practices
+                </span>
+              </label>
+            </div>
+
             {error && <div style={{ fontSize: 12, color: "#EF4444", padding: "0 4px" }}>{error}</div>}
 
-            <button onClick={handleRegister}
+            <button onClick={handleRegister} disabled={!tosAccepted || !privacyConsent}
               style={{
                 width: "100%", padding: "14px", borderRadius: 16, border: "none", cursor: "pointer",
-                background: "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff",
-                fontSize: 15, fontWeight: 600, boxShadow: "0 4px 16px rgba(0,212,255,0.3)",
-                marginTop: 4,
+                background: tosAccepted && privacyConsent ? "linear-gradient(135deg, #00D4FF, #A855F7)" : "rgba(255,255,255,0.08)",
+                color: tosAccepted && privacyConsent ? "#fff" : "rgba(255,255,255,0.3)",
+                fontSize: 15, fontWeight: 600,
+                boxShadow: tosAccepted && privacyConsent ? "0 4px 16px rgba(0,212,255,0.3)" : "none",
+                marginTop: 4, transition: "all 0.2s",
               }}>
               Continue
             </button>
@@ -2486,7 +2522,7 @@ function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pill
   const token = (() => {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
   })();
-  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
 
   const availableBalance = wallet?.equity || wallet?.balance || 0;
 
@@ -3933,7 +3969,7 @@ function TaxReportingView({ investor, wallet, isMobile }) {
   const token = (() => {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
   })();
-  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
 
   const fetchTaxData = async () => {
     setLoading(true);
@@ -5849,7 +5885,7 @@ function AdminPanel({ investor, isMobile }) {
     try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; }
   })();
 
-  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const authHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
 
   const fetchRequests = useCallback(async () => {
     setLoading(true);
@@ -6883,8 +6919,8 @@ function AdminPanel({ investor, isMobile }) {
                     </div>
                     <div style={{
                       fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 8, display: 'inline-block', marginTop: 4,
-                      background: complianceData.health?.overall_status === 'COMPLIANT' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
-                      color: complianceData.health?.overall_status === 'COMPLIANT' ? '#10B981' : '#F59E0B',
+                      background: (complianceData.health?.overall_status === 'COMPLIANT' || complianceData.health?.overall_status === 'FULLY_COMPLIANT') ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
+                      color: (complianceData.health?.overall_status === 'COMPLIANT' || complianceData.health?.overall_status === 'FULLY_COMPLIANT') ? '#10B981' : '#F59E0B',
                     }}>{complianceData.health?.overall_status || 'UNKNOWN'}</div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>

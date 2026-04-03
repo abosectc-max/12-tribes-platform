@@ -2,6 +2,15 @@ import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
 import { haptics } from './hooks/useHaptics.js'
 
+// ── CSRF: Global fetch interceptor — adds X-Requested-With to all API requests ──
+const _origFetch = window.fetch;
+window.fetch = function(url, opts = {}) {
+  if (typeof url === 'string' && url.includes('/api/')) {
+    opts.headers = { ...(opts.headers || {}), 'X-Requested-With': 'XMLHttpRequest' };
+  }
+  return _origFetch.call(this, url, opts);
+};
+
 // Pages
 import Landing from './pages/Landing.jsx'
 import MissionControl from './pages/MissionControl.jsx'

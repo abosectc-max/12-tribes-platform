@@ -2948,10 +2948,14 @@ api.post('/api/auth/register', async (req, res) => {
   }
 
   const body = await readBody(req);
-  const { email, password, firstName, lastName, phone } = body;
+  const { email, password, firstName, lastName, phone, tosAccepted, privacyConsent } = body;
 
   if (!email || !password || !firstName || !lastName) {
     return json(res, 400, { error: 'All fields required: email, password, firstName, lastName' });
+  }
+  // Compliance: require ToS + Privacy acceptance
+  if (!tosAccepted || !privacyConsent) {
+    return json(res, 400, { error: 'You must accept the Terms of Service and Privacy Policy to create an account.' });
   }
   if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Invalid email format' });
   if (password.length < 12) return json(res, 400, { error: 'Password must be at least 12 characters' });
@@ -2990,7 +2994,20 @@ api.post('/api/auth/register', async (req, res) => {
     login_count: 1,
     registered_at: new Date().toISOString(),
     last_login_at: new Date().toISOString(),
+    tos_accepted_at: new Date().toISOString(),
+    privacy_consent_at: new Date().toISOString(),
+    data_processing_consent: true,
+    risk_disclosure_accepted: false, // Set when user acknowledges risk disclosure
   });
+
+  // Compliance audit: record consent
+  if (typeof compliance !== 'undefined' && compliance.createImmutableAuditEntry) {
+    const consentAudit = compliance.createImmutableAuditEntry('COMPLIANCE', 'USER_CONSENT_RECORDED', {
+      email: email.toLowerCase(), tosAccepted: true, privacyConsent: true, ip,
+      userAgent: req.headers['user-agent'] || 'unknown',
+    }, null, { regulatory: 'GDPR/CCPA', consentVersion: '1.0' });
+    db.insert('audit_log', consentAudit);
+  }
 
   // Create $100K wallet
   db.insert('wallets', {
@@ -6526,11 +6543,11 @@ const server = createServer(async (req, res) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
     const xrw = req.headers['x-requested-with'];
     if (!xrw) {
-      // Allow API-key authenticated requests (QA endpoints) and public endpoints
-      const isPublicPost = req.url.startsWith('/api/auth/') || req.url === '/api/contact';
+      const isPublicPost = req.url.startsWith('/api/auth/') || req.url === '/api/contact' || req.url === '/api/health';
       if (!isPublicPost) {
-        // Log but don't block yet — soft enforcement for migration
-        // Once frontend adds the header, switch to hard enforcement
+        // Hard enforcement — block requests without CSRF header
+        console.warn(`[CSRF] Blocked ${req.method} ${req.url} — missing X-Requested-With header`);
+        return json(res, 403, { error: 'CSRF validation failed. Missing X-Requested-With header.' });
       }
     }
   }
