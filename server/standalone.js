@@ -126,8 +126,8 @@ const DB_TABLES = [
   'agent_preferences', 'post_mortems',
   // Symbol performance tracking — cooldowns after losses
   'symbol_performance',
-  // Compliance audit log
-  'audit_log',
+  // Compliance audit log + trade audit + alerts
+  'audit_log', 'trade_audit', 'compliance_alerts',
   // Fee engine
   'fee_ledger',
   // Capital calls & distributions
@@ -569,19 +569,34 @@ if (USE_POSTGRES) {
           parent_id TEXT, created_at TEXT
         )`);
         if (!db._pgColumns.messages) db._pgColumns.messages = new Set(['id','from_user_id','to_user_id','subject','body','read','parent_id','created_at']);
-        // ─── AUDIT LOG TABLE ───
+        // ─── AUDIT LOG TABLE (SEC 17a-4 immutable audit trail) ───
         await db.pool.query(`CREATE TABLE IF NOT EXISTS audit_log (
-          id TEXT PRIMARY KEY, event_type TEXT, user_id TEXT, entity_type TEXT,
-          entity_id TEXT, details JSONB, ip_address TEXT, created_at TEXT
+          id TEXT PRIMARY KEY, timestamp TEXT, timestamp_ms BIGINT, category TEXT,
+          action TEXT, user_id TEXT, details JSONB, metadata JSONB,
+          prev_hash TEXT, entry_hash TEXT, retention_until TEXT, immutable BOOLEAN DEFAULT TRUE,
+          created_at TEXT
         )`);
-        if (!db._pgColumns.audit_log) db._pgColumns.audit_log = new Set(['id','event_type','user_id','entity_type','entity_id','details','ip_address','created_at']);
-        // ─── TRADE AUDIT TABLE ───
+        if (!db._pgColumns.audit_log) db._pgColumns.audit_log = new Set(['id','timestamp','timestamp_ms','category','action','user_id','details','metadata','prev_hash','entry_hash','retention_until','immutable','created_at']);
+        // Ensure all columns exist (handles previously created tables with fewer columns)
+        for (const col of ['timestamp TEXT','timestamp_ms BIGINT','category TEXT','action TEXT','metadata JSONB','prev_hash TEXT','entry_hash TEXT','retention_until TEXT','immutable BOOLEAN DEFAULT TRUE']) {
+          const colName = col.split(' ')[0];
+          try { await db.pool.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS ${col}`); db._pgColumns.audit_log.add(colName); } catch(e) {}
+        }
+        // ─── TRADE AUDIT TABLE (SEC/FINRA CAT) ───
         await db.pool.query(`CREATE TABLE IF NOT EXISTS trade_audit (
-          id TEXT PRIMARY KEY, trade_id TEXT, user_id TEXT, action TEXT,
-          symbol TEXT, side TEXT, qty REAL, price REAL, status TEXT,
-          details JSONB, created_at TEXT
+          id TEXT PRIMARY KEY, trade_id TEXT, order_id TEXT, order_received_at TEXT,
+          order_received_ms BIGINT, execution_time TEXT, execution_time_ms BIGINT,
+          symbol TEXT, side TEXT, quantity REAL, price REAL, order_type TEXT,
+          time_in_force TEXT, execution_venue TEXT, venue_type TEXT, mpid TEXT,
+          client_id TEXT, account_type TEXT, capacity TEXT, details JSONB, created_at TEXT
         )`);
-        if (!db._pgColumns.trade_audit) db._pgColumns.trade_audit = new Set(['id','trade_id','user_id','action','symbol','side','qty','price','status','details','created_at']);
+        if (!db._pgColumns.trade_audit) db._pgColumns.trade_audit = new Set(['id','trade_id','order_id','order_received_at','order_received_ms','execution_time','execution_time_ms','symbol','side','quantity','price','order_type','time_in_force','execution_venue','venue_type','mpid','client_id','account_type','capacity','details','created_at']);
+        // ─── COMPLIANCE ALERTS TABLE ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS compliance_alerts (
+          id TEXT PRIMARY KEY, type TEXT, severity TEXT, user_id TEXT,
+          symbol TEXT, details JSONB, resolved BOOLEAN DEFAULT FALSE, created_at TEXT
+        )`);
+        if (!db._pgColumns.compliance_alerts) db._pgColumns.compliance_alerts = new Set(['id','type','severity','user_id','symbol','details','resolved','created_at']);
         console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages, audit_log, trade_audit schemas ensured');
 
         // ─── PRODUCTION READINESS VALIDATION ───
