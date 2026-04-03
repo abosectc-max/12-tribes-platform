@@ -47,6 +47,11 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev'; // Resend default sender (works without domain verification)
 const APP_NAME = '12 Tribes Investments';
 const FRONTEND_ORIGIN = process.env.FRONTEND_URL || 'https://12-tribes-platform.vercel.app';
+
+// ═══ ALPACA BROKERAGE CONFIG ═══
+const ALPACA_API_KEY = process.env.ALPACA_API_KEY || '';
+const ALPACA_API_SECRET = process.env.ALPACA_API_SECRET || '';
+const ALPACA_BASE_URL = process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
 // Production origins FIRST — fallback uses [0] for non-browser requests
 const ALLOWED_ORIGINS = [
   'https://12-tribes-platform.vercel.app',
@@ -114,6 +119,12 @@ const DB_TABLES = [
   'symbol_performance',
   // Compliance audit log
   'audit_log',
+  // Fee engine
+  'fee_ledger',
+  // Capital calls & distributions
+  'capital_calls', 'distribution_records',
+  // Messaging
+  'messages',
 ];
 
 const BACKUP_DIR_NAME = '_backups';
@@ -503,6 +514,53 @@ if (USE_POSTGRES) {
         await db.pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE');
         if (db._pgColumns.users) db._pgColumns.users.add('email_verified');
         console.log('[Migration] ✅ Schema columns ensured: wallets.balance_locked, users.email_verified');
+
+        // ─── FEE ENGINE COLUMNS ───
+        for (const col of ['high_water_mark', 'mgmt_fee_rate', 'perf_fee_rate', 'hurdle_rate', 'fees_accrued', 'fees_collected']) {
+          await db.pool.query(`ALTER TABLE wallets ADD COLUMN IF NOT EXISTS ${col} NUMERIC DEFAULT 0`);
+          if (db._pgColumns.wallets) db._pgColumns.wallets.add(col);
+        }
+        // ─── TRADING MODE COLUMNS ───
+        await db.pool.query("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS trading_mode TEXT DEFAULT 'paper'");
+        await db.pool.query("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS alpaca_account_id TEXT DEFAULT NULL");
+        if (db._pgColumns.wallets) { db._pgColumns.wallets.add('trading_mode'); db._pgColumns.wallets.add('alpaca_account_id'); }
+        // ─── ONBOARDING COLUMNS ───
+        await db.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_complete BOOLEAN DEFAULT FALSE");
+        await db.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS risk_profile TEXT DEFAULT NULL");
+        await db.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS accredited_investor BOOLEAN DEFAULT FALSE");
+        await db.pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_data JSONB DEFAULT '{}'::jsonb");
+        if (db._pgColumns.users) { ['onboarding_complete','risk_profile','accredited_investor','onboarding_data'].forEach(c => db._pgColumns.users.add(c)); }
+        // ─── FEE LEDGER TABLE ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS fee_ledger (
+          id TEXT PRIMARY KEY, user_id TEXT NOT NULL, fee_type TEXT NOT NULL,
+          amount NUMERIC DEFAULT 0, period_start TEXT, period_end TEXT,
+          aum_basis NUMERIC DEFAULT 0, rate_applied NUMERIC DEFAULT 0, hwm_at_calc NUMERIC DEFAULT 0,
+          status TEXT DEFAULT 'accrued', created_at TEXT, collected_at TEXT
+        )`);
+        if (!db._pgColumns.fee_ledger) db._pgColumns.fee_ledger = new Set(['id','user_id','fee_type','amount','period_start','period_end','aum_basis','rate_applied','hwm_at_calc','status','created_at','collected_at']);
+        // ─── CAPITAL CALLS TABLE ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS capital_calls (
+          id TEXT PRIMARY KEY, user_id TEXT NOT NULL, amount NUMERIC DEFAULT 0,
+          status TEXT DEFAULT 'pending', due_date TEXT, funded_at TEXT,
+          created_by TEXT, notes TEXT, reminder_sent BOOLEAN DEFAULT FALSE,
+          created_at TEXT, updated_at TEXT
+        )`);
+        if (!db._pgColumns.capital_calls) db._pgColumns.capital_calls = new Set(['id','user_id','amount','status','due_date','funded_at','created_by','notes','reminder_sent','created_at','updated_at']);
+        // ─── DISTRIBUTION RECORDS TABLE ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS distribution_records (
+          id TEXT PRIMARY KEY, type TEXT NOT NULL, total_amount NUMERIC DEFAULT 0,
+          per_investor JSONB DEFAULT '[]'::jsonb, status TEXT DEFAULT 'pending',
+          distributed_at TEXT, created_by TEXT, notes TEXT, created_at TEXT
+        )`);
+        if (!db._pgColumns.distribution_records) db._pgColumns.distribution_records = new Set(['id','type','total_amount','per_investor','status','distributed_at','created_by','notes','created_at']);
+        // ─── MESSAGES TABLE ───
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS messages (
+          id TEXT PRIMARY KEY, from_user_id TEXT NOT NULL, to_user_id TEXT,
+          subject TEXT, body TEXT NOT NULL, read BOOLEAN DEFAULT FALSE,
+          parent_id TEXT, created_at TEXT
+        )`);
+        if (!db._pgColumns.messages) db._pgColumns.messages = new Set(['id','from_user_id','to_user_id','subject','body','read','parent_id','created_at']);
+        console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages schemas ensured');
 
         // ─── USER BOOTSTRAP: PASSWORD RESET + ROLE ENFORCEMENT ───
         // On every boot, reset ALL user passwords to known defaults so no one gets locked out.
@@ -2442,7 +2500,7 @@ function _executeTrade(userId, order, bypassFlags) {
     entry_price: price,
     current_price: price,
     agent: order.agent || null,
-    execution_mode: 'paper',
+    execution_mode: wallet.trading_mode || 'paper',
     unrealized_pnl: 0,
     return_pct: 0,
     stop_loss: order.stopLoss || null,
@@ -2450,6 +2508,20 @@ function _executeTrade(userId, order, bypassFlags) {
     opened_at: new Date().toISOString(),
     status: 'OPEN',
   });
+
+  // ── Alpaca live order submission (non-blocking) ──
+  if ((wallet.trading_mode === 'live') && ALPACA_API_KEY) {
+    alpacaRequest('/v2/orders', 'POST', {
+      symbol: order.symbol, qty: String(order.quantity),
+      side: side === 'LONG' ? 'buy' : 'sell', type: 'market', time_in_force: 'day'
+    }).then(r => {
+      if (r.id) console.log(`[Alpaca] Live order placed: ${r.id} ${order.symbol}`);
+      else console.warn(`[Alpaca] Order issue:`, r);
+    }).catch(e => console.error('[Alpaca] Order error:', e.message));
+  }
+
+  // ── Trade confirmation email (non-blocking) ──
+  sendTradeConfirmationEmail(userId, { symbol: order.symbol, side, quantity: order.quantity, price, agent: order.agent, execution_mode: wallet.trading_mode || 'paper' }).catch(() => {});
 
   // ── Compliance: Audit trail, best execution, fraud detection, insider check ──
   try {
@@ -5569,6 +5641,463 @@ api.delete('/api/feedback/:feedbackId', auth, (req, res) => {
   if (fb.userId !== req.userId) return json(res, 403, { error: 'You can only delete your own feedback' });
   db.remove('feedback', f => f.id === fbId);
   json(res, 200, { success: true, message: 'Feedback deleted' });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//   FEE CALCULATION ENGINE — Management Fees + Performance Fees
+// ═══════════════════════════════════════════════════════════════
+
+function calculateDailyFees() {
+  const wallets = db.find('wallets', () => true);
+  let mgmtTotal = 0, perfTotal = 0;
+  const today = new Date().toISOString().split('T')[0];
+  for (const wallet of wallets) {
+    if (!wallet.balance || wallet.balance <= 0) continue;
+    // Management fee: daily accrual = equity * (annualRate / 365)
+    const mgmtRate = wallet.mgmt_fee_rate || 0.02;
+    const equity = wallet.equity || wallet.balance;
+    const dailyMgmt = Math.round((equity * (mgmtRate / 365)) * 100) / 100;
+    if (dailyMgmt > 0.01) {
+      db.insert('fee_ledger', {
+        id: randomUUID(), user_id: wallet.user_id, fee_type: 'management',
+        amount: dailyMgmt, period_start: today, period_end: today,
+        aum_basis: equity, rate_applied: mgmtRate, hwm_at_calc: wallet.high_water_mark || 0,
+        status: 'accrued', created_at: new Date().toISOString(), collected_at: null
+      });
+      const newAccrued = (wallet.fees_accrued || 0) + dailyMgmt;
+      db.update('wallets', w => w.id === wallet.id, { fees_accrued: Math.round(newAccrued * 100) / 100 });
+      mgmtTotal += dailyMgmt;
+    }
+    // Performance fee: 20% of gains above HWM + hurdle
+    const perfRate = wallet.perf_fee_rate || 0.20;
+    const hurdleRate = wallet.hurdle_rate || 0.08;
+    const hwm = wallet.high_water_mark || wallet.initial_balance || 100000;
+    const hurdleAmount = hwm * (hurdleRate / 365);
+    const threshold = hwm + hurdleAmount;
+    if (equity > threshold) {
+      const gain = equity - threshold;
+      const perfFee = Math.round((gain * perfRate) * 100) / 100;
+      if (perfFee > 0.01) {
+        db.insert('fee_ledger', {
+          id: randomUUID(), user_id: wallet.user_id, fee_type: 'performance',
+          amount: perfFee, period_start: today, period_end: today,
+          aum_basis: equity, rate_applied: perfRate, hwm_at_calc: hwm,
+          status: 'accrued', created_at: new Date().toISOString(), collected_at: null
+        });
+        const newAccrued = (wallet.fees_accrued || 0) + perfFee;
+        db.update('wallets', w => w.id === wallet.id, {
+          fees_accrued: Math.round(newAccrued * 100) / 100,
+          high_water_mark: equity  // Update HWM on new high
+        });
+        perfTotal += perfFee;
+      }
+    }
+    // Update HWM even without perf fee
+    if (equity > hwm) {
+      db.update('wallets', w => w.id === wallet.id, { high_water_mark: equity });
+    }
+  }
+  if (mgmtTotal > 0 || perfTotal > 0) {
+    console.log(`[FeeEngine] Daily accrual: mgmt=$${mgmtTotal.toFixed(2)}, perf=$${perfTotal.toFixed(2)}`);
+  }
+}
+
+// ── Fee API Endpoints ──
+api.get('/api/admin/fees', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const fees = db.find('fee_ledger', () => true);
+  const sorted = [...fees].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  json(res, 200, { success: true, fees: sorted });
+});
+
+api.get('/api/admin/fees/summary', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const fees = db.find('fee_ledger', () => true);
+  const accrued = fees.filter(f => f.status === 'accrued').reduce((s, f) => s + (f.amount || 0), 0);
+  const collected = fees.filter(f => f.status === 'collected').reduce((s, f) => s + (f.amount || 0), 0);
+  const waived = fees.filter(f => f.status === 'waived').reduce((s, f) => s + (f.amount || 0), 0);
+  const mgmtAccrued = fees.filter(f => f.fee_type === 'management' && f.status === 'accrued').reduce((s, f) => s + (f.amount || 0), 0);
+  const perfAccrued = fees.filter(f => f.fee_type === 'performance' && f.status === 'accrued').reduce((s, f) => s + (f.amount || 0), 0);
+  json(res, 200, { success: true, summary: { totalAccrued: accrued, totalCollected: collected, totalWaived: waived, mgmtAccrued, perfAccrued } });
+});
+
+api.post('/api/admin/fees/collect', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  const targetUserId = body.userId || null;
+  const accrued = db.find('fee_ledger', f => f.status === 'accrued' && (!targetUserId || f.user_id === targetUserId));
+  let totalCollected = 0;
+  for (const fee of accrued) {
+    db.update('fee_ledger', f => f.id === fee.id, { status: 'collected', collected_at: new Date().toISOString() });
+    const wallet = db.findOne('wallets', w => w.user_id === fee.user_id);
+    if (wallet) {
+      const newBalance = wallet.balance - fee.amount;
+      db.update('wallets', w => w.id === wallet.id, {
+        balance: Math.max(0, newBalance),
+        fees_collected: (wallet.fees_collected || 0) + fee.amount,
+        fees_accrued: Math.max(0, (wallet.fees_accrued || 0) - fee.amount)
+      });
+    }
+    totalCollected += fee.amount;
+  }
+  json(res, 200, { success: true, collected: totalCollected, count: accrued.length });
+});
+
+api.post('/api/admin/fees/waive', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.feeId) return json(res, 400, { error: 'feeId required' });
+  const fee = db.findOne('fee_ledger', f => f.id === body.feeId);
+  if (!fee) return json(res, 404, { error: 'Fee not found' });
+  db.update('fee_ledger', f => f.id === body.feeId, { status: 'waived' });
+  const wallet = db.findOne('wallets', w => w.user_id === fee.user_id);
+  if (wallet) db.update('wallets', w => w.id === wallet.id, { fees_accrued: Math.max(0, (wallet.fees_accrued || 0) - fee.amount) });
+  json(res, 200, { success: true, message: 'Fee waived' });
+});
+
+api.put('/api/admin/fees/rates', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.userId) return json(res, 400, { error: 'userId required' });
+  const wallet = db.findOne('wallets', w => w.user_id === body.userId);
+  if (!wallet) return json(res, 404, { error: 'Wallet not found' });
+  const updates = {};
+  if (body.mgmtFeeRate !== undefined) updates.mgmt_fee_rate = parseFloat(body.mgmtFeeRate);
+  if (body.perfFeeRate !== undefined) updates.perf_fee_rate = parseFloat(body.perfFeeRate);
+  if (body.hurdleRate !== undefined) updates.hurdle_rate = parseFloat(body.hurdleRate);
+  db.update('wallets', w => w.id === wallet.id, updates);
+  json(res, 200, { success: true, message: 'Fee rates updated', rates: updates });
+});
+
+// Investor fee endpoints
+api.get('/api/fees', auth, (req, res) => {
+  const fees = db.find('fee_ledger', f => f.user_id === req.userId);
+  const sorted = [...fees].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  json(res, 200, { success: true, fees: sorted });
+});
+
+api.get('/api/fees/summary', auth, (req, res) => {
+  const wallet = db.findOne('wallets', w => w.user_id === req.userId);
+  const fees = db.find('fee_ledger', f => f.user_id === req.userId);
+  const accrued = fees.filter(f => f.status === 'accrued').reduce((s, f) => s + (f.amount || 0), 0);
+  const collected = fees.filter(f => f.status === 'collected').reduce((s, f) => s + (f.amount || 0), 0);
+  json(res, 200, {
+    success: true,
+    summary: {
+      mgmtFeeRate: wallet?.mgmt_fee_rate || 0.02,
+      perfFeeRate: wallet?.perf_fee_rate || 0.20,
+      hurdleRate: wallet?.hurdle_rate || 0.08,
+      highWaterMark: wallet?.high_water_mark || 0,
+      totalAccrued: accrued, totalCollected: collected,
+      feesAccrued: wallet?.fees_accrued || 0
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//   ALPACA LIVE TRADING INTEGRATION
+// ═══════════════════════════════════════════════════════════════
+
+async function alpacaRequest(path, method = 'GET', body = null) {
+  if (!ALPACA_API_KEY) return { error: 'Alpaca not configured' };
+  const https = await import('node:https');
+  const url = new URL(`${ALPACA_BASE_URL}${path}`);
+  return new Promise((resolve) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const req = https.request({
+      hostname: url.hostname, port: url.port || 443, path: url.pathname,
+      method, headers: {
+        'APCA-API-KEY-ID': ALPACA_API_KEY, 'APCA-API-SECRET-KEY': ALPACA_API_SECRET,
+        'Content-Type': 'application/json', ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {})
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch { resolve({ raw: data, status: res.statusCode }); }
+      });
+    });
+    req.on('error', (e) => resolve({ error: e.message }));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function sendTradeConfirmationEmail(userId, trade) {
+  const user = db.findOne('users', u => u.id === userId);
+  if (!user || !user.email) return;
+  const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
+  const cost = (trade.price * trade.quantity).toFixed(2);
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#0a0a1a;color:#fff;padding:32px;border-radius:12px;">
+      <h2 style="color:#00d4aa;margin:0 0 16px;">Trade Executed</h2>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr><td style="padding:8px 0;color:#888;">Symbol</td><td style="padding:8px 0;font-weight:bold;color:#fff;">${trade.symbol}</td></tr>
+        <tr><td style="padding:8px 0;color:#888;">Side</td><td style="padding:8px 0;font-weight:bold;color:${side === 'BUY' ? '#00d4aa' : '#ff6b6b'};">${side}</td></tr>
+        <tr><td style="padding:8px 0;color:#888;">Quantity</td><td style="padding:8px 0;color:#fff;">${trade.quantity}</td></tr>
+        <tr><td style="padding:8px 0;color:#888;">Price</td><td style="padding:8px 0;color:#fff;">$${trade.price.toFixed(2)}</td></tr>
+        <tr><td style="padding:8px 0;color:#888;">Total</td><td style="padding:8px 0;font-weight:bold;color:#00d4aa;">$${cost}</td></tr>
+        <tr><td style="padding:8px 0;color:#888;">Agent</td><td style="padding:8px 0;color:#a855f7;">${trade.agent || 'Manual'}</td></tr>
+        <tr><td style="padding:8px 0;color:#888;">Mode</td><td style="padding:8px 0;color:#888;">${trade.execution_mode || 'paper'}</td></tr>
+        <tr><td style="padding:8px 0;color:#888;">Time</td><td style="padding:8px 0;color:#888;">${new Date().toISOString()}</td></tr>
+      </table>
+      <p style="margin:24px 0 0;color:#666;font-size:12px;">This is an automated trade confirmation from ${APP_NAME}.</p>
+    </div>`;
+  await sendEmail(user.email, `${APP_NAME} — Trade Confirmation: ${side} ${trade.quantity} ${trade.symbol}`, html);
+}
+
+async function reconcileAlpacaPositions() {
+  if (!ALPACA_API_KEY) return;
+  try {
+    const alpacaPositions = await alpacaRequest('/v2/positions');
+    if (alpacaPositions.error || !Array.isArray(alpacaPositions)) return;
+    const livePositions = db.find('positions', p => p.execution_mode === 'live' && p.status === 'OPEN');
+    for (const ap of alpacaPositions) {
+      const local = livePositions.find(p => p.symbol === ap.symbol);
+      if (local) {
+        const currentPrice = parseFloat(ap.current_price);
+        const unrealized = parseFloat(ap.unrealized_pl);
+        db.update('positions', p => p.id === local.id, { current_price: currentPrice, unrealized_pnl: unrealized });
+      }
+    }
+    console.log(`[Alpaca] Reconciled ${alpacaPositions.length} positions`);
+  } catch (e) { console.error('[Alpaca] Reconciliation error:', e.message); }
+}
+
+// Alpaca admin endpoints
+api.put('/api/admin/trading-mode', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.userId || !['paper', 'live'].includes(body.mode)) return json(res, 400, { error: 'userId and mode (paper|live) required' });
+  const wallet = db.findOne('wallets', w => w.user_id === body.userId);
+  if (!wallet) return json(res, 404, { error: 'Wallet not found' });
+  db.update('wallets', w => w.id === wallet.id, { trading_mode: body.mode });
+  json(res, 200, { success: true, message: `Trading mode set to ${body.mode}`, userId: body.userId });
+});
+
+api.get('/api/admin/alpaca/status', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  if (!ALPACA_API_KEY) return json(res, 200, { configured: false, message: 'Alpaca API keys not set' });
+  const account = await alpacaRequest('/v2/account');
+  json(res, 200, { configured: true, account });
+});
+
+api.post('/api/admin/alpaca/reconcile', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  await reconcileAlpacaPositions();
+  json(res, 200, { success: true, message: 'Reconciliation triggered' });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//   CAPITAL CALL & DISTRIBUTION SYSTEM
+// ═══════════════════════════════════════════════════════════════
+
+// Admin capital call CRUD
+api.post('/api/admin/capital-calls', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.userId || !body.amount) return json(res, 400, { error: 'userId and amount required' });
+  const investor = db.findOne('users', u => u.id === body.userId);
+  if (!investor) return json(res, 404, { error: 'Investor not found' });
+  const call = db.insert('capital_calls', {
+    id: randomUUID(), user_id: body.userId, amount: parseFloat(body.amount),
+    status: 'pending', due_date: body.dueDate || new Date(Date.now() + 30 * 86400000).toISOString(),
+    created_by: req.userId, notes: body.notes || '', reminder_sent: false,
+    created_at: new Date().toISOString(), updated_at: new Date().toISOString()
+  });
+  // Email notification
+  const callHtml = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#0a0a1a;color:#fff;padding:32px;border-radius:12px;">
+      <h2 style="color:#00d4aa;">Capital Call Notice</h2>
+      <p>Dear ${investor.firstName || 'Investor'},</p>
+      <p>A capital call of <strong style="color:#00d4aa;">$${parseFloat(body.amount).toLocaleString()}</strong> has been issued.</p>
+      <p>Due Date: <strong>${body.dueDate || '30 days from now'}</strong></p>
+      ${body.notes ? `<p>Notes: ${body.notes}</p>` : ''}
+      <p style="color:#888;font-size:12px;margin-top:24px;">Please log in to your portal for details.</p>
+    </div>`;
+  sendEmail(investor.email, `${APP_NAME} — Capital Call Notice`, callHtml);
+  json(res, 201, { success: true, capitalCall: call });
+});
+
+api.get('/api/admin/capital-calls', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const calls = db.find('capital_calls', () => true);
+  json(res, 200, { success: true, capitalCalls: calls.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
+});
+
+api.put('/api/admin/capital-calls/:id', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  const call = db.findOne('capital_calls', c => c.id === req.params.id);
+  if (!call) return json(res, 404, { error: 'Capital call not found' });
+  const updates = { updated_at: new Date().toISOString() };
+  if (body.status) updates.status = body.status;
+  if (body.notes) updates.notes = body.notes;
+  if (body.status === 'funded') {
+    updates.funded_at = new Date().toISOString();
+    const wallet = db.findOne('wallets', w => w.user_id === call.user_id);
+    if (wallet) db.update('wallets', w => w.id === wallet.id, { balance: wallet.balance + call.amount });
+  }
+  db.update('capital_calls', c => c.id === req.params.id, updates);
+  json(res, 200, { success: true, message: 'Capital call updated' });
+});
+
+api.get('/api/capital-calls', auth, (req, res) => {
+  const calls = db.find('capital_calls', c => c.user_id === req.userId);
+  json(res, 200, { success: true, capitalCalls: calls.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
+});
+
+// Distributions
+api.post('/api/admin/distributions', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.totalAmount) return json(res, 400, { error: 'totalAmount required' });
+  const accounts = db.find('capital_accounts', () => true);
+  const totalOwnership = accounts.reduce((s, a) => s + (a.ownership_percentage || 0), 0);
+  const perInvestor = accounts.map(a => ({
+    userId: a.user_id, ownershipPct: a.ownership_percentage || 0,
+    amount: Math.round(((a.ownership_percentage || 0) / (totalOwnership || 1)) * body.totalAmount * 100) / 100
+  }));
+  const dist = db.insert('distribution_records', {
+    id: randomUUID(), type: body.type || 'income', total_amount: parseFloat(body.totalAmount),
+    per_investor: JSON.parse(JSON.stringify(perInvestor)), status: 'pending',
+    created_by: req.userId, notes: body.notes || '', created_at: new Date().toISOString()
+  });
+  json(res, 201, { success: true, distribution: dist });
+});
+
+api.get('/api/admin/distributions', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const dists = db.find('distribution_records', () => true);
+  json(res, 200, { success: true, distributions: dists.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
+});
+
+api.post('/api/admin/distributions/:id/approve', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const dist = db.findOne('distribution_records', d => d.id === req.params.id);
+  if (!dist) return json(res, 404, { error: 'Distribution not found' });
+  if (dist.status !== 'pending') return json(res, 400, { error: 'Distribution already processed' });
+  const investors = dist.per_investor || [];
+  for (const inv of investors) {
+    const wallet = db.findOne('wallets', w => w.user_id === inv.userId);
+    if (wallet) {
+      db.update('wallets', w => w.id === wallet.id, { balance: wallet.balance + inv.amount });
+      const invUser = db.findOne('users', u => u.id === inv.userId);
+      if (invUser) sendEmail(invUser.email, `${APP_NAME} — Distribution Payment`, `
+        <div style="font-family:Arial;max-width:600px;margin:0 auto;background:#0a0a1a;color:#fff;padding:32px;border-radius:12px;">
+          <h2 style="color:#00d4aa;">Distribution Payment</h2>
+          <p>You have received a ${dist.type} distribution of <strong style="color:#00d4aa;">$${inv.amount.toLocaleString()}</strong>.</p>
+          <p style="color:#888;font-size:12px;">This amount has been credited to your wallet.</p>
+        </div>`);
+    }
+  }
+  db.update('distribution_records', d => d.id === req.params.id, { status: 'distributed', distributed_at: new Date().toISOString() });
+  json(res, 200, { success: true, message: 'Distribution approved and executed' });
+});
+
+api.get('/api/distributions', auth, (req, res) => {
+  const dists = db.find('distribution_records', () => true);
+  const myDists = dists.filter(d => d.status === 'distributed' && (d.per_investor || []).some(i => i.userId === req.userId));
+  json(res, 200, { success: true, distributions: myDists });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//   INVESTOR MESSAGING SYSTEM
+// ═══════════════════════════════════════════════════════════════
+
+api.post('/api/messages', auth, async (req, res) => {
+  const body = await readBody(req);
+  if (!body.body) return json(res, 400, { error: 'Message body required' });
+  const msg = db.insert('messages', {
+    id: randomUUID(), from_user_id: req.userId, to_user_id: body.toUserId || null,
+    subject: body.subject || '', body: body.body, read: false,
+    parent_id: body.parentId || null, created_at: new Date().toISOString()
+  });
+  json(res, 201, { success: true, message: msg });
+});
+
+api.get('/api/messages', auth, (req, res) => {
+  const msgs = db.find('messages', m => m.to_user_id === req.userId || (m.to_user_id === null && m.from_user_id !== req.userId));
+  json(res, 200, { success: true, messages: msgs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
+});
+
+api.get('/api/messages/sent', auth, (req, res) => {
+  const msgs = db.find('messages', m => m.from_user_id === req.userId);
+  json(res, 200, { success: true, messages: msgs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
+});
+
+api.get('/api/messages/unread-count', auth, (req, res) => {
+  const count = db.count('messages', m => (m.to_user_id === req.userId || (m.to_user_id === null && m.from_user_id !== req.userId)) && !m.read);
+  json(res, 200, { success: true, unreadCount: count });
+});
+
+api.get('/api/messages/:id', auth, (req, res) => {
+  const msg = db.findOne('messages', m => m.id === req.params.id);
+  if (!msg) return json(res, 404, { error: 'Message not found' });
+  if (msg.to_user_id === req.userId && !msg.read) {
+    db.update('messages', m => m.id === msg.id, { read: true });
+    msg.read = true;
+  }
+  json(res, 200, { success: true, message: msg });
+});
+
+api.post('/api/admin/messages/broadcast', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.body) return json(res, 400, { error: 'Message body required' });
+  const investors = db.find('users', u => u.role !== 'admin');
+  const msgs = [];
+  for (const inv of investors) {
+    msgs.push(db.insert('messages', {
+      id: randomUUID(), from_user_id: req.userId, to_user_id: inv.id,
+      subject: body.subject || 'Announcement', body: body.body,
+      read: false, parent_id: null, created_at: new Date().toISOString()
+    }));
+  }
+  json(res, 201, { success: true, count: msgs.length, message: 'Broadcast sent' });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//   ONBOARDING ENDPOINTS
+// ═══════════════════════════════════════════════════════════════
+
+api.get('/api/onboarding/status', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  json(res, 200, {
+    success: true,
+    onboardingComplete: user?.onboarding_complete || false,
+    riskProfile: user?.risk_profile || null,
+    accreditedInvestor: user?.accredited_investor || false,
+    onboardingData: user?.onboarding_data || {}
+  });
+});
+
+api.post('/api/onboarding/save', auth, async (req, res) => {
+  const body = await readBody(req);
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user) return json(res, 404, { error: 'User not found' });
+  const updates = {};
+  if (body.riskProfile) updates.risk_profile = body.riskProfile;
+  if (body.accreditedInvestor !== undefined) updates.accredited_investor = !!body.accreditedInvestor;
+  if (body.onboardingData) updates.onboarding_data = JSON.parse(JSON.stringify(body.onboardingData));
+  if (body.complete) updates.onboarding_complete = true;
+  db.update('users', u => u.id === req.userId, updates);
+  json(res, 200, { success: true, message: 'Onboarding data saved' });
 });
 
 // ─── WITHDRAWAL REQUESTS ───
@@ -10113,6 +10642,13 @@ const qaInterval = setInterval(() => {
   runQAAgent(isFullAudit);
 }, 30000);
 
+// ─── FEE ENGINE: Daily fee accrual (every 24h, first run at boot) ───
+const feeAccrualInterval = setInterval(calculateDailyFees, 24 * 60 * 60 * 1000);
+setTimeout(calculateDailyFees, 30000); // First accrual 30s after boot
+
+// ─── ALPACA: Position reconciliation every 60s ───
+const alpacaReconcileInterval = setInterval(reconcileAlpacaPositions, 60000);
+
 // ─── BOOT SELF-TEST: Comprehensive system validation at 15s ───
 setTimeout(() => {
   console.log(`[QA BOOT] Running comprehensive boot validation...`);
@@ -13396,6 +13932,8 @@ async function shutdown(sig) {
   clearInterval(rateLimitCleanupInterval);
   clearInterval(macroIntelInterval);
   clearInterval(profileBackupInterval);
+  clearInterval(feeAccrualInterval);
+  clearInterval(alpacaReconcileInterval);
   if (cloudSyncInterval) clearInterval(cloudSyncInterval);
   if (typeof marketRefreshInterval !== 'undefined') clearInterval(marketRefreshInterval);
   if (keepAliveInterval) clearInterval(keepAliveInterval);

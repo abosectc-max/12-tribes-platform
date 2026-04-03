@@ -1171,6 +1171,9 @@ const SIDEBAR_ITEMS = [
   { id: "paper-trading", label: "Paper Trading", icon: "⬢" },
   { id: "fund-management", label: "Fund Mgmt", icon: "⟐" },
   { id: "tax-reporting", label: "Tax Center", icon: "§" },
+  { id: "messages", label: "Messages", icon: "💬" },
+  { id: "capital-calls", label: "Capital Calls", icon: "💰" },
+  { id: "fees", label: "Fees", icon: "📊" },
   { id: "feedback", label: "Feedback", icon: "✉" },
   { id: "settings", label: "Settings", icon: "◇" },
 ];
@@ -3919,6 +3922,21 @@ function PortfolioDashboard({ investor, onLogout }) {
           {/* ═══ TAX REPORTING CENTER ═══ */}
           {activeTab === "tax-reporting" && (
             <TaxReportingView investor={investor} wallet={wallet} isMobile={isMobile} />
+          )}
+
+          {/* ═══ MESSAGES VIEW ═══ */}
+          {activeTab === "messages" && (
+            <MessagesView investor={investor} isMobile={isMobile} />
+          )}
+
+          {/* ═══ CAPITAL CALLS VIEW ═══ */}
+          {activeTab === "capital-calls" && (
+            <CapitalCallsView investor={investor} isMobile={isMobile} />
+          )}
+
+          {/* ═══ FEES VIEW ═══ */}
+          {activeTab === "fees" && (
+            <FeesView investor={investor} isMobile={isMobile} />
           )}
 
           {/* ═══ FEEDBACK VIEW ═══ */}
@@ -7063,6 +7081,286 @@ function AdminPanel({ investor, isMobile }) {
       {/* Refresh Button */}
       <div style={{ textAlign: 'center', marginTop: 24 }}>
         <RefreshButton label="Refresh All" onRefresh={() => { fetchRequests(); fetchUsers(); fetchHealth(); fetchQaReports(); fetchAdminFeedback(); fetchAdminWithdrawals(); if (activeSection === 'compliance') fetchCompliance(); }} />
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+//   MESSAGES VIEW
+// ════════════════════════════════════════
+function MessagesView({ investor, isMobile }) {
+  const [messages, setMessages] = useState([]);
+  const [sent, setSent] = useState([]);
+  const [view, setView] = useState('inbox');
+  const [selected, setSelected] = useState(null);
+  const [composing, setComposing] = useState(false);
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const API = (() => { if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL; return `http://${window.location.hostname}:4000/api`; })();
+  const token = (() => { try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; } })();
+  const hdr = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+
+  const glass = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: isMobile ? 16 : 24 };
+
+  const fetchMessages = async () => {
+    setLoading(true);
+    try {
+      const [inRes, sentRes] = await Promise.all([
+        fetch(`${API}/messages`, { headers: hdr }),
+        fetch(`${API}/messages/sent`, { headers: hdr }),
+      ]);
+      if (inRes.ok) { const d = await inRes.json(); setMessages(d.messages || []); }
+      if (sentRes.ok) { const d = await sentRes.json(); setSent(d.messages || []); }
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useState(() => { fetchMessages(); }, []);
+
+  const sendMessage = async () => {
+    setSending(true);
+    try {
+      const r = await fetch(`${API}/messages`, { method: 'POST', headers: hdr, body: JSON.stringify({ subject, body, toUserId: null, parentId: selected?.id || null }) });
+      if (r.ok) { setComposing(false); setSubject(''); setBody(''); fetchMessages(); }
+    } catch (e) { console.error(e); }
+    setSending(false);
+  };
+
+  const readMsg = async (msg) => {
+    setSelected(msg);
+    if (!msg.read) { fetch(`${API}/messages/${msg.id}`, { headers: hdr }); }
+  };
+
+  const timeAgo = (d) => {
+    const s = Math.floor((Date.now() - new Date(d)) / 1000);
+    if (s < 60) return 'Just now'; if (s < 3600) return `${Math.floor(s/60)}m ago`;
+    if (s < 86400) return `${Math.floor(s/3600)}h ago`; return `${Math.floor(s/86400)}d ago`;
+  };
+
+  const list = view === 'inbox' ? messages : sent;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ margin: 0, fontSize: isMobile ? 18 : 22, color: '#fff' }}>Messages</h2>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setView('inbox')} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: view === 'inbox' ? 'rgba(0,212,170,0.15)' : 'rgba(255,255,255,0.03)', color: view === 'inbox' ? '#00d4aa' : 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Inbox ({messages.length})</button>
+          <button onClick={() => setView('sent')} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: view === 'sent' ? 'rgba(168,85,247,0.15)' : 'rgba(255,255,255,0.03)', color: view === 'sent' ? '#a855f7' : 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Sent ({sent.length})</button>
+          <button onClick={() => setComposing(true)} style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg, #00d4aa, #00a888)', color: '#000', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>✏ Compose</button>
+        </div>
+      </div>
+
+      {composing && (
+        <div style={{ ...glass, border: '1px solid rgba(0,212,170,0.2)' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#00d4aa', marginBottom: 12 }}>New Message to Admin</div>
+          <input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Subject" style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.02)', color: '#fff', fontSize: 13, marginBottom: 8, outline: 'none', boxSizing: 'border-box' }} />
+          <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="Your message..." rows={4} style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.02)', color: '#fff', fontSize: 13, marginBottom: 8, outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={sendMessage} disabled={sending || !body.trim()} style={{ padding: '8px 20px', borderRadius: 8, border: 'none', background: body.trim() ? '#00d4aa' : 'rgba(255,255,255,0.05)', color: body.trim() ? '#000' : '#666', cursor: body.trim() ? 'pointer' : 'default', fontWeight: 700, fontSize: 12 }}>{sending ? 'Sending...' : 'Send'}</button>
+            <button onClick={() => setComposing(false)} style={{ padding: '8px 20px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'none', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {selected && (
+        <div style={{ ...glass, border: '1px solid rgba(0,212,170,0.15)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>{selected.subject || '(No subject)'}</div>
+            <button onClick={() => setSelected(null)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: 16 }}>✕</button>
+          </div>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginBottom: 12 }}>{timeAgo(selected.created_at)}</div>
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.8)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{selected.body}</div>
+          <button onClick={() => { setComposing(true); setSubject(`Re: ${selected.subject || ''}`); }} style={{ marginTop: 12, padding: '6px 14px', borderRadius: 8, border: '1px solid rgba(0,212,170,0.3)', background: 'rgba(0,212,170,0.08)', color: '#00d4aa', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>↩ Reply</button>
+        </div>
+      )}
+
+      {loading ? <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.3)', padding: 40 }}>Loading...</div> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {list.length === 0 && <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.2)', padding: 40 }}>No messages yet</div>}
+          {list.map(m => (
+            <div key={m.id} onClick={() => readMsg(m)} style={{ ...glass, padding: '12px 16px', cursor: 'pointer', borderLeft: !m.read ? '3px solid #00d4aa' : '3px solid transparent', opacity: m.read ? 0.7 : 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: 13, fontWeight: m.read ? 400 : 700, color: '#fff' }}>{m.subject || '(No subject)'}</div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>{timeAgo(m.created_at)}</div>
+              </div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.body?.substring(0, 80)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+//   CAPITAL CALLS VIEW
+// ════════════════════════════════════════
+function CapitalCallsView({ investor, isMobile }) {
+  const [calls, setCalls] = useState([]);
+  const [distributions, setDistributions] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const API = (() => { if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL; return `http://${window.location.hostname}:4000/api`; })();
+  const token = (() => { try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; } })();
+  const hdr = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+  const glass = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: isMobile ? 16 : 24 };
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [callsRes, distRes] = await Promise.all([
+        fetch(`${API}/capital-calls`, { headers: hdr }),
+        fetch(`${API}/distributions`, { headers: hdr }),
+      ]);
+      if (callsRes.ok) { const d = await callsRes.json(); setCalls(d.capitalCalls || []); }
+      if (distRes.ok) { const d = await distRes.json(); setDistributions(d.distributions || []); }
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useState(() => { fetchData(); }, []);
+
+  const statusColor = { pending: '#ffa502', funded: '#00d4aa', overdue: '#ff4757', cancelled: '#888' };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <h2 style={{ margin: 0, fontSize: isMobile ? 18 : 22, color: '#fff' }}>Capital Calls & Distributions</h2>
+
+      <div style={glass}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: '#00d4aa', marginBottom: 16 }}>💰 Capital Calls</div>
+        {loading ? <div style={{ color: 'rgba(255,255,255,0.3)' }}>Loading...</div> : calls.length === 0 ? <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>No capital calls</div> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {calls.map(c => (
+              <div key={c.id} style={{ padding: 12, borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>${parseFloat(c.amount).toLocaleString()}</div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>Due: {c.due_date ? new Date(c.due_date).toLocaleDateString() : 'TBD'}</div>
+                  {c.notes && <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>{c.notes}</div>}
+                </div>
+                <span style={{ padding: '4px 12px', borderRadius: 12, fontSize: 11, fontWeight: 700, color: statusColor[c.status] || '#888', background: `${statusColor[c.status] || '#888'}15`, textTransform: 'uppercase' }}>{c.status}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={glass}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: '#a855f7', marginBottom: 16 }}>📤 Distributions</div>
+        {distributions.length === 0 ? <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>No distributions yet</div> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {distributions.map(d => {
+              const myShare = (d.per_investor || []).find(i => i.userId === investor?.id);
+              return (
+                <div key={d.id} style={{ padding: 12, borderRadius: 10, background: 'rgba(168,85,247,0.04)', border: '1px solid rgba(168,85,247,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: '#00d4aa' }}>+${myShare?.amount?.toLocaleString() || '0'}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>{d.type} distribution • {d.distributed_at ? new Date(d.distributed_at).toLocaleDateString() : 'Pending'}</div>
+                  </div>
+                  <span style={{ padding: '4px 12px', borderRadius: 12, fontSize: 11, fontWeight: 700, color: d.status === 'distributed' ? '#00d4aa' : '#ffa502', background: d.status === 'distributed' ? 'rgba(0,212,170,0.1)' : 'rgba(255,165,2,0.1)' }}>{d.status}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+//   FEES VIEW
+// ════════════════════════════════════════
+function FeesView({ investor, isMobile }) {
+  const [summary, setSummary] = useState(null);
+  const [fees, setFees] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const API = (() => { if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL; return `http://${window.location.hostname}:4000/api`; })();
+  const token = (() => { try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; } })();
+  const hdr = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
+  const glass = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: isMobile ? 16 : 24 };
+
+  const fetchFees = async () => {
+    setLoading(true);
+    try {
+      const [sumRes, feeRes] = await Promise.all([
+        fetch(`${API}/fees/summary`, { headers: hdr }),
+        fetch(`${API}/fees`, { headers: hdr }),
+      ]);
+      if (sumRes.ok) { const d = await sumRes.json(); setSummary(d.summary || null); }
+      if (feeRes.ok) { const d = await feeRes.json(); setFees(d.fees || []); }
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useState(() => { fetchFees(); }, []);
+
+  if (loading) return <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.3)', padding: 40 }}>Loading fee data...</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <h2 style={{ margin: 0, fontSize: isMobile ? 18 : 22, color: '#fff' }}>Fee Transparency</h2>
+
+      {summary && (
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(4, 1fr)', gap: 12 }}>
+          {[
+            { label: 'Mgmt Fee Rate', value: `${((summary.mgmtFeeRate || 0) * 100).toFixed(1)}%`, sub: 'Annual' },
+            { label: 'Perf Fee Rate', value: `${((summary.perfFeeRate || 0) * 100).toFixed(0)}%`, sub: `Above ${((summary.hurdleRate || 0) * 100).toFixed(0)}% hurdle` },
+            { label: 'Fees Accrued', value: `$${(summary.totalAccrued || 0).toFixed(2)}`, sub: 'Pending', color: '#ffa502' },
+            { label: 'Fees Collected', value: `$${(summary.totalCollected || 0).toFixed(2)}`, sub: 'Total to date', color: '#a855f7' },
+          ].map((kpi, i) => (
+            <div key={i} style={glass}>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 1 }}>{kpi.label}</div>
+              <div style={{ fontSize: isMobile ? 18 : 22, fontWeight: 700, color: kpi.color || '#00d4aa', marginTop: 4 }}>{kpi.value}</div>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>{kpi.sub}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {summary && (
+        <div style={glass}>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 4 }}>High-Water Mark</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: '#00d4aa' }}>${(summary.highWaterMark || 0).toLocaleString()}</div>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 4 }}>Performance fees only charged on new all-time highs above this level + hurdle rate</div>
+        </div>
+      )}
+
+      <div style={glass}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 12 }}>Fee History</div>
+        {fees.length === 0 ? <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>No fee entries yet</div> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {['Date', 'Type', 'Amount', 'AUM Basis', 'Rate', 'Status'].map(h => (
+                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.06)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {fees.slice(0, 50).map(f => (
+                  <tr key={f.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                    <td style={{ padding: '8px 10px', color: 'rgba(255,255,255,0.6)' }}>{f.period_start}</td>
+                    <td style={{ padding: '8px 10px' }}>
+                      <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700, color: f.fee_type === 'management' ? '#00d4aa' : '#a855f7', background: f.fee_type === 'management' ? 'rgba(0,212,170,0.1)' : 'rgba(168,85,247,0.1)' }}>{f.fee_type}</span>
+                    </td>
+                    <td style={{ padding: '8px 10px', color: '#fff', fontWeight: 600 }}>${(f.amount || 0).toFixed(2)}</td>
+                    <td style={{ padding: '8px 10px', color: 'rgba(255,255,255,0.5)' }}>${(f.aum_basis || 0).toLocaleString()}</td>
+                    <td style={{ padding: '8px 10px', color: 'rgba(255,255,255,0.5)' }}>{((f.rate_applied || 0) * 100).toFixed(2)}%</td>
+                    <td style={{ padding: '8px 10px' }}>
+                      <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: 10, fontWeight: 700, color: f.status === 'collected' ? '#a855f7' : f.status === 'waived' ? '#888' : '#ffa502', background: f.status === 'collected' ? 'rgba(168,85,247,0.1)' : f.status === 'waived' ? 'rgba(136,136,136,0.1)' : 'rgba(255,165,2,0.1)' }}>{f.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
