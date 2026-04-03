@@ -599,10 +599,19 @@ if (USE_POSTGRES) {
         if (!db._pgColumns.compliance_alerts) db._pgColumns.compliance_alerts = new Set(['id','type','severity','user_id','symbol','details','resolved','created_at']);
         // ─── SETTLEMENTS TABLE (Reg SHO) ───
         await db.pool.query(`CREATE TABLE IF NOT EXISTS settlements (
-          id TEXT PRIMARY KEY, position_id TEXT, symbol TEXT, quantity REAL,
-          side TEXT, settlement_status TEXT, settlement_date TEXT, details JSONB, created_at TEXT
+          id TEXT PRIMARY KEY, trade_id TEXT, symbol TEXT, quantity REAL,
+          side TEXT, execution_date TEXT, settlement_date TEXT, settlement_status TEXT,
+          fail_to_deliver BOOLEAN DEFAULT FALSE, close_out_deadline TEXT,
+          close_out_executed BOOLEAN DEFAULT FALSE, created_at TEXT
         )`);
-        if (!db._pgColumns.settlements) db._pgColumns.settlements = new Set(['id','position_id','symbol','quantity','side','settlement_status','settlement_date','details','created_at']);
+        if (!db._pgColumns.settlements) db._pgColumns.settlements = new Set(['id','trade_id','symbol','quantity','side','execution_date','settlement_date','settlement_status','fail_to_deliver','close_out_deadline','close_out_executed','created_at']);
+        // Add missing columns if table already existed with old schema
+        for (const col of ['trade_id TEXT','execution_date TEXT','fail_to_deliver BOOLEAN DEFAULT FALSE','close_out_deadline TEXT','close_out_executed BOOLEAN DEFAULT FALSE']) {
+          const colName = col.split(' ')[0];
+          try { await db.pool.query(`ALTER TABLE settlements ADD COLUMN IF NOT EXISTS ${col}`); db._pgColumns.settlements.add(colName); } catch(e) {}
+        }
+        // Relax NOT NULL constraints on trades.opened_at (some auto-trades may not set it)
+        try { await db.pool.query(`ALTER TABLE trades ALTER COLUMN opened_at DROP NOT NULL`); } catch(e) {}
         console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages, audit_log, trade_audit schemas ensured');
 
         // ─── PRODUCTION READINESS VALIDATION ───
