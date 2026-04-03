@@ -3594,6 +3594,262 @@ async function sendEmail(to, subject, html) {
   }
 }
 
+// ═══════════════════════════════════════════
+//   BRANDED EMAIL TEMPLATE SYSTEM
+//   All notifications use this wrapper for consistent branding:
+//   - 12 Tribes logo (hosted on Vercel CDN)
+//   - Personalized greeting with user's name
+//   - Dynamic content area
+//   - Legal terms & conditions footer
+//   - SEC/FINRA compliance disclaimers
+// ═══════════════════════════════════════════
+
+const LOGO_URL = `${FRONTEND_ORIGIN}/icons/icon-192.png`;
+const LOGO_FALLBACK_SVG = `${FRONTEND_ORIGIN}/logo-icon.svg`;
+const PLATFORM_URL = `${FRONTEND_ORIGIN}/investor-portal`;
+const SUPPORT_EMAIL = 'support@12tribesinvestments.com';
+
+/**
+ * Master email template — wraps ANY email content with branded header + legal footer.
+ * @param {string} userName — Recipient's first name or full name
+ * @param {string} contentHtml — The email body (already formatted HTML)
+ * @param {object} opts — { preheader, showCta, ctaText, ctaUrl, year }
+ */
+function brandedEmailTemplate(userName, contentHtml, opts = {}) {
+  const year = opts.year || new Date().getFullYear();
+  const preheader = opts.preheader || '';
+  const showCta = opts.showCta || false;
+  const ctaText = opts.ctaText || 'Open Dashboard';
+  const ctaUrl = opts.ctaUrl || PLATFORM_URL;
+
+  return `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="color-scheme" content="dark"/>
+  <meta name="supported-color-schemes" content="dark"/>
+  <title>${APP_NAME}</title>
+  <!--[if mso]><style>table,td{font-family:Arial,sans-serif !important;}</style><![endif]-->
+</head>
+<body style="margin:0;padding:0;background-color:#060612;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
+  ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${preheader}</div>` : ''}
+
+  <!-- Outer wrapper -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#060612;">
+    <tr><td align="center" style="padding:32px 16px;">
+
+      <!-- Email card -->
+      <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background:#0B1120;border-radius:16px;border:1px solid rgba(74,144,217,0.15);overflow:hidden;">
+
+        <!-- ═══ HEADER: Logo + Brand ═══ -->
+        <tr><td style="padding:32px 32px 20px;text-align:center;background:linear-gradient(180deg,#0B1A3B 0%,#0B1120 100%);">
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
+            <tr>
+              <td style="padding-right:14px;vertical-align:middle;">
+                <img src="${LOGO_URL}" alt="12 Tribes" width="52" height="52" style="display:block;border-radius:12px;border:1px solid rgba(212,172,13,0.25);" />
+              </td>
+              <td style="vertical-align:middle;text-align:left;">
+                <div style="font-size:22px;font-weight:800;letter-spacing:1.5px;color:#D4AC0D;line-height:1.1;">12 TRIBES</div>
+                <div style="font-size:10px;font-weight:600;letter-spacing:3px;color:#7BA3CC;margin-top:2px;">INVESTMENTS</div>
+              </td>
+            </tr>
+          </table>
+          <div style="margin-top:16px;height:1px;background:linear-gradient(90deg,transparent,rgba(212,172,13,0.3),transparent);"></div>
+        </td></tr>
+
+        <!-- ═══ GREETING ═══ -->
+        <tr><td style="padding:24px 32px 8px;">
+          <div style="font-size:16px;color:#E0E0E0;line-height:1.5;">
+            ${userName ? `Hello <strong style="color:#ffffff;">${userName}</strong>,` : 'Hello,'}
+          </div>
+        </td></tr>
+
+        <!-- ═══ DYNAMIC CONTENT ═══ -->
+        <tr><td style="padding:8px 32px 24px;">
+          ${contentHtml}
+        </td></tr>
+
+        ${showCta ? `
+        <!-- ═══ CALL TO ACTION ═══ -->
+        <tr><td style="padding:0 32px 28px;text-align:center;">
+          <a href="${ctaUrl}" style="display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#D4AC0D,#F1C40F);color:#0B1A3B;text-decoration:none;border-radius:10px;font-weight:700;font-size:14px;letter-spacing:0.5px;">${ctaText}</a>
+        </td></tr>
+        ` : ''}
+
+        <!-- ═══ DIVIDER ═══ -->
+        <tr><td style="padding:0 32px;">
+          <div style="height:1px;background:rgba(255,255,255,0.06);"></div>
+        </td></tr>
+
+        <!-- ═══ LEGAL / TERMS & CONDITIONS FOOTER ═══ -->
+        <tr><td style="padding:20px 32px 28px;">
+          <div style="font-size:11px;color:#555;line-height:1.7;">
+            <strong style="color:#666;font-size:10px;letter-spacing:1px;text-transform:uppercase;">Important Disclosures</strong><br/>
+            This communication is from ${APP_NAME}, a technology-assisted investment platform. All investment strategies involve risk, including the possible loss of principal. Past performance does not guarantee future results. AI-generated trade signals are informational and do not constitute personalized investment advice.<br/><br/>
+            Securities-related activities are conducted in compliance with applicable SEC and FINRA regulations. ${APP_NAME} does not guarantee any specific outcome or profit. By using our platform, you acknowledge and agree to our <a href="${FRONTEND_ORIGIN}/terms" style="color:#7BA3CC;text-decoration:underline;">Terms of Service</a> and <a href="${FRONTEND_ORIGIN}/privacy" style="color:#7BA3CC;text-decoration:underline;">Privacy Policy</a>.<br/><br/>
+            <span style="color:#444;">If you have questions, contact us at <a href="mailto:${SUPPORT_EMAIL}" style="color:#7BA3CC;text-decoration:none;">${SUPPORT_EMAIL}</a></span><br/>
+            <span style="color:#333;">&copy; ${year} ${APP_NAME}. All rights reserved.</span>
+          </div>
+        </td></tr>
+
+      </table>
+      <!-- End email card -->
+
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+// ─── NOTIFICATION EMAIL BUILDERS ───
+// Each returns fully-branded HTML via brandedEmailTemplate()
+
+function tradeConfirmationHtml(trade) {
+  const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
+  const sideColor = side === 'BUY' ? '#10B981' : '#EF4444';
+  const cost = (trade.price * trade.quantity).toFixed(2);
+  const time = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+  return `
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px;">
+      <div style="font-size:14px;font-weight:700;color:${sideColor};margin-bottom:14px;letter-spacing:0.5px;">
+        ${side === 'BUY' ? '&#9650;' : '&#9660;'} Trade Executed — ${side} ${trade.symbol}
+      </div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">
+        <tr><td style="padding:6px 0;color:#888;width:40%;">Symbol</td><td style="padding:6px 0;font-weight:700;color:#fff;">${trade.symbol}</td></tr>
+        <tr><td style="padding:6px 0;color:#888;">Side</td><td style="padding:6px 0;font-weight:700;color:${sideColor};">${side}</td></tr>
+        <tr><td style="padding:6px 0;color:#888;">Quantity</td><td style="padding:6px 0;color:#E0E0E0;">${trade.quantity}</td></tr>
+        <tr><td style="padding:6px 0;color:#888;">Price</td><td style="padding:6px 0;color:#E0E0E0;">$${Number(trade.price).toFixed(2)}</td></tr>
+        <tr><td style="padding:6px 0;border-top:1px solid rgba(255,255,255,0.06);color:#888;">Total Value</td><td style="padding:6px 0;border-top:1px solid rgba(255,255,255,0.06);font-weight:700;color:#D4AC0D;">$${cost}</td></tr>
+        <tr><td style="padding:6px 0;color:#888;">AI Agent</td><td style="padding:6px 0;color:#A855F7;">${trade.agent || 'Manual'}</td></tr>
+        <tr><td style="padding:6px 0;color:#888;">Mode</td><td style="padding:6px 0;color:#888;text-transform:uppercase;font-size:11px;letter-spacing:1px;">${trade.execution_mode || 'paper'}</td></tr>
+        <tr><td style="padding:6px 0;color:#888;">Executed</td><td style="padding:6px 0;color:#888;">${time}</td></tr>
+      </table>
+    </div>
+    <div style="font-size:12px;color:#666;line-height:1.5;">
+      This trade was executed ${trade.agent ? 'by AI agent <strong style="color:#A855F7;">' + trade.agent + '</strong>' : 'manually'} on your behalf.
+      Review your full portfolio in the dashboard.
+    </div>`;
+}
+
+function accountUpdateHtml(updateType, details) {
+  const icons = { deposit: '&#128176;', withdrawal: '&#128178;', fee: '&#128202;', balance: '&#9889;', settings: '&#9881;' };
+  const colors = { deposit: '#10B981', withdrawal: '#F59E0B', fee: '#8B5CF6', balance: '#3B82F6', settings: '#6B7280' };
+  const icon = icons[updateType] || '&#128276;';
+  const color = colors[updateType] || '#00D4FF';
+  return `
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px;">
+      <div style="font-size:14px;font-weight:700;color:${color};margin-bottom:12px;">
+        ${icon} ${details.title || 'Account Update'}
+      </div>
+      <div style="font-size:14px;color:#ccc;line-height:1.6;">
+        ${details.message}
+      </div>
+      ${details.amount ? `
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.06);">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">
+          <tr><td style="color:#888;">Amount</td><td style="text-align:right;font-weight:700;color:${color};">$${Number(details.amount).toLocaleString('en-US', {minimumFractionDigits:2})}</td></tr>
+          ${details.newBalance ? `<tr><td style="color:#888;padding-top:6px;">New Balance</td><td style="text-align:right;color:#fff;padding-top:6px;">$${Number(details.newBalance).toLocaleString('en-US', {minimumFractionDigits:2})}</td></tr>` : ''}
+        </table>
+      </div>` : ''}
+    </div>`;
+}
+
+function announcementHtml(headline, body, urgency) {
+  const urgencyColors = { info: '#3B82F6', important: '#F59E0B', critical: '#EF4444' };
+  const urgencyLabels = { info: 'Platform Update', important: 'Important Notice', critical: 'Action Required' };
+  const color = urgencyColors[urgency] || urgencyColors.info;
+  const label = urgencyLabels[urgency] || urgencyLabels.info;
+  return `
+    <div style="background:rgba(255,255,255,0.03);border:1px solid ${color}33;border-left:3px solid ${color};border-radius:0 12px 12px 0;padding:20px;margin-bottom:16px;">
+      <div style="font-size:10px;font-weight:700;color:${color};letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;">${label}</div>
+      <div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:12px;">${headline}</div>
+      <div style="font-size:14px;color:#ccc;line-height:1.7;">${body}</div>
+    </div>`;
+}
+
+function onboardingWelcomeHtml(firstName) {
+  return `
+    <div style="font-size:14px;color:#ccc;line-height:1.7;margin-bottom:20px;">
+      Welcome to <strong style="color:#D4AC0D;">12 Tribes Investments</strong> — an AI-powered collective investment platform engineered for precision, transparency, and disciplined wealth-building.
+    </div>
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px;">
+      <div style="font-size:13px;font-weight:700;color:#D4AC0D;margin-bottom:14px;letter-spacing:0.5px;">Getting Started</div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;">
+        <tr>
+          <td style="padding:8px 12px 8px 0;vertical-align:top;color:#D4AC0D;font-weight:700;width:24px;">1.</td>
+          <td style="padding:8px 0;color:#ccc;"><strong style="color:#fff;">Complete KYC Verification</strong> — Verify your identity to unlock full trading capabilities.</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px 8px 0;vertical-align:top;color:#D4AC0D;font-weight:700;">2.</td>
+          <td style="padding:8px 0;color:#ccc;"><strong style="color:#fff;">Review Your Portfolio</strong> — Your initial allocation has been configured by the fund manager.</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px 8px 0;vertical-align:top;color:#D4AC0D;font-weight:700;">3.</td>
+          <td style="padding:8px 0;color:#ccc;"><strong style="color:#fff;">Explore AI Agents</strong> — Our proprietary trading agents (SENTINEL, MOMENTUM, CONTRARIAN) work around the clock.</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px 8px 0;vertical-align:top;color:#D4AC0D;font-weight:700;">4.</td>
+          <td style="padding:8px 0;color:#ccc;"><strong style="color:#fff;">Monitor Signals</strong> — Real-time trade signals are visible in your dashboard.</td>
+        </tr>
+      </table>
+    </div>
+    <div style="font-size:13px;color:#888;line-height:1.6;">
+      Your fund manager, <strong style="color:#fff;">Anthony Bose</strong>, oversees all investment strategies and risk parameters.
+      If you have any questions, reach out through the platform's messaging system or reply to this email.
+    </div>`;
+}
+
+// ─── SEND FUNCTIONS (use branded template) ───
+
+async function sendAccountUpdateEmail(userId, updateType, details) {
+  const user = db.findOne('users', u => u.id === userId);
+  if (!user || !user.email) return;
+  const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
+  const html = brandedEmailTemplate(firstName, accountUpdateHtml(updateType, details), {
+    preheader: details.title || 'Account update from 12 Tribes Investments',
+    showCta: true, ctaText: 'View Account', ctaUrl: PLATFORM_URL,
+  });
+  await sendEmail(user.email, `${APP_NAME} — ${details.title || 'Account Update'}`, html);
+}
+
+async function sendAnnouncementEmail(userId, headline, body, urgency = 'info') {
+  const user = db.findOne('users', u => u.id === userId);
+  if (!user || !user.email) return;
+  const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
+  const html = brandedEmailTemplate(firstName, announcementHtml(headline, body, urgency), {
+    preheader: headline,
+    showCta: true, ctaText: 'Open Platform', ctaUrl: PLATFORM_URL,
+  });
+  await sendEmail(user.email, `${APP_NAME} — ${headline}`, html);
+}
+
+async function sendBroadcastAnnouncement(headline, body, urgency = 'info') {
+  const allUsers = db.findMany('users', u => u.status === 'active');
+  const results = [];
+  for (const user of allUsers) {
+    try {
+      await sendAnnouncementEmail(user.id, headline, body, urgency);
+      results.push({ email: user.email, success: true });
+    } catch (e) {
+      results.push({ email: user.email, success: false, error: e.message });
+    }
+  }
+  console.log(`[Broadcast] Sent "${headline}" to ${results.filter(r => r.success).length}/${allUsers.length} users`);
+  return results;
+}
+
+async function sendOnboardingWelcomeEmail(userId) {
+  const user = db.findOne('users', u => u.id === userId);
+  if (!user || !user.email) return;
+  const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
+  const html = brandedEmailTemplate(firstName, onboardingWelcomeHtml(firstName), {
+    preheader: `Welcome to ${APP_NAME} — your AI investment journey begins now`,
+    showCta: true, ctaText: 'Open Your Dashboard', ctaUrl: PLATFORM_URL,
+  });
+  await sendEmail(user.email, `Welcome to ${APP_NAME}`, html);
+}
+
 // ─── ADMIN NOTIFICATION ENGINE ───
 // Sends email to ALL admin users when actionable events occur (withdrawals, access requests, feedback)
 
@@ -3606,18 +3862,20 @@ async function notifyAdmins(eventType, subject, htmlBody) {
 
   const results = [];
   for (const admin of admins) {
-    const result = await sendEmail(admin.email, `[${APP_NAME} Admin] ${subject}`, `
-      <div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">
-        <div style="padding:12px 16px;background:#1a1a2e;border-radius:12px;border:1px solid rgba(0,212,255,0.2);margin-bottom:16px;">
-          <div style="font-size:11px;color:#00D4FF;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Admin Alert — ${eventType}</div>
-          <div style="font-size:16px;font-weight:700;color:#fff;">${subject}</div>
-        </div>
-        ${htmlBody}
-        <div style="margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.06);font-size:11px;color:rgba(255,255,255,0.3);">
-          ${APP_NAME} Admin Notification System · Log in to the Admin Panel to take action.
-        </div>
+    const firstName = admin.first_name || admin.name?.split(' ')[0] || 'Admin';
+    const adminContent = `
+      <div style="background:rgba(0,212,255,0.06);border:1px solid rgba(0,212,255,0.15);border-left:3px solid #00D4FF;border-radius:0 12px 12px 0;padding:16px;margin-bottom:16px;">
+        <div style="font-size:10px;font-weight:700;color:#00D4FF;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px;">Admin Alert — ${eventType}</div>
+        <div style="font-size:15px;font-weight:700;color:#fff;">${subject}</div>
       </div>
-    `);
+      ${htmlBody}
+      <div style="margin-top:12px;font-size:11px;color:#555;">Log in to the Admin Panel to take action.</div>`;
+    const result = await sendEmail(admin.email, `[${APP_NAME} Admin] ${subject}`,
+      brandedEmailTemplate(firstName, adminContent, {
+        preheader: `Admin: ${subject}`,
+        showCta: true, ctaText: 'Open Admin Panel', ctaUrl: `${FRONTEND_ORIGIN}/investor-portal`,
+      })
+    );
     results.push({ admin: admin.email, ...result });
   }
 
@@ -3660,78 +3918,56 @@ function verifyCode(email, type, code) {
 }
 
 function passwordResetEmail(code) {
-  return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
-      <div style="text-align: center; margin-bottom: 24px;">
-        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
-        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
-      </div>
-      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px; text-align: center;">
-        <div style="font-size: 15px; color: #ccc; margin-bottom: 16px;">Your password reset code is:</div>
-        <div style="font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #00D4FF; font-family: monospace;">${code}</div>
-        <div style="font-size: 12px; color: #888; margin-top: 16px;">This code expires in 10 minutes.</div>
-      </div>
-      <div style="text-align: center; margin-top: 20px; font-size: 11px; color: #555;">
-        If you didn't request this, you can safely ignore this email.
-      </div>
+  const content = `
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;text-align:center;margin-bottom:16px;">
+      <div style="font-size:14px;color:#ccc;margin-bottom:16px;">Your password reset code is:</div>
+      <div style="font-size:40px;font-weight:800;letter-spacing:10px;color:#D4AC0D;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;padding:8px 0;">${code}</div>
+      <div style="font-size:12px;color:#888;margin-top:16px;">This code expires in <strong style="color:#F59E0B;">10 minutes</strong>.</div>
     </div>
-  `;
+    <div style="font-size:12px;color:#666;text-align:center;">
+      If you didn't request this reset, you can safely ignore this email. Your account is secure.
+    </div>`;
+  return brandedEmailTemplate(null, content, { preheader: `Your password reset code: ${code}` });
 }
 
 function emailVerificationEmail(code) {
-  return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
-      <div style="text-align: center; margin-bottom: 24px;">
-        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
-        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
-      </div>
-      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px; text-align: center;">
-        <div style="font-size: 15px; color: #ccc; margin-bottom: 16px;">Verify your email address:</div>
-        <div style="font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #10B981; font-family: monospace;">${code}</div>
-        <div style="font-size: 12px; color: #888; margin-top: 16px;">Enter this code in the app to verify your email. Expires in 10 minutes.</div>
-      </div>
-      <div style="text-align: center; margin-top: 20px; font-size: 11px; color: #555;">
-        Welcome to the collective. — 12 Tribes AI
-      </div>
+  const content = `
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;text-align:center;margin-bottom:16px;">
+      <div style="font-size:14px;color:#ccc;margin-bottom:16px;">Verify your email address:</div>
+      <div style="font-size:40px;font-weight:800;letter-spacing:10px;color:#10B981;font-family:'SF Mono',SFMono-Regular,Consolas,monospace;padding:8px 0;">${code}</div>
+      <div style="font-size:12px;color:#888;margin-top:16px;">Enter this code in the app. Expires in <strong style="color:#10B981;">10 minutes</strong>.</div>
     </div>
-  `;
+    <div style="font-size:13px;color:#888;text-align:center;">
+      Welcome to the collective.
+    </div>`;
+  return brandedEmailTemplate(null, content, { preheader: `Your verification code: ${code}` });
 }
 
 function accessApprovedEmail(firstName) {
-  return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
-      <div style="text-align: center; margin-bottom: 24px;">
-        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
-        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
+  const content = `
+    <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);border-radius:12px;padding:20px;margin-bottom:16px;">
+      <div style="font-size:16px;font-weight:700;color:#10B981;margin-bottom:12px;">&#10003; Access Approved</div>
+      <div style="font-size:14px;color:#ccc;line-height:1.7;">
+        Your request to join <strong style="color:#D4AC0D;">12 Tribes Investments</strong> has been approved. You can now create your account and begin exploring our AI-powered investment platform.
       </div>
-      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px;">
-        <div style="font-size: 18px; font-weight: 700; color: #10B981; margin-bottom: 12px;">Access Approved</div>
-        <div style="font-size: 14px; color: #ccc; line-height: 1.6;">
-          ${firstName}, your request to join 12 Tribes Investments has been approved. You can now create your account and start trading with our AI-powered collective.
-        </div>
-        <div style="text-align: center; margin-top: 20px;">
-          <a href="${FRONTEND_ORIGIN}/investor-portal" style="display: inline-block; padding: 12px 32px; background: linear-gradient(135deg, #10B981, #00D4FF); color: #fff; text-decoration: none; border-radius: 12px; font-weight: 700; font-size: 14px;">Create Your Account</a>
-        </div>
-      </div>
-    </div>
-  `;
+    </div>`;
+  return brandedEmailTemplate(firstName, content, {
+    preheader: 'Your access has been approved — welcome to 12 Tribes Investments',
+    showCta: true, ctaText: 'Create Your Account', ctaUrl: `${FRONTEND_ORIGIN}/investor-portal`,
+  });
 }
 
 function accessDeniedEmail(firstName) {
-  return `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0a0a1a; color: #ffffff; border-radius: 16px;">
-      <div style="text-align: center; margin-bottom: 24px;">
-        <div style="font-size: 28px; font-weight: 800; letter-spacing: 2px; background: linear-gradient(135deg, #00D4FF, #A855F7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">12 TRIBES</div>
-        <div style="font-size: 11px; color: #888; letter-spacing: 3px; margin-top: 4px;">INVESTMENTS</div>
+  const content = `
+    <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:12px;padding:20px;margin-bottom:16px;">
+      <div style="font-size:16px;font-weight:700;color:#F59E0B;margin-bottom:12px;">Access Request Update</div>
+      <div style="font-size:14px;color:#ccc;line-height:1.7;">
+        Thank you for your interest in <strong style="color:#D4AC0D;">12 Tribes Investments</strong>. After careful review, we are unable to grant platform access at this time. If you believe this was in error, please contact our support team for further information.
       </div>
-      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 24px;">
-        <div style="font-size: 18px; font-weight: 700; color: #F59E0B; margin-bottom: 12px;">Access Request Update</div>
-        <div style="font-size: 14px; color: #ccc; line-height: 1.6;">
-          ${firstName}, thank you for your interest in 12 Tribes Investments. After reviewing your request, we are unable to grant access at this time. If you believe this was in error, please contact our support team for more information.
-        </div>
-      </div>
-    </div>
-  `;
+    </div>`;
+  return brandedEmailTemplate(firstName, content, {
+    preheader: 'Update on your 12 Tribes Investments access request',
+  });
 }
 
 // ─── AUTH: FORGOT PASSWORD (sends email with code) ───
@@ -5900,23 +6136,12 @@ async function alpacaRequest(path, method = 'GET', body = null) {
 async function sendTradeConfirmationEmail(userId, trade) {
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
+  const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
   const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
-  const cost = (trade.price * trade.quantity).toFixed(2);
-  const html = `
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#0a0a1a;color:#fff;padding:32px;border-radius:12px;">
-      <h2 style="color:#00d4aa;margin:0 0 16px;">Trade Executed</h2>
-      <table style="width:100%;border-collapse:collapse;">
-        <tr><td style="padding:8px 0;color:#888;">Symbol</td><td style="padding:8px 0;font-weight:bold;color:#fff;">${trade.symbol}</td></tr>
-        <tr><td style="padding:8px 0;color:#888;">Side</td><td style="padding:8px 0;font-weight:bold;color:${side === 'BUY' ? '#00d4aa' : '#ff6b6b'};">${side}</td></tr>
-        <tr><td style="padding:8px 0;color:#888;">Quantity</td><td style="padding:8px 0;color:#fff;">${trade.quantity}</td></tr>
-        <tr><td style="padding:8px 0;color:#888;">Price</td><td style="padding:8px 0;color:#fff;">$${trade.price.toFixed(2)}</td></tr>
-        <tr><td style="padding:8px 0;color:#888;">Total</td><td style="padding:8px 0;font-weight:bold;color:#00d4aa;">$${cost}</td></tr>
-        <tr><td style="padding:8px 0;color:#888;">Agent</td><td style="padding:8px 0;color:#a855f7;">${trade.agent || 'Manual'}</td></tr>
-        <tr><td style="padding:8px 0;color:#888;">Mode</td><td style="padding:8px 0;color:#888;">${trade.execution_mode || 'paper'}</td></tr>
-        <tr><td style="padding:8px 0;color:#888;">Time</td><td style="padding:8px 0;color:#888;">${new Date().toISOString()}</td></tr>
-      </table>
-      <p style="margin:24px 0 0;color:#666;font-size:12px;">This is an automated trade confirmation from ${APP_NAME}.</p>
-    </div>`;
+  const html = brandedEmailTemplate(firstName, tradeConfirmationHtml(trade), {
+    preheader: `Trade executed: ${side} ${trade.quantity} ${trade.symbol} @ $${Number(trade.price).toFixed(2)}`,
+    showCta: true, ctaText: 'View Portfolio', ctaUrl: PLATFORM_URL,
+  });
   await sendEmail(user.email, `${APP_NAME} — Trade Confirmation: ${side} ${trade.quantity} ${trade.symbol}`, html);
 }
 
@@ -6139,6 +6364,37 @@ api.post('/api/admin/messages/broadcast', auth, async (req, res) => {
     }));
   }
   json(res, 201, { success: true, count: msgs.length, message: 'Broadcast sent' });
+});
+
+// ─── EMAIL BROADCAST (admin) — sends branded email to all active users ───
+api.post('/api/admin/email/broadcast', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.headline || !body.body) return json(res, 400, { error: 'headline and body required' });
+  const urgency = body.urgency || 'info';
+  const results = await sendBroadcastAnnouncement(body.headline, body.body, urgency);
+  json(res, 200, { success: true, sent: results.filter(r => r.success).length, total: results.length });
+});
+
+// ─── SEND WELCOME EMAIL (admin) — triggers onboarding welcome for a user ───
+api.post('/api/admin/email/welcome/:userId', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const targetUser = db.findOne('users', u => u.id === req.params.userId);
+  if (!targetUser) return json(res, 404, { error: 'User not found' });
+  await sendOnboardingWelcomeEmail(req.params.userId);
+  json(res, 200, { success: true, message: `Welcome email sent to ${targetUser.email}` });
+});
+
+// ─── SEND ACCOUNT UPDATE EMAIL (admin) — notify user about account changes ───
+api.post('/api/admin/email/account-update/:userId', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.updateType || !body.title || !body.message) return json(res, 400, { error: 'updateType, title, message required' });
+  await sendAccountUpdateEmail(req.params.userId, body.updateType, body);
+  json(res, 200, { success: true, message: 'Account update email sent' });
 });
 
 // ═══════════════════════════════════════════════════════════════
