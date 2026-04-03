@@ -311,8 +311,11 @@ function recordLogin(user) {
 export async function registerUser({ firstName, lastName, email, phone, password, tosAccepted, privacyConsent }) {
   const emailKey = email.toLowerCase().trim();
 
-  if (!password || password.length < 6) {
-    return { success: false, error: 'Password must be at least 6 characters long.' };
+  if (!password || password.length < 12) {
+    return { success: false, error: 'Password must be at least 12 characters long.' };
+  }
+  if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+    return { success: false, error: 'Password must contain uppercase, lowercase, and a number.' };
   }
 
   // ─── SERVER-FIRST REGISTRATION: Server is the source of truth ───

@@ -196,7 +196,14 @@ function buildActivityFromTrades(positions, tradeHistory, wallet) {
 // ════════════════════════════════════════
 
 function AuthScreen({ onAuth }) {
-  const [mode, setMode] = useState("login"); // "login" | "register" | "request-access"
+  // Support ?mode=register in the URL so approval email CTA lands directly on the register form
+  const initialMode = (() => {
+    try {
+      const p = new URLSearchParams(window.location.search).get('mode');
+      return ['register', 'request-access'].includes(p) ? p : 'login';
+    } catch { return 'login'; }
+  })();
+  const [mode, setMode] = useState(initialMode); // "login" | "register" | "request-access"
   const { isMobile } = useResponsive();
 
   return (
@@ -657,7 +664,10 @@ function RegisterForm({ onAuth, onSwitch, isMobile }) {
     if (!lastName.trim()) return "Last name is required";
     if (!email.includes("@") || !email.includes(".")) return "Enter a valid email address";
     if (phone.replace(/\D/g, '').length < 10) return "Enter a valid 10-digit phone number";
-    if (password.length < 6) return "Password must be at least 6 characters";
+    if (password.length < 12) return "Password must be at least 12 characters";
+    if (!/[A-Z]/.test(password)) return "Password must contain at least one uppercase letter";
+    if (!/[a-z]/.test(password)) return "Password must contain at least one lowercase letter";
+    if (!/[0-9]/.test(password)) return "Password must contain at least one number";
     if (!tosAccepted) return "You must accept the Terms of Service";
     if (!privacyConsent) return "You must consent to the Privacy Policy";
     return null;
@@ -799,7 +809,7 @@ function RegisterForm({ onAuth, onSwitch, isMobile }) {
             {/* Password */}
             <div>
               <label style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", display: "block", marginBottom: 6, letterSpacing: 1, textTransform: "uppercase" }}>Password</label>
-              <input type="password" placeholder="Min 6 characters" value={password}
+              <input type="password" placeholder="Min 12 chars — uppercase, lowercase, number" value={password}
                 onChange={e => { setPassword(e.target.value); setError(""); }}
                 onKeyDown={e => e.key === "Enter" && handleRegister()}
                 style={inputStyle} />

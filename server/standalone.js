@@ -641,19 +641,24 @@ if (USE_POSTGRES) {
         let pwResetCount = 0;
         for (const u of allUsers) {
           const updates = {};
-          // Password reset
-          const defaultPw = USER_PASSWORDS[u.email] || 'Tribes2026!';
-          updates.password_hash = hashPassword(defaultPw);
+          // Password reset — ONLY reset passwords for hardcoded known accounts.
+          // New investors who registered with their own passwords must NOT be overwritten
+          // on every server boot, or they will be permanently locked out.
+          if (USER_PASSWORDS[u.email]) {
+            updates.password_hash = hashPassword(USER_PASSWORDS[u.email]);
+            pwResetCount++;
+          }
           // Role enforcement
           if (u.email === DESIGNATED_ADMIN_EMAIL && u.role !== 'admin') {
             updates.role = 'admin';
           } else if (u.email !== DESIGNATED_ADMIN_EMAIL && u.role === 'admin') {
             updates.role = 'investor';
           }
-          db.update('users', uu => uu.id === u.id, updates);
-          pwResetCount++;
+          if (Object.keys(updates).length > 0) {
+            db.update('users', uu => uu.id === u.id, updates);
+          }
         }
-        console.log(`[Bootstrap] ✅ ${pwResetCount} user passwords reset to boot defaults`);
+        console.log(`[Bootstrap] ✅ ${pwResetCount} known-user passwords reset to boot defaults (new registrants preserved)`);
         console.log(`[Bootstrap] ✅ Admin role enforced for ${DESIGNATED_ADMIN_EMAIL}`);
 
         // ─── DATA RECOVERY: AUTO-SNAPSHOT ON BOOT ───
@@ -3953,7 +3958,7 @@ function accessApprovedEmail(firstName) {
     </div>`;
   return brandedEmailTemplate(firstName, content, {
     preheader: 'Your access has been approved — welcome to 12 Tribes Investments',
-    showCta: true, ctaText: 'Create Your Account', ctaUrl: `${FRONTEND_ORIGIN}/investor-portal`,
+    showCta: true, ctaText: 'Create Your Account', ctaUrl: `${FRONTEND_ORIGIN}/investor-portal?mode=register`,
   });
 }
 
