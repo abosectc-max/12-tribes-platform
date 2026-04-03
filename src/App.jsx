@@ -30,11 +30,11 @@ import { initializeTheme } from './store/themeService.js'
 initializeTheme();
 
 const glass = {
-  background: "rgba(255,255,255,0.045)",
-  backdropFilter: "blur(64px) saturate(200%)",
-  WebkitBackdropFilter: "blur(64px) saturate(200%)",
-  border: "1px solid rgba(255,255,255,0.1)",
-  boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 0 0.5px rgba(255,255,255,0.06), inset 0 0.5px 0 rgba(255,255,255,0.3)",
+  background: "rgba(255,255,255,0.055)",
+  backdropFilter: "blur(48px) saturate(200%)",
+  WebkitBackdropFilter: "blur(48px) saturate(200%)",
+  border: "1px solid rgba(255,255,255,0.09)",
+  boxShadow: "0 4px 24px rgba(0,0,0,0.32), 0 1px 4px rgba(0,0,0,0.20), inset 0 0.5px 0 rgba(255,255,255,0.10)",
 }
 
 // Slate gray — nav bar & footer headers

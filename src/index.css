@@ -1,14 +1,26 @@
 :root {
-  --glass-bg: rgba(255, 255, 255, 0.05);
-  --glass-border: 1px solid rgba(255, 255, 255, 0.12);
-  --glass-blur: blur(64px) saturate(200%);
-  --glass-shadow: 0 8px 48px rgba(0, 0, 0, 0.06), 0 0 100px rgba(180, 200, 255, 0.04), inset 0 0.5px 0 rgba(255, 255, 255, 0.35);
+  /* Glass system */
+  --glass-bg: rgba(255, 255, 255, 0.055);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.09);
+  --glass-blur: blur(48px) saturate(200%);
+  --glass-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.32),
+    0 1px 4px rgba(0, 0, 0, 0.20),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.12);
+  /* Accent */
   --accent-primary: #00D4FF;
-  --accent-hover: rgba(0, 212, 255, 0.2);
-  --accent-active: rgba(0, 212, 255, 0.15);
-  --text-primary: #ffffff;
-  --text-muted: rgba(255, 255, 255, 0.5);
-  --bg-dark: #0f1225;
+  --accent-hover: rgba(0, 212, 255, 0.18);
+  --accent-active: rgba(0, 212, 255, 0.12);
+  /* Text */
+  --text-primary: #F1F5FF;
+  --text-muted: rgba(241, 245, 255, 0.5);
+  /* Background — deep gradient base */
+  --bg-dark: #0B0F1E;
+  /* Refined semantic colors */
+  --color-success: #10B981;
+  --color-danger:  #F87171;
+  --color-warning: #FBBF24;
 }
 
 @keyframes fadeInUp {
@@ -60,7 +72,7 @@ html, body, #root {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.4s ease;
+  transition: background-color 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #root > div {
@@ -94,6 +106,163 @@ a {
 ::selection {
   background: rgba(0, 212, 255, 0.4);
   color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DARK THEME — Premium Fintech Depth System
+   Design language: Bloomberg × Apple dark mode × liquid glass
+   ─ Deep navy gradient with ambient spectral glows
+   ─ Visible card elevation via strong layered shadows
+   ─ Refined semantic palette (no terminal-era primaries)
+   ─ Proportional text hierarchy on dark backgrounds
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 1. BACKGROUND — deep gradient with ambient character ────── */
+html:not([data-theme="light"]),
+html:not([data-theme="light"]) body,
+html:not([data-theme="light"]) #root,
+html[data-theme="dark"],
+html[data-theme="dark"] body,
+html[data-theme="dark"] #root,
+[data-theme="dark"] body,
+[data-theme="dark"] #root {
+  /* Ambient cyan whisper top-left, purple hint bottom-right      */
+  /* Both at <4% — visible as depth, invisible as color           */
+  background:
+    radial-gradient(ellipse 70% 55% at 15% -5%,  rgba(0, 212, 255, 0.038) 0%, transparent 65%),
+    radial-gradient(ellipse 55% 70% at 85% 105%, rgba(139, 92, 246, 0.028) 0%, transparent 65%),
+    linear-gradient(162deg, #0D1335 0%, #0B0F1E 48%, #08091A 100%) !important;
+  background-attachment: fixed !important;
+  color: #F1F5FF !important;
+}
+
+/* ── 2. CARD ELEVATION — visible shadows on dark background ──── */
+/* The default rgba(0,0,0,0.06) shadow is invisible on dark bg.  */
+/* These replace it with properly weighted dark-mode shadows.    */
+
+/* Ultra-thin glass (0.0x range) — base cards */
+[data-theme="dark"] [style*="rgba(255,255,255,0.0"],
+[data-theme="dark"] [style*="rgba(255, 255, 255, 0.0"] {
+  background: rgba(255, 255, 255, 0.055) !important;
+  border-color: rgba(255, 255, 255, 0.085) !important;
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.35),
+    0 1px 4px rgba(0, 0, 0, 0.22),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.12) !important;
+}
+
+/* Stronger glass (0.1x range) — elevated panels */
+[data-theme="dark"] [style*="rgba(255,255,255,0.1"],
+[data-theme="dark"] [style*="rgba(255, 255, 255, 0.1"] {
+  background: rgba(255, 255, 255, 0.075) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.38),
+    0 2px 6px rgba(0, 0, 0, 0.24),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.14) !important;
+}
+
+/* Very faint surfaces (0.03–0.05) — subtle section fills */
+[data-theme="dark"] [style*="background: rgba(255,255,255,0.03"],
+[data-theme="dark"] [style*="background: rgba(255, 255, 255, 0.03"],
+[data-theme="dark"] [style*="background: rgba(255,255,255,0.04"],
+[data-theme="dark"] [style*="background: rgba(255, 255, 255, 0.04"],
+[data-theme="dark"] [style*="background: rgba(255,255,255,0.05"],
+[data-theme="dark"] [style*="background: rgba(255, 255, 255, 0.05"] {
+  background: rgba(255, 255, 255, 0.042) !important;
+}
+
+/* ── 3. SEMANTIC COLOR FIXES — fintech palette, not terminal ─── */
+/* !! CRITICAL: pure #00FF00, #FF0000, #FFD700 are replaced       */
+
+/* Success: pure lime → Emerald-500 */
+[data-theme="dark"] [style*="color: #00FF00"],
+[data-theme="dark"] [style*="color:#00FF00"] { color: #10B981 !important; }
+
+[data-theme="dark"] [style*="background: #00FF00"],
+[data-theme="dark"] [style*="background:#00FF00"] { background: #10B981 !important; }
+
+[data-theme="dark"] [style*="background: rgba(0,255,0"],
+[data-theme="dark"] [style*="background: rgba(0, 255, 0"] {
+  background: rgba(16, 185, 129, 0.15) !important;
+}
+
+/* Danger: pure red → Red-400 */
+[data-theme="dark"] [style*="color: #FF0000"],
+[data-theme="dark"] [style*="color:#FF0000"] { color: #F87171 !important; }
+
+[data-theme="dark"] [style*="background: #FF0000"],
+[data-theme="dark"] [style*="background:#FF0000"] { background: #F87171 !important; }
+
+[data-theme="dark"] [style*="background: rgba(255,0,0"],
+[data-theme="dark"] [style*="background: rgba(255, 0, 0"] {
+  background: rgba(248, 113, 113, 0.15) !important;
+}
+
+/* Warning: pure gold → Amber-400 */
+[data-theme="dark"] [style*="color: #FFD700"],
+[data-theme="dark"] [style*="color:#FFD700"] { color: #FBBF24 !important; }
+
+[data-theme="dark"] [style*="background: #FFD700"],
+[data-theme="dark"] [style*="background:#FFD700"] { background: #FBBF24 !important; }
+
+/* ── 4. ACCENT GLOW — tighter, more premium ─────────────────── */
+/* Reduce the aggressive cyan bleed on glow-heavy elements        */
+[data-theme="dark"] [style*="box-shadow: 0 0 40px rgba(0, 212, 255"] {
+  box-shadow: 0 0 24px rgba(0, 212, 255, 0.22), 0 4px 16px rgba(0, 0, 0, 0.3) !important;
+}
+[data-theme="dark"] [style*="box-shadow: 0 0 20px rgba(0, 212, 255"] {
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.18), 0 2px 10px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* ── 5. DARK OVERLAY REFINEMENT ──────────────────────────────── */
+/* Page-level overlays — deepen slightly for proper modal contrast */
+[data-theme="dark"] [style*="background: rgba(0,0,0,0.5"],
+[data-theme="dark"] [style*="background: rgba(0, 0, 0, 0.5"],
+[data-theme="dark"] [style*="background: rgba(10,10,26"],
+[data-theme="dark"] [style*="background: rgba(10, 10, 26"] {
+  background: rgba(7, 10, 22, 0.82) !important;
+}
+
+/* ── 6. INPUT FIELDS ─────────────────────────────────────────── */
+[data-theme="dark"] input,
+[data-theme="dark"] textarea,
+[data-theme="dark"] select {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  color: #F1F5FF !important;
+}
+
+[data-theme="dark"] input:focus,
+[data-theme="dark"] textarea:focus,
+[data-theme="dark"] select:focus {
+  border-color: rgba(0, 212, 255, 0.35) !important;
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.10) !important;
+  outline: none !important;
+}
+
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder {
+  color: rgba(241, 245, 255, 0.28) !important;
+}
+
+/* ── 7. SCROLLBAR ────────────────────────────────────────────── */
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.18) !important;
+}
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 212, 255, 0.32) !important;
+}
+[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+/* ── 8. SELECTION ────────────────────────────────────────────── */
+[data-theme="dark"] ::selection {
+  background: rgba(0, 212, 255, 0.28) !important;
+  color: #F1F5FF !important;
 }
 
 /* ═══════════════════════════════════════════════════════════════

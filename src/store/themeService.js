@@ -14,30 +14,38 @@ const THEMES = {
     name: 'Dark',
     label: 'dark',
     colors: {
-      background: '#0f1225',
-      surface: 'rgba(22, 24, 48, 0.5)',
-      glass: 'rgba(255, 255, 255, 0.05)',
-      text: '#ffffff',
-      textSecondary: 'rgba(255, 255, 255, 0.6)',
-      textTertiary: 'rgba(255, 255, 255, 0.4)',
+      // Deep navy — gradient applied via CSS, this is the fallback
+      background: '#0B0F1E',
+      surface: 'rgba(14, 18, 38, 0.65)',
+      glass: 'rgba(255, 255, 255, 0.055)',
+      // Text
+      text: '#F1F5FF',
+      textSecondary: 'rgba(241, 245, 255, 0.58)',
+      textTertiary: 'rgba(241, 245, 255, 0.35)',
+      // Accent — electric cyan
       accent: '#00D4FF',
-      accentHover: '#00B0D4',
-      accentActive: '#0099B3',
-      success: '#00FF00',
-      danger: '#FF0000',
-      warning: '#FFD700',
-      border: 'rgba(255, 255, 255, 0.1)',
-      borderLight: 'rgba(255, 255, 255, 0.05)',
-      glow: 'rgba(0, 212, 255, 0.1)',
-      glowIntense: 'rgba(0, 212, 255, 0.3)',
-      overlay: 'rgba(10, 10, 26, 0.8)',
-      scrollbar: 'rgba(0, 212, 255, 0.3)',
-      scrollbarTrack: 'rgba(255, 255, 255, 0.05)'
+      accentHover: '#00BBDF',
+      accentActive: '#009EBF',
+      // ── Semantic colors — refined fintech palette, NOT terminal-era primaries ──
+      success: '#10B981',   // Emerald-500 — clean, modern
+      danger:  '#F87171',   // Red-400 — visible but not aggressive
+      warning: '#FBBF24',   // Amber-400 — warm gold without harshness
+      // Borders — fine, directional
+      border: 'rgba(255, 255, 255, 0.08)',
+      borderLight: 'rgba(255, 255, 255, 0.04)',
+      // Glows
+      glow: 'rgba(0, 212, 255, 0.09)',
+      glowIntense: 'rgba(0, 212, 255, 0.22)',
+      // Overlay
+      overlay: 'rgba(7, 10, 22, 0.85)',
+      // Scrollbar
+      scrollbar: 'rgba(0, 212, 255, 0.22)',
+      scrollbarTrack: 'rgba(255, 255, 255, 0.04)',
     },
     preview: {
       primary: '#00D4FF',
-      secondary: '#0a0a1a',
-      accent: '#ffffff'
+      secondary: '#0B0F1E',
+      accent: '#F1F5FF'
     }
   },
   light: {

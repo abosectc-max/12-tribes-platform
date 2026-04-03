@@ -33,13 +33,14 @@ const {
 // ═══════════════════════════════════════════
 
 // === APPLE LIQUID GLASS — TRUE TRANSPARENT ===
+// Shadows are calibrated for dark backgrounds — rgba(0,0,0,0.06) is invisible on dark.
 const glass = {
-  background: "rgba(255,255,255,0.04)",
-  backdropFilter: "blur(40px) saturate(180%)",
-  WebkitBackdropFilter: "blur(40px) saturate(180%)",
-  border: "1px solid rgba(255,255,255,0.15)",
+  background: "rgba(255,255,255,0.055)",
+  backdropFilter: "blur(40px) saturate(200%)",
+  WebkitBackdropFilter: "blur(40px) saturate(200%)",
+  border: "1px solid rgba(255,255,255,0.09)",
   borderRadius: "24px",
-  boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
+  boxShadow: "0 4px 24px rgba(0,0,0,0.32), 0 1px 4px rgba(0,0,0,0.20), inset 0 0.5px 0 rgba(255,255,255,0.10), inset 0 -0.5px 0 rgba(0,0,0,0.10)",
 };
 
 // === SLATE GRAY — Headers & Footer ===
