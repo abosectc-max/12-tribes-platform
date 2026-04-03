@@ -368,7 +368,7 @@ export default function TwelveTribes_Performance() {
         <div style={{ fontSize: 13, fontFamily: "monospace", color: "rgba(255,255,255,0.6)" }}>{clock.toLocaleTimeString()}</div>
       </div>
 
-      <div style={{ padding: `20px ${isMobile ? '16px' : '32px'}`, maxWidth: 1600, margin: "0 auto" }}>
+      <div style={{ padding: `20px ${isMobile ? '16px' : '32px'}`, maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 110 : 40 }}>
         {view === "overview" && (
           <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 16 : 20 }}>
             <KeyMetricsGrid isMobile={isMobile} />

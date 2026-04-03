@@ -532,6 +532,139 @@ html[data-theme="light"] #root,
 [data-theme="light"] [style*="color: #F59E0B"],
 [data-theme="light"] [style*="color: #D97706"] { color: #D97706 !important; }
 
+/* ══════════════════════════════════════════════════════════════
+   MOBILE OPTIMIZATIONS — global rules for all viewports ≤ 767px
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── M1. BASE MOBILE BODY ────────────────────────────────────── */
+html {
+  /* Prevent iOS font-size inflation when device rotates */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Smooth momentum scrolling on iOS */
+  scroll-behavior: smooth;
+}
+
+body {
+  /* Prevent horizontal bleed from oversized children */
+  overflow-x: hidden;
+  /* Padding for home-bar / Dynamic Island via CSS var set in index.html */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ── M2. UNIVERSAL TOUCH TARGETS ─────────────────────────────── */
+/* Every interactive element is at least 44×44px on mobile        */
+@media (max-width: 767px) {
+  button,
+  a,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  input[type="checkbox"],
+  input[type="radio"],
+  select {
+    min-height: 44px;
+    min-width: 44px;
+    /* Stop iOS callout menu on long-press */
+    -webkit-touch-callout: none;
+  }
+
+  /* Input / textarea — larger hit area & font size prevents iOS auto-zoom */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"],
+  textarea,
+  select {
+    font-size: 16px !important; /* iOS zooms-in on focus if < 16px */
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+}
+
+/* ── M3. NO HORIZONTAL OVERFLOW ──────────────────────────────── */
+@media (max-width: 767px) {
+  /* Charts, tables, cards — contain within viewport */
+  .recharts-wrapper,
+  .recharts-surface {
+    max-width: 100% !important;
+    overflow: hidden !important;
+  }
+
+  /* Tables scroll horizontally rather than blowing out the layout */
+  table {
+    min-width: 0;
+  }
+
+  /* Prevent any absolutely-positioned element from causing overflow */
+  #root {
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100vw;
+  }
+}
+
+/* ── M4. SAFE AREA INSETS ────────────────────────────────────── */
+/* Ensure sticky headers clear the Dynamic Island / notch         */
+@media (max-width: 767px) {
+  [style*="position: sticky"][style*="top: 0"],
+  [style*="position:sticky"][style*="top:0"] {
+    padding-top: max(14px, env(safe-area-inset-top, 14px));
+  }
+}
+
+/* ── M5. NAV BAR SAFE ZONE ───────────────────────────────────── */
+/* The floating nav sits at bottom:20px + ~52px height = 72px.    */
+/* App.jsx already sets paddingBottom:70 on the root wrapper.     */
+/* For pages that scroll via body, this extends that clearance to */
+/* account for home-bar on iPhone Pro models.                     */
+@media (max-width: 767px) {
+  #root > div {
+    padding-bottom: max(70px, calc(70px + env(safe-area-inset-bottom, 0px))) !important;
+  }
+}
+
+/* ── M6. SCROLLABLE OVERFLOW AREAS ──────────────────────────── */
+/* Give momentum scrolling to overflow containers on iOS          */
+[style*="overflow-x: auto"],
+[style*="overflowX: auto"],
+[style*="overflow-y: auto"],
+[style*="overflowY: auto"],
+[style*="overflow: auto"] {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── M7. FINGER-FRIENDLY FOCUS RINGS ────────────────────────── */
+@media (max-width: 767px) {
+  :focus-visible {
+    outline: 2px solid rgba(0, 212, 255, 0.55);
+    outline-offset: 2px;
+  }
+}
+
+/* ── M8. PREVENT DOUBLE-TAP ZOOM ON BUTTONS ─────────────────── */
+button,
+a,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+/* ── M9. TYPOGRAPHY SCALE ON SMALL SCREENS ───────────────────── */
+@media (max-width: 390px) {
+  /* Very small phones (SE, older Android) — scale down big numbers */
+  h1 { font-size: clamp(22px, 6vw, 32px) !important; }
+  h2 { font-size: clamp(18px, 5vw, 24px) !important; }
+}
+
+/* ── M10. RECHARTS RESPONSIVE WRAPPER FIX ───────────────────── */
+/* Prevents ResizeObserver loop on iOS Safari when width collapses */
+.recharts-responsive-container {
+  min-width: 0 !important;
+}
+
 /* ── 15. SMOOTH THEME TRANSITION ─────────────────────────────── */
 html, body, #root {
   transition:

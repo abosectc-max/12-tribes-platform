@@ -540,7 +540,7 @@ export default function TwelveTribes_TradingEngine() {
       </div>
 
       {/* Content */}
-      <div style={{ padding: isMobile ? "16px 16px" : "20px 32px", maxWidth: 1600, margin: "0 auto" }}>
+      <div style={{ padding: isMobile ? "16px 16px" : "20px 32px", maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 110 : 40 }}>
         <LiveMetricBar />
 
         <div style={{ marginTop: 20 }}>

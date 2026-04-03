@@ -430,7 +430,7 @@ export default function TwelveTribes_RiskAnalytics() {
         </div>
       </div>
 
-      <div style={{ padding: `20px ${isMobile ? '16px' : '32px'}`, maxWidth: 1600, margin: "0 auto" }}>
+      <div style={{ padding: `20px ${isMobile ? '16px' : '32px'}`, maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 110 : 40 }}>
         {/* Top metrics */}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
           {[

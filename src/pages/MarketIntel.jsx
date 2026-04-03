@@ -603,7 +603,7 @@ export default function TwelveTribes_MarketIntel() {
       </div>
 
       {/* Content */}
-      <div style={{ padding: `20px ${isMobile ? '16px' : '32px'}`, maxWidth: 1600, margin: "0 auto" }}>
+      <div style={{ padding: `20px ${isMobile ? '16px' : '32px'}`, maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 110 : 40 }}>
 
         {/* Regime Banner — always visible */}
         <div style={{ marginBottom: 20 }}>

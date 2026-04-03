@@ -627,7 +627,9 @@ export default function PaperTrading() {
     <div style={{
       minHeight: '100vh',
       background: 'radial-gradient(ellipse at 20% 50%, rgba(0,212,255,0.08) 0%, transparent 50%), radial-gradient(ellipse at 80% 20%, rgba(123,97,255,0.06) 0%, transparent 50%), #0a0a1a',
-      padding: isMobile ? '16px' : '24px 32px',
+      padding: isMobile
+        ? `calc(16px + env(safe-area-inset-top, 0px)) 16px 16px`
+        : '24px 32px',
       fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif',
       color: '#fff',
     }}>

@@ -1227,7 +1227,9 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
           {isMobile && (
             <button onClick={onToggle} style={{
               background: "none", border: "none", color: "rgba(255,255,255,0.4)",
-              fontSize: 20, cursor: "pointer", padding: 4,
+              fontSize: 20, cursor: "pointer", padding: 8,
+              minWidth: 44, minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center",
+              borderRadius: 10, WebkitTapHighlightColor: "transparent",
             }}>✕</button>
           )}
         </div>
@@ -3667,6 +3669,8 @@ function PortfolioDashboard({ investor, onLogout }) {
                 style={{
                   background: "none", border: "none", color: "#00D4FF",
                   fontSize: 22, cursor: "pointer", padding: 0, lineHeight: 1,
+                  minWidth: 44, minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center",
+                  borderRadius: 10, WebkitTapHighlightColor: "transparent",
                 }}>☰</button>
             )}
             <div>
@@ -3692,7 +3696,7 @@ function PortfolioDashboard({ investor, onLogout }) {
         </div>
 
         {/* Content Area */}
-        <div style={{ padding: isMobile ? 16 : 28, maxWidth: 1100 }}>
+        <div style={{ padding: isMobile ? 16 : 28, maxWidth: 1100, paddingBottom: isMobile ? `calc(32px + ${safeAreaBottom})` : 40 }}>
 
           {/* ═══ PORTFOLIO VIEW ═══ */}
           {activeTab === "portfolio" && (
