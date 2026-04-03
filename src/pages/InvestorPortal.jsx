@@ -19,7 +19,7 @@ import BrandLogo from '../components/BrandLogo.jsx';
 import { haptics } from '../hooks/useHaptics.js';
 import { isPushSupported, getPermissionState, requestPermission, notifications as pushNotify } from '../hooks/useNotifications.js';
 import { generateMonthlyStatement, openPrintView } from '../store/pdfGenerator.js';
-import { getTheme, setTheme, getAvailableThemes, applyTheme } from '../store/themeService.js';
+import { getTheme, getThemePreference, setTheme, getAvailableThemes, applyTheme } from '../store/themeService.js';
 
 const {
   AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -4749,90 +4749,184 @@ function NotificationsSection() {
 // ════════════════════════════════════════
 
 function AppearanceSection({ glass, sectionStyle, isMobile }) {
-  const [currentTheme, setCurrentTheme] = useState(() => getTheme());
-  const themes = getAvailableThemes();
+  const [preference, setPreference] = useState(() => getThemePreference());
+  const [resolvedTheme, setResolvedTheme] = useState(() => getTheme());
 
   const handleThemeChange = (themeId) => {
     haptics.medium();
     setTheme(themeId);
-    setCurrentTheme(themeId);
+    setPreference(themeId);
+    setResolvedTheme(themeId === 'auto' ? getTheme() : themeId);
   };
 
-  const themeOptions = [
-    {
-      id: 'dark',
-      label: 'Dark',
-      icon: '🌙',
-      desc: 'Default dark interface — easy on the eyes',
-      colors: { bg: '#0a0a1a', surface: '#161630', accent: '#00D4FF', text: '#fff' },
-    },
-    {
-      id: 'light',
-      label: 'Light',
-      icon: '☀️',
-      desc: 'Clean light interface — high contrast',
-      colors: { bg: '#F5F7FA', surface: '#ffffff', accent: '#0077CC', text: '#111827' },
-    },
-    {
-      id: 'midnight',
-      label: 'Midnight',
-      icon: '🌑',
-      desc: 'Pure black — OLED battery saver',
-      colors: { bg: '#000000', surface: '#0a0a14', accent: '#00D4FF', text: '#fff' },
-    },
+  // Listen for system changes when in auto mode
+  useEffect(() => {
+    if (preference !== 'auto') return;
+    const mql = window.matchMedia?.('(prefers-color-scheme: dark)');
+    const handler = () => setResolvedTheme(getTheme());
+    mql?.addEventListener?.('change', handler);
+    return () => mql?.removeEventListener?.('change', handler);
+  }, [preference]);
+
+  const options = [
+    { id: 'auto', label: 'Automatic' },
+    { id: 'dark', label: 'Dark' },
+    { id: 'light', label: 'Light' },
   ];
+
+  const activeIdx = options.findIndex(o => o.id === preference);
+
+  // iPhone-style preview screens
+  const previews = [
+    { id: 'auto', screens: [
+      { bg: '#0f1225', bar: '#1a1e3a', accent: '#00D4FF', lines: ['rgba(255,255,255,0.12)', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.06)'] },
+      { bg: '#F2F4F8', bar: '#ffffff', accent: '#0077CC', lines: ['rgba(0,0,0,0.06)', 'rgba(0,0,0,0.04)', 'rgba(0,0,0,0.03)'] },
+    ]},
+    { id: 'dark', screens: [
+      { bg: '#0f1225', bar: '#1a1e3a', accent: '#00D4FF', lines: ['rgba(255,255,255,0.12)', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.06)'] },
+    ]},
+    { id: 'light', screens: [
+      { bg: '#F2F4F8', bar: '#ffffff', accent: '#0077CC', lines: ['rgba(0,0,0,0.06)', 'rgba(0,0,0,0.04)', 'rgba(0,0,0,0.03)'] },
+    ]},
+  ];
+
+  const MiniScreen = ({ screen, width = 64, height = 88 }) => (
+    <div style={{
+      width, height, borderRadius: 10, overflow: 'hidden',
+      background: screen.bg,
+      border: `1px solid ${screen.bg === '#F2F4F8' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)'}`,
+      display: 'flex', flexDirection: 'column',
+      boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
+    }}>
+      {/* Status bar */}
+      <div style={{ height: 8, background: screen.bar, borderBottom: `0.5px solid ${screen.bg === '#F2F4F8' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)'}` }} />
+      {/* Nav bar */}
+      <div style={{ height: 12, background: screen.bar, display: 'flex', alignItems: 'center', padding: '0 6px', gap: 3, borderBottom: `0.5px solid ${screen.bg === '#F2F4F8' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)'}` }}>
+        <div style={{ width: 16, height: 3, borderRadius: 1.5, background: screen.accent, opacity: 0.8 }} />
+        <div style={{ flex: 1 }} />
+        <div style={{ width: 4, height: 4, borderRadius: 2, background: screen.accent, opacity: 0.5 }} />
+      </div>
+      {/* Content lines */}
+      <div style={{ flex: 1, padding: '6px 6px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ height: 14, borderRadius: 4, background: screen.lines[0] }} />
+        <div style={{ height: 10, borderRadius: 3, background: screen.lines[1], width: '80%' }} />
+        <div style={{ height: 10, borderRadius: 3, background: screen.lines[2], width: '60%' }} />
+        <div style={{ flex: 1 }} />
+        {/* Mini card */}
+        <div style={{ height: 16, borderRadius: 4, background: screen.lines[0], marginBottom: 2 }} />
+        <div style={{ height: 5, borderRadius: 2, background: screen.accent, opacity: 0.5, width: '50%', alignSelf: 'center' }} />
+      </div>
+    </div>
+  );
 
   return (
     <div style={{ ...sectionStyle }}>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 20 }}>🎨</span> Appearance
-      </div>
-      <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", marginBottom: 24, lineHeight: 1.6 }}>
-        Choose how the platform looks. Your preference is saved to this device.
-      </p>
+      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20 }}>Appearance</div>
 
-      <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 12 }}>
-        {themeOptions.map(t => {
-          const isActive = currentTheme === t.id;
+      {/* Preview thumbnails — iPhone style */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: isMobile ? 20 : 32, marginBottom: 28 }}>
+        {previews.map(p => {
+          const isActive = preference === p.id;
           return (
             <button
-              key={t.id}
-              onClick={() => handleThemeChange(t.id)}
+              key={p.id}
+              onClick={() => handleThemeChange(p.id)}
               style={{
-                flex: 1, padding: 20, borderRadius: 18, cursor: "pointer",
-                border: isActive ? `2px solid ${t.colors.accent}` : "2px solid rgba(255,255,255,0.06)",
-                background: isActive ? `${t.colors.accent}10` : "rgba(255,255,255,0.03)",
-                transition: "all 0.25s ease",
-                textAlign: "left",
-                outline: "none",
-                position: "relative",
+                background: 'none', border: 'none', cursor: 'pointer', outline: 'none',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
+                padding: 0, opacity: isActive ? 1 : 0.55,
+                transition: 'opacity 0.3s ease, transform 0.3s ease',
+                transform: isActive ? 'scale(1)' : 'scale(0.95)',
               }}
             >
-              {/* Active indicator */}
-              {isActive && (
-                <div style={{
-                  position: "absolute", top: 10, right: 10, width: 20, height: 20,
-                  borderRadius: "50%", background: t.colors.accent,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 11, color: t.id === 'light' ? '#fff' : '#000', fontWeight: 800,
-                }}>✓</div>
-              )}
-
-              {/* Theme preview swatch */}
-              <div style={{
-                width: "100%", height: 48, borderRadius: 10, marginBottom: 14, overflow: "hidden",
-                display: "flex", border: `1px solid ${t.id === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)'}`,
-              }}>
-                <div style={{ flex: 2, background: t.colors.bg }} />
-                <div style={{ flex: 1, background: t.colors.surface }} />
-                <div style={{ flex: 0.5, background: t.colors.accent }} />
+              {/* Screen previews */}
+              <div style={{ display: 'flex', gap: p.screens.length > 1 ? -8 : 0, position: 'relative' }}>
+                {p.screens.map((s, i) => (
+                  <div key={i} style={{
+                    position: 'relative',
+                    zIndex: p.screens.length - i,
+                    transform: p.screens.length > 1 ? `translateX(${i * -6}px) rotate(${i === 0 ? -3 : 3}deg)` : 'none',
+                  }}>
+                    <MiniScreen screen={s} width={isMobile ? 54 : 64} height={isMobile ? 76 : 88} />
+                  </div>
+                ))}
               </div>
 
               {/* Label */}
-              <div style={{ fontSize: 15, fontWeight: 700, color: isActive ? t.colors.accent : "rgba(255,255,255,0.8)", marginBottom: 4 }}>
-                <span style={{ marginRight: 6 }}>{t.icon}</span>{t.label}
+              <span style={{
+                fontSize: 12, fontWeight: isActive ? 600 : 400,
+                color: isActive ? '#00D4FF' : 'rgba(255,255,255,0.5)',
+                transition: 'color 0.3s ease',
+              }}>
+                {options.find(o => o.id === p.id)?.label}
+              </span>
+
+              {/* Active radio dot */}
+              <div style={{
+                width: 20, height: 20, borderRadius: '50%',
+                border: isActive ? 'none' : '2px solid rgba(255,255,255,0.15)',
+                background: isActive ? '#00D4FF' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'all 0.3s ease',
+              }}>
+                {isActive && (
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M2 5.5L4 7.5L8 3" stroke="#000" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
               </div>
-              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", lineHeight: 1.4 }}>{t.desc}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* iOS Segmented Control */}
+      <div style={{
+        position: 'relative',
+        display: 'flex',
+        background: 'rgba(255,255,255,0.06)',
+        borderRadius: 10,
+        padding: 2,
+        gap: 0,
+      }}>
+        {/* Sliding pill */}
+        <div style={{
+          position: 'absolute',
+          top: 2, left: `calc(${(activeIdx / options.length) * 100}% + 2px)`,
+          width: `calc(${100 / options.length}% - 4px)`,
+          height: 'calc(100% - 4px)',
+          borderRadius: 8,
+          background: 'rgba(255,255,255,0.12)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.15), inset 0 0.5px 0 rgba(255,255,255,0.15)',
+          transition: 'left 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
+          zIndex: 1,
+        }} />
+
+        {options.map(opt => {
+          const isActive = preference === opt.id;
+          return (
+            <button
+              key={opt.id}
+              onClick={() => handleThemeChange(opt.id)}
+              style={{
+                flex: 1,
+                position: 'relative',
+                zIndex: 2,
+                padding: '8px 0',
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                outline: 'none',
+                fontSize: 13,
+                fontWeight: isActive ? 600 : 400,
+                color: isActive ? '#fff' : 'rgba(255,255,255,0.45)',
+                transition: 'color 0.3s ease, font-weight 0.3s ease',
+                letterSpacing: isActive ? '0.01em' : '0',
+              }}
+            >
+              {opt.label}
             </button>
           );
         })}

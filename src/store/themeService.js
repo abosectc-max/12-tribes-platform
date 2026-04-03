@@ -14,9 +14,9 @@ const THEMES = {
     name: 'Dark',
     label: 'dark',
     colors: {
-      background: '#0a0a1a',
-      surface: 'rgba(20, 20, 40, 0.6)',
-      glass: 'rgba(255, 255, 255, 0.07)',
+      background: '#0f1225',
+      surface: 'rgba(22, 24, 48, 0.5)',
+      glass: 'rgba(255, 255, 255, 0.05)',
       text: '#ffffff',
       textSecondary: 'rgba(255, 255, 255, 0.6)',
       textTertiary: 'rgba(255, 255, 255, 0.4)',
@@ -44,9 +44,9 @@ const THEMES = {
     name: 'Light',
     label: 'light',
     colors: {
-      background: '#F5F7FA',
-      surface: 'rgba(255, 255, 255, 0.85)',
-      glass: 'rgba(255, 255, 255, 0.65)',
+      background: '#F2F4F8',
+      surface: 'rgba(255, 255, 255, 0.8)',
+      glass: 'rgba(255, 255, 255, 0.6)',
       text: '#111827',
       textSecondary: 'rgba(17, 24, 39, 0.6)',
       textTertiary: 'rgba(17, 24, 39, 0.4)',
@@ -112,13 +112,33 @@ const THEMES = {
 };
 
 /**
- * Get current active theme name
- * @returns {string} Theme name (dark, midnight, etc.)
+ * Resolve 'auto' to the actual theme based on system preference
+ * @returns {string} Resolved theme name
+ */
+function resolveAutoTheme() {
+  if (typeof window === 'undefined') return DEFAULT_THEME;
+  const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches;
+  return prefersDark ? 'dark' : 'light';
+}
+
+/**
+ * Get the stored preference (may be 'auto')
+ * @returns {string} Raw stored preference
+ */
+export function getThemePreference() {
+  if (typeof window === 'undefined') return DEFAULT_THEME;
+  return localStorage.getItem(STORAGE_KEY) || DEFAULT_THEME;
+}
+
+/**
+ * Get current active theme name (resolves 'auto' to actual theme)
+ * @returns {string} Theme name (dark, light, midnight)
  */
 export function getTheme() {
   if (typeof window === 'undefined') return DEFAULT_THEME;
 
   const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored === 'auto') return resolveAutoTheme();
   if (stored && THEMES[stored]) {
     return stored;
   }
@@ -127,19 +147,20 @@ export function getTheme() {
 
 /**
  * Set theme and persist preference
- * @param {string} themeName - Theme name (dark, midnight, etc.)
+ * @param {string} themeName - Theme name (dark, light, midnight, auto)
  * @returns {boolean} Success status
  */
 export function setTheme(themeName) {
   if (typeof window === 'undefined') return false;
 
-  if (!THEMES[themeName]) {
+  if (themeName !== 'auto' && !THEMES[themeName]) {
     console.warn(`Theme "${themeName}" not found`);
     return false;
   }
 
   localStorage.setItem(STORAGE_KEY, themeName);
-  applyTheme(themeName);
+  const resolved = themeName === 'auto' ? resolveAutoTheme() : themeName;
+  applyTheme(resolved);
   return true;
 }
 
@@ -322,16 +343,28 @@ export function getCurrentThemeInfo() {
 
 /**
  * Initialize theme service on app load
- * Applies saved theme or default
+ * Applies saved theme or default, sets up system preference listener for 'auto'
  */
 export function initializeTheme() {
   if (typeof window === 'undefined') return;
 
   const savedTheme = localStorage.getItem(STORAGE_KEY);
-  if (savedTheme && THEMES[savedTheme]) {
+  if (savedTheme === 'auto') {
+    applyTheme(resolveAutoTheme());
+  } else if (savedTheme && THEMES[savedTheme]) {
     applyTheme(savedTheme);
   } else {
     applyTheme(DEFAULT_THEME);
+  }
+
+  // Listen for system preference changes when in 'auto' mode
+  const mql = window.matchMedia?.('(prefers-color-scheme: dark)');
+  if (mql?.addEventListener) {
+    mql.addEventListener('change', () => {
+      if (localStorage.getItem(STORAGE_KEY) === 'auto') {
+        applyTheme(resolveAutoTheme());
+      }
+    });
   }
 }
 

@@ -1,14 +1,14 @@
 :root {
-  --glass-bg: rgba(255, 255, 255, 0.04);
-  --glass-border: 1px solid rgba(255, 255, 255, 0.15);
-  --glass-blur: blur(40px) saturate(180%);
-  --glass-shadow: 0 8px 40px rgba(0, 0, 0, 0.08), 0 0 120px rgba(180, 200, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  --glass-bg: rgba(255, 255, 255, 0.05);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.12);
+  --glass-blur: blur(64px) saturate(200%);
+  --glass-shadow: 0 8px 48px rgba(0, 0, 0, 0.06), 0 0 100px rgba(180, 200, 255, 0.04), inset 0 0.5px 0 rgba(255, 255, 255, 0.35);
   --accent-primary: #00D4FF;
   --accent-hover: rgba(0, 212, 255, 0.2);
   --accent-active: rgba(0, 212, 255, 0.15);
   --text-primary: #ffffff;
   --text-muted: rgba(255, 255, 255, 0.5);
-  --bg-dark: #0a0a1a;
+  --bg-dark: #0f1225;
 }
 
 @keyframes fadeInUp {
@@ -60,6 +60,7 @@ html, body, #root {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.4s ease;
 }
 
 #root > div {
@@ -107,7 +108,7 @@ a {
 html[data-theme="light"],
 html[data-theme="light"] body,
 html[data-theme="light"] #root {
-  background: #F5F7FA !important;
+  background: #F2F4F8 !important;
   color: #111827 !important;
 }
 
@@ -131,11 +132,13 @@ html[data-theme="light"] #root {
 [data-theme="light"] [style*="background: #0a0a1a"],
 [data-theme="light"] [style*="background: rgb(10, 10, 26)"],
 [data-theme="light"] [style*="background:#0a0a1a"],
+[data-theme="light"] [style*="background: #0f1225"],
+[data-theme="light"] [style*="background:#0f1225"],
 [data-theme="light"] [style*="background: #0B1A3B"],
 [data-theme="light"] [style*="background:#0B1A3B"],
 [data-theme="light"] [style*="background: #000"],
 [data-theme="light"] [style*="background:#000"] {
-  background: #F5F7FA !important;
+  background: #F2F4F8 !important;
 }
 
 /* Dark surface containers */
@@ -253,6 +256,6 @@ html[data-theme="light"] #root {
 }
 
 /* Smooth transition on theme change */
-html, body, #root, [style] {
-  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+html, body, #root {
+  transition: background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), color 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
