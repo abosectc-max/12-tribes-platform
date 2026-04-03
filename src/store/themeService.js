@@ -53,7 +53,7 @@ const THEMES = {
     label: 'light',
     colors: {
       // Page background — near-white with faint cool tint (gradient applied via CSS)
-      background: '#F4F8FF',
+      background: '#F9FBFF',
       // Frosted glass surfaces
       surface: 'rgba(255, 255, 255, 0.82)',
       glass: 'rgba(255, 255, 255, 0.72)',

@@ -284,7 +284,7 @@ html[data-theme="light"] body,
 html[data-theme="light"] #root,
 [data-theme="light"] body,
 [data-theme="light"] #root {
-  background: linear-gradient(160deg, #F4F8FF 0%, #FAFCFF 50%, #F6F8FC 100%) !important;
+  background: linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
   background-attachment: fixed !important;
   color: #0F172A !important;
 }
