@@ -3160,7 +3160,7 @@ api.post('/api/auth/login', async (req, res) => {
   }
   // Fallback: if no admin exists at all, promote first user
   if (!db.findOne('users', u => u.role === 'admin')) {
-    const first = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))[0];
+    const first = db.findMany('users').sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0];
     if (first && first.id === user.id) user.role = 'admin';
   }
 
@@ -3800,7 +3800,7 @@ api.get('/api/auth/me', auth, (req, res) => {
   }
   // Fallback: if no admin exists at all, promote first user
   if (!db.findOne('users', u => u.role === 'admin')) {
-    const first = db.findMany('users').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))[0];
+    const first = db.findMany('users').sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0];
     if (first && first.id === user.id) {
       user.role = 'admin';
       db._save('users');
@@ -3906,7 +3906,7 @@ api.get('/api/access-requests', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
 
-  const allRequests = db.findMany('access_requests').sort((a, b) => (b.submitted_at || '').localeCompare(a.submitted_at || ''));
+  const allRequests = db.findMany('access_requests').sort((a, b) => String(b.submitted_at || '').localeCompare(String(a.submitted_at || '')));
   // Only return pending requests to admin — approved/denied are removed from view
   const pendingRequests = allRequests.filter(r => r.status === 'pending');
   json(res, 200, pendingRequests);
@@ -4484,12 +4484,12 @@ function saveFullPlatformBackup() {
   const filepath = join(PROFILE_BACKUP_DIR, filename);
   writeFileSync(filepath, JSON.stringify(bundle, null, 2));
 
-  // Prune old full backups (keep last 5)
+  // Prune old full backups (keep last 3)
   try {
     const fullBackups = readdirSync(PROFILE_BACKUP_DIR)
       .filter(f => f.startsWith('full_backup_') && f.endsWith('.json'))
       .sort();
-    while (fullBackups.length > 5) {
+    while (fullBackups.length > 3) {
       const oldest = fullBackups.shift();
       try { unlinkSync(join(PROFILE_BACKUP_DIR, oldest)); } catch {}
     }
@@ -4563,7 +4563,7 @@ api.get('/api/admin/backup/list', auth, (req, res) => {
         const stat = statSync(fp);
         return { filename: f, size: stat.size, modified: stat.mtime.toISOString() };
       })
-      .sort((a, b) => b.modified.localeCompare(a.modified));
+      .sort((a, b) => String(b.modified || '').localeCompare(String(a.modified || '')));
 
     json(res, 200, {
       backupDir: PROFILE_BACKUP_DIR,
@@ -4749,18 +4749,23 @@ setInterval(() => {
   }
 }, 60 * 1000); // Every 60 seconds
 
-// ─── AUTO PROFILE BACKUP: Runs every 30 minutes alongside DB rotation ───
-const PROFILE_BACKUP_INTERVAL_MS = 1800000; // 30 minutes
+// ─── BACKUP STRATEGY (STANDARD) ───
+// Layer 1: JsonDB rotation backups — every 5 min, 10 rotations per table (in-process, line 141)
+// Layer 2: PG recovery snapshots — every 6 hours, captures wallet/user/position state (line 10738+)
+// Layer 3: Full profile backup — once daily (24h interval), keeps last 3 copies
+// Layer 4: On-demand via POST /api/admin/recovery/snapshot-now
+
+const PROFILE_BACKUP_INTERVAL_MS = 86400000; // 24 hours (daily)
 const profileBackupInterval = setInterval(() => {
   try {
     const result = saveFullPlatformBackup();
-    console.log(`[AUTO-BACKUP] Platform profile backup: ${result.userCount} users → ${result.filename}`);
+    console.log(`[DAILY-BACKUP] Platform profile backup: ${result.userCount} users → ${result.filename}`);
   } catch (err) {
-    console.error(`[AUTO-BACKUP] Profile backup failed: ${err.message}`);
+    console.error(`[DAILY-BACKUP] Profile backup failed: ${err.message}`);
   }
 }, PROFILE_BACKUP_INTERVAL_MS);
 
-// Run initial profile backup on boot (after a 60-second delay to let data stabilize)
+// Run initial profile backup on boot (after 5 minutes to let data stabilize and table caps run)
 setTimeout(() => {
   try {
     const result = saveFullPlatformBackup();
@@ -4768,7 +4773,7 @@ setTimeout(() => {
   } catch (err) {
     console.error(`[BOOT-BACKUP] Initial profile backup failed: ${err.message}`);
   }
-}, 60000);
+}, 300000); // 5 minutes
 
 // ═══════════════════════════════════════════════════════════════════════
 //   CLOUD PERSISTENCE ENGINE — Survives Render Ephemeral Wipes
@@ -6214,6 +6219,71 @@ api.post('/api/admin/error-log/clear', auth, (req, res) => {
   json(res, 200, { success: true, message: 'Error log cleared' });
 });
 
+// ─── DATA PURGE & MAINTENANCE ───
+
+// Table size caps — prevents unbounded growth of high-volume tables
+const TABLE_CAPS = {
+  risk_events: 100,
+  trade_flags: 100,
+  auto_trade_log: 100,
+  post_mortems: 50,
+  snapshots: 100,
+  login_log: 200,
+  qa_reports: 30,
+  signals: 500,
+};
+
+function enforceTableCaps() {
+  let purged = 0;
+  for (const [table, maxRows] of Object.entries(TABLE_CAPS)) {
+    const rows = db.findMany(table);
+    if (rows.length > maxRows) {
+      // Sort by created_at ascending (oldest first), remove excess
+      const sorted = rows.sort((a, b) => String(a.created_at || a.timestamp || '').localeCompare(String(b.created_at || b.timestamp || '')));
+      const toRemove = sorted.slice(0, rows.length - maxRows);
+      for (const r of toRemove) {
+        db.remove(table, rec => rec.id === r.id);
+      }
+      purged += toRemove.length;
+      console.log(`[DataPurge] ${table}: removed ${toRemove.length} old records (${rows.length} → ${maxRows})`);
+    }
+  }
+  return purged;
+}
+
+// Run table caps on boot (after 30s to let data load)
+setTimeout(() => {
+  try {
+    const purged = enforceTableCaps();
+    if (purged > 0) console.log(`[Boot] Data purge complete: ${purged} stale records removed`);
+  } catch (e) { console.error('[Boot] Data purge failed:', e.message); }
+}, 30000);
+
+// Admin: manual purge endpoint
+api.post('/api/admin/purge-stale', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  try {
+    const purged = enforceTableCaps();
+    // Also clear error log if > 200
+    const errorsPurged = errorLog.length > 200 ? errorLog.splice(0, errorLog.length - 200).length : 0;
+    json(res, 200, { success: true, recordsPurged: purged, errorsPurged, tableCaps: TABLE_CAPS });
+  } catch (err) {
+    json(res, 500, { error: 'Purge failed', message: err.message });
+  }
+});
+
+// Admin: get table sizes for monitoring
+api.get('/api/admin/table-sizes', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const sizes = {};
+  for (const table of DB_TABLES) {
+    sizes[table] = db.findMany(table).length;
+  }
+  json(res, 200, { success: true, sizes, caps: TABLE_CAPS });
+});
+
 // ─── WITHDRAWAL REQUESTS ───
 
 // Submit a withdrawal request (any authenticated investor)
@@ -6418,7 +6488,7 @@ api.get('/api/wallet/performance', auth, (req, res) => {
   if (!wallet) return json(res, 404, { error: 'Wallet not found' });
 
   const period = req.query.period || 'monthly';
-  const snaps = db.findMany('snapshots', s => s.user_id === req.userId).sort((a, b) => a.date.localeCompare(b.date));
+  const snaps = db.findMany('snapshots', s => s.user_id === req.userId).sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
 
   const currentEquity = wallet.equity;
   const startEquity = snaps.length > 0 ? snaps[0].equity : wallet.initial_balance;
@@ -11173,8 +11243,13 @@ api.get('/api/signals', auth, (req, res) => {
   const action = req.query?.action; // EXECUTED, REJECTED, FILTERED
   const outcome = req.query?.outcome; // WIN, LOSS, PENDING
 
-  let signals = db.findMany('signals', s => s.user_id === req.userId)
-    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+  // Admin sees ALL signals; investors see only their own
+  const user = db.findOne('users', u => u.id === req.userId);
+  const isAdmin = user && user.role === 'admin';
+  let signals = isAdmin
+    ? db.findMany('signals')
+    : db.findMany('signals', s => s.user_id === req.userId);
+  signals = signals.sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
 
   if (agent) signals = signals.filter(s => s.agent === agent);
   if (symbol) signals = signals.filter(s => s.symbol === symbol.toUpperCase());
@@ -11195,7 +11270,11 @@ api.get('/api/signals/stats', auth, (req, res) => {
 // Live signal feed — real-time buffer (last 200 signals across all users)
 api.get('/api/signals/live', auth, (req, res) => {
   const limit = Math.min(parseInt(req.query?.limit) || 50, 200);
-  const userSignals = signalBuffer.filter(s => s.user_id === req.userId).slice(-limit);
+  const user = db.findOne('users', u => u.id === req.userId);
+  const isAdmin = user && user.role === 'admin';
+  const userSignals = isAdmin
+    ? signalBuffer.slice(-limit)
+    : signalBuffer.filter(s => s.user_id === req.userId).slice(-limit);
   json(res, 200, { signals: userSignals, bufferSize: signalBuffer.length });
 });
 
@@ -11245,7 +11324,11 @@ api.get('/api/admin/trades/recent', auth, (req, res) => {
 
     const limit = Math.min(parseInt(new URL(req.url, `http://${req.headers.host}`).searchParams.get('limit')) || 25, 100);
     const allTrades = db.findMany('trades')
-      .sort((a, b) => (b.closed_at || b.opened_at || '').localeCompare(a.closed_at || a.opened_at || ''))
+      .sort((a, b) => {
+        const dateA = String(a.closed_at || a.opened_at || '');
+        const dateB = String(b.closed_at || b.opened_at || '');
+        return dateB.localeCompare(dateA);
+      })
       .slice(0, limit);
 
     // Enrich with user info
@@ -14122,5 +14205,8 @@ process.on('uncaughtException', (err) => {
   console.error('[FATAL] Uncaught exception:', err.message, err.stack);
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[FATAL] Unhandled rejection:', reason);
+  const msg = reason instanceof Error
+    ? `${reason.message} | ${reason.stack?.split('\n')[1]?.trim() || ''}`
+    : JSON.stringify(reason) === '{}' ? '(empty promise rejection — likely ENOSPC or PG write failure)' : String(reason);
+  console.error('[FATAL] Unhandled rejection:', msg);
 });
