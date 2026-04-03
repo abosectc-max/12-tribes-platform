@@ -572,6 +572,8 @@ html {
   text-size-adjust: 100%;
   /* Smooth momentum scrolling on iOS */
   scroll-behavior: smooth;
+  /* Prevent horizontal scroll caused by fixed elements bleeding off-screen */
+  overflow-x: hidden;
 }
 
 body {
