@@ -44,39 +44,51 @@ const THEMES = {
     name: 'Light',
     label: 'light',
     colors: {
-      background: '#F2F4F8',
-      surface: 'rgba(255, 255, 255, 0.8)',
-      glass: 'rgba(255, 255, 255, 0.6)',
-      text: '#111827',
-      textSecondary: 'rgba(17, 24, 39, 0.6)',
-      textTertiary: 'rgba(17, 24, 39, 0.4)',
-      accent: '#0077CC',
-      accentHover: '#005FA3',
-      accentActive: '#004D85',
+      // Page background — subtle cool-blue gradient (applied via CSS, fallback here)
+      background: '#EBF2FF',
+      // Frosted glass surfaces
+      surface: 'rgba(255, 255, 255, 0.82)',
+      glass: 'rgba(255, 255, 255, 0.72)',
+      // Text — high-contrast dark slate hierarchy
+      text: '#0F172A',
+      textSecondary: 'rgba(15, 23, 42, 0.62)',
+      textTertiary: 'rgba(15, 23, 42, 0.38)',
+      // Accent — rich financial blue
+      accent: '#0066CC',
+      accentHover: '#0052A3',
+      accentActive: '#003D7A',
+      // Semantic colors
       success: '#059669',
       danger: '#DC2626',
       warning: '#D97706',
-      border: 'rgba(0, 0, 0, 0.1)',
-      borderLight: 'rgba(0, 0, 0, 0.05)',
-      glow: 'rgba(0, 119, 204, 0.08)',
-      glowIntense: 'rgba(0, 119, 204, 0.2)',
-      overlay: 'rgba(245, 247, 250, 0.85)',
-      scrollbar: 'rgba(0, 119, 204, 0.3)',
-      scrollbarTrack: 'rgba(0, 0, 0, 0.05)',
-      glassBg: 'rgba(255, 255, 255, 0.7)',
-      glassBorder: 'rgba(0, 0, 0, 0.08)',
-      glassShadow: '0 4px 24px rgba(0,0,0,0.06), 0 0 0 0.5px rgba(0,0,0,0.04)',
+      // Borders — fine and airy
+      border: 'rgba(0, 0, 0, 0.07)',
+      borderLight: 'rgba(0, 0, 0, 0.04)',
+      // Glow — blue-tinted, soft
+      glow: 'rgba(0, 102, 204, 0.07)',
+      glowIntense: 'rgba(0, 102, 204, 0.18)',
+      // Overlays
+      overlay: 'rgba(240, 246, 255, 0.88)',
+      // Scrollbar
+      scrollbar: 'rgba(15, 23, 42, 0.15)',
+      scrollbarTrack: 'rgba(15, 23, 42, 0.03)',
+      // Glass card tokens
+      glassBg: 'rgba(255, 255, 255, 0.78)',
+      glassBorder: 'rgba(0, 0, 0, 0.06)',
+      glassShadow: '0 2px 4px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.07), 0 0 0 0.5px rgba(0,0,0,0.05), inset 0 0.5px 0 rgba(255,255,255,1)',
       cardBg: '#ffffff',
-      navText: 'rgba(17, 24, 39, 0.5)',
-      navActive: '#0077CC',
-      navActiveBg: 'rgba(0, 119, 204, 0.1)',
-      inputBg: 'rgba(0, 0, 0, 0.03)',
-      inputBorder: 'rgba(0, 0, 0, 0.08)',
+      // Nav
+      navText: 'rgba(15, 23, 42, 0.48)',
+      navActive: '#0066CC',
+      navActiveBg: 'rgba(0, 102, 204, 0.09)',
+      // Inputs
+      inputBg: 'rgba(255, 255, 255, 0.75)',
+      inputBorder: 'rgba(0, 0, 0, 0.12)',
     },
     preview: {
-      primary: '#0077CC',
-      secondary: '#F5F7FA',
-      accent: '#111827'
+      primary: '#0066CC',
+      secondary: '#EBF2FF',
+      accent: '#0F172A'
     }
   },
   midnight: {
