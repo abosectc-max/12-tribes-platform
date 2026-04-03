@@ -3084,7 +3084,7 @@ const VALID_AGENT_NAMES = new Set(['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Ph
 // ─── AUTH: REGISTER ───
 api.post('/api/auth/register', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-  if (!rateLimit(`register:${ip}`, 3, 3600000)) {
+  if (!rateLimit(`register:${ip}`, 10, 3600000)) {
     return json(res, 429, { error: 'Too many registration attempts. Try again in 1 hour.' });
   }
 
@@ -4230,9 +4230,12 @@ api.get('/api/access-requests', auth, (req, res) => {
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin access required' });
 
   const allRequests = db.findMany('access_requests').sort((a, b) => String(b.submitted_at || '').localeCompare(String(a.submitted_at || '')));
-  // Only return pending requests to admin — approved/denied are removed from view
-  const pendingRequests = allRequests.filter(r => r.status === 'pending');
-  json(res, 200, pendingRequests);
+  // Filter by status query param if provided; default returns all so admin has full audit trail
+  const statusFilter = req.query?.status;
+  const filtered = statusFilter && statusFilter !== 'all'
+    ? allRequests.filter(r => r.status === statusFilter)
+    : allRequests;
+  json(res, 200, filtered);
 });
 
 // Approve or deny a request (admin only)

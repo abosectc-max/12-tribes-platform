@@ -6776,6 +6776,48 @@ function AdminPanel({ investor, isMobile }) {
             </div>
           )}
 
+          {/* Resolved requests — audit trail */}
+          {(() => {
+            const resolved = requests.filter(r => r.status === 'approved' || r.status === 'denied');
+            if (resolved.length === 0) return null;
+            return (
+              <div style={{ marginBottom: 24 }}>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.3)', margin: '0 0 10px', textTransform: 'uppercase', letterSpacing: 1 }}>
+                  Resolved ({resolved.length})
+                </h3>
+                {resolved.map(r => {
+                  const isApproved = r.status === 'approved';
+                  return (
+                    <div key={r.id} style={{ ...glass, padding: '12px 16px', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', opacity: 0.7 }}>
+                      <div style={{
+                        width: 32, height: 32, borderRadius: 8,
+                        background: isApproved ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.1)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 12, fontWeight: 700, color: isApproved ? '#10B981' : '#EF4444', flexShrink: 0,
+                      }}>{(r.first_name?.[0] || '') + (r.last_name?.[0] || '')}</div>
+                      <div style={{ flex: 1, minWidth: 120 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>{r.first_name} {r.last_name}</div>
+                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>{r.email}</div>
+                        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 2 }}>
+                          Submitted {new Date(r.submitted_at).toLocaleDateString()}
+                          {r.reviewed_at && ` · Reviewed ${new Date(r.reviewed_at).toLocaleDateString()}`}
+                        </div>
+                      </div>
+                      <span style={{
+                        padding: '4px 10px', borderRadius: 8, fontSize: 11, fontWeight: 700,
+                        background: isApproved ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.1)',
+                        color: isApproved ? '#10B981' : '#EF4444',
+                        border: `1px solid ${isApproved ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.2)'}`,
+                      }}>
+                        {isApproved ? '✓ Approved' : '✕ Denied'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
         </>
       )}
 
