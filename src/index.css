@@ -149,13 +149,29 @@ html[data-theme="light"] #root {
   background: rgba(255, 255, 255, 0.85) !important;
 }
 
-/* White text → dark text */
+/* White text → soft dark text (body) */
 [data-theme="light"] [style*="color: #fff"],
 [data-theme="light"] [style*="color:#fff"],
 [data-theme="light"] [style*="color: #FFF"],
 [data-theme="light"] [style*="color: rgb(255, 255, 255)"],
 [data-theme="light"] [style*="color: white"] {
-  color: #111827 !important;
+  color: #374151 !important;
+}
+
+/* Headers (bold text) → light gray in light mode
+   React renders fontWeight as font-weight in DOM style attribute */
+[data-theme="light"] [style*="font-weight: 700"],
+[data-theme="light"] [style*="font-weight: 800"],
+[data-theme="light"] [style*="font-weight: 900"],
+[data-theme="light"] h1, [data-theme="light"] h2, [data-theme="light"] h3,
+[data-theme="light"] h4, [data-theme="light"] h5, [data-theme="light"] h6 {
+  color: #9CA3AF !important;
+}
+
+/* Semi-bold (600) headers also light gray */
+[data-theme="light"] [style*="font-weight: 600"][style*="font-size: 1"],
+[data-theme="light"] [style*="font-weight: 600"][style*="font-size: 2"] {
+  color: #9CA3AF !important;
 }
 
 /* Muted white text → muted dark text */
