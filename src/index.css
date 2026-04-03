@@ -118,12 +118,14 @@ a {
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── 1. BACKGROUND — deep gradient with ambient character ────── */
-html:not([data-theme="light"]),
-html:not([data-theme="light"]) body,
-html:not([data-theme="light"]) #root,
+/* Only activates on EXPLICIT dark/midnight — never bleeds into   */
+/* light mode via :not() selectors                                */
 html[data-theme="dark"],
 html[data-theme="dark"] body,
 html[data-theme="dark"] #root,
+html[data-theme="midnight"],
+html[data-theme="midnight"] body,
+html[data-theme="midnight"] #root,
 [data-theme="dark"] body,
 [data-theme="dark"] #root {
   /* Ambient cyan whisper top-left, purple hint bottom-right      */
@@ -276,13 +278,13 @@ html[data-theme="dark"] #root,
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── 1. ROOT BACKGROUND ──────────────────────────────────────── */
-/* Subtle cool-blue gradient — gives the page air and depth      */
+/* Near-white with the faintest cool tint — airy, not blue-gray  */
 html[data-theme="light"],
 html[data-theme="light"] body,
 html[data-theme="light"] #root,
 [data-theme="light"] body,
 [data-theme="light"] #root {
-  background: linear-gradient(160deg, #EBF2FF 0%, #F5F8FF 45%, #EDF1F9 100%) !important;
+  background: linear-gradient(160deg, #F4F8FF 0%, #FAFCFF 50%, #F6F8FC 100%) !important;
   background-attachment: fixed !important;
   color: #0F172A !important;
 }

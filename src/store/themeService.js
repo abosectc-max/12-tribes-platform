@@ -52,8 +52,8 @@ const THEMES = {
     name: 'Light',
     label: 'light',
     colors: {
-      // Page background — subtle cool-blue gradient (applied via CSS, fallback here)
-      background: '#EBF2FF',
+      // Page background — near-white with faint cool tint (gradient applied via CSS)
+      background: '#F4F8FF',
       // Frosted glass surfaces
       surface: 'rgba(255, 255, 255, 0.82)',
       glass: 'rgba(255, 255, 255, 0.72)',
@@ -95,7 +95,7 @@ const THEMES = {
     },
     preview: {
       primary: '#0066CC',
-      secondary: '#EBF2FF',
+      secondary: '#F4F8FF',
       accent: '#0F172A'
     }
   },
