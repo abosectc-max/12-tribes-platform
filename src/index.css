@@ -131,6 +131,7 @@ html[data-theme="midnight"] #root,
   /* Ambient cyan whisper top-left, purple hint bottom-right      */
   /* Both at <4% — visible as depth, invisible as color           */
   background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Cfilter id='s'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7 0.8' numOctaves='4' seed='5' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23s)' opacity='0.07'/%3E%3C/svg%3E") repeat,
     radial-gradient(ellipse 70% 55% at 15% -5%,  rgba(0, 212, 255, 0.038) 0%, transparent 65%),
     radial-gradient(ellipse 55% 70% at 85% 105%, rgba(139, 92, 246, 0.028) 0%, transparent 65%),
     linear-gradient(162deg, #0D1335 0%, #0B0F1E 48%, #08091A 100%) !important;
@@ -284,7 +285,9 @@ html[data-theme="light"] body,
 html[data-theme="light"] #root,
 [data-theme="light"] body,
 [data-theme="light"] #root {
-  background: linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Cfilter id='s'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7 0.8' numOctaves='4' seed='5' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23s)' opacity='0.04'/%3E%3C/svg%3E") repeat,
+    linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
   background-attachment: fixed !important;
   color: #0F172A !important;
 }
@@ -341,7 +344,9 @@ html[data-theme="light"] [style*="min-height: 100vh"],
 html[data-theme="light"] [style*="min-height:100vh"],
 [data-theme="light"] [style*="min-height: 100vh"],
 [data-theme="light"] [style*="min-height:100vh"] {
-  background: linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Cfilter id='s'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7 0.8' numOctaves='4' seed='5' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23s)' opacity='0.04'/%3E%3C/svg%3E") repeat,
+    linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
 }
 
 /* Also keep rgb()-normalized versions as belt-and-suspenders      */
@@ -350,7 +355,9 @@ html[data-theme="light"] [style*="min-height:100vh"],
 [data-theme="light"] [style*="linear-gradient"][style*="rgb(10, 15, 30)"],
 [data-theme="light"] [style*="linear-gradient"][style*="rgb(5, 5, 16)"],
 [data-theme="light"] [style*="radial-gradient"][style*="rgb(10, 10, 26)"] {
-  background: linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Cfilter id='s'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7 0.8' numOctaves='4' seed='5' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='256' height='256' filter='url(%23s)' opacity='0.04'/%3E%3C/svg%3E") repeat,
+    linear-gradient(160deg, #F9FBFF 0%, #FEFEFF 50%, #FAFBFE 100%) !important;
 }
 
 [data-theme="light"] [style*="rgba(10, 10, 26"],
