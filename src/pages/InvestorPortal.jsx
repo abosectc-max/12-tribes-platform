@@ -4742,7 +4742,7 @@ function NotificationsSection({ investor }) {
     trade_confirmations: false,
     account_updates: false,
     announcements: false,
-    onboarding: false,
+    onboarding: true,
   });
   const [prefsLoading, setPrefsLoading] = useState(true);
   const [savingKey, setSavingKey] = useState(null); // key currently being saved

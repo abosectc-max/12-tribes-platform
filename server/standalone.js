@@ -4127,7 +4127,7 @@ api.get('/api/auth/login-history', auth, (req, res) => {
 
 // ─── AUTH: EMAIL NOTIFICATION PREFERENCES ───
 const EMAIL_NOTIF_KEYS = ['trade_confirmations', 'account_updates', 'announcements', 'onboarding'];
-const EMAIL_NOTIF_DEFAULTS = { trade_confirmations: false, account_updates: false, announcements: false, onboarding: false };
+const EMAIL_NOTIF_DEFAULTS = { trade_confirmations: false, account_updates: false, announcements: false, onboarding: true };
 
 api.get('/api/auth/notification-prefs', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
