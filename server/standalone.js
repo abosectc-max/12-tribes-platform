@@ -3548,6 +3548,13 @@ api.post('/api/auth/passkey/remove', auth, async (req, res) => {
 //   EMAIL SERVICE (Resend API — zero dependencies)
 // ═══════════════════════════════════════════
 
+// ─── INVESTOR NOTIFICATION GATE ───
+// Set to false to suppress all investor-facing notification emails
+// (trade confirmations, account updates, announcements, welcome emails).
+// Transactional emails (password reset, email verification, access approval)
+// are NOT affected by this flag — they always send.
+const INVESTOR_NOTIFICATIONS_ENABLED = false;
+
 async function sendEmail(to, subject, html) {
   if (!RESEND_API_KEY) {
     console.warn(`[Email] No RESEND_API_KEY set. Would send to ${to}: "${subject}"`);
@@ -3808,6 +3815,7 @@ function onboardingWelcomeHtml(firstName) {
 // ─── SEND FUNCTIONS (use branded template) ───
 
 async function sendAccountUpdateEmail(userId, updateType, details) {
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) { console.log(`[Email] Investor notifications disabled — skipping account update email for user ${userId}`); return; }
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
@@ -3819,6 +3827,7 @@ async function sendAccountUpdateEmail(userId, updateType, details) {
 }
 
 async function sendAnnouncementEmail(userId, headline, body, urgency = 'info') {
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) { console.log(`[Email] Investor notifications disabled — skipping announcement email for user ${userId}`); return; }
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
@@ -3845,6 +3854,7 @@ async function sendBroadcastAnnouncement(headline, body, urgency = 'info') {
 }
 
 async function sendOnboardingWelcomeEmail(userId) {
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) { console.log(`[Email] Investor notifications disabled — skipping onboarding welcome email for user ${userId}`); return; }
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
@@ -4451,8 +4461,8 @@ api.post('/api/admin/users', auth, async (req, res) => {
     created_at: new Date().toISOString(),
   });
 
-  // Send welcome email with temporary password if Resend is configured
-  if (RESEND_API_KEY) {
+  // Send welcome email with temporary password if Resend is configured and notifications are on
+  if (RESEND_API_KEY && INVESTOR_NOTIFICATIONS_ENABLED) {
     try {
       await sendEmail(emailKey, `Welcome to ${APP_NAME}`,
         `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:20px;">
@@ -6139,6 +6149,7 @@ async function alpacaRequest(path, method = 'GET', body = null) {
 }
 
 async function sendTradeConfirmationEmail(userId, trade) {
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) return; // suppressed — high-volume per-trade email
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
