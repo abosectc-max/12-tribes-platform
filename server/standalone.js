@@ -3549,11 +3549,11 @@ api.post('/api/auth/passkey/remove', auth, async (req, res) => {
 // ═══════════════════════════════════════════
 
 // ─── INVESTOR NOTIFICATION GATE ───
-// Set to false to suppress all investor-facing notification emails
-// (trade confirmations, account updates, announcements, welcome emails).
-// Transactional emails (password reset, email verification, access approval)
-// are NOT affected by this flag — they always send.
-const INVESTOR_NOTIFICATIONS_ENABLED = false;
+// Master kill switch for all investor notification emails.
+// When false, suppresses ALL investor notification emails regardless of user prefs.
+// When true (default), each user's individual email_notification_prefs control what they receive.
+// Transactional emails (password reset, email verification, access approval) always send.
+const INVESTOR_NOTIFICATIONS_ENABLED = true;
 
 async function sendEmail(to, subject, html) {
   if (!RESEND_API_KEY) {
@@ -3616,8 +3616,8 @@ async function sendEmail(to, subject, html) {
 //   - SEC/FINRA compliance disclaimers
 // ═══════════════════════════════════════════
 
-const LOGO_URL = `${FRONTEND_ORIGIN}/icons/icon-192.png`;
-const LOGO_FALLBACK_SVG = `${FRONTEND_ORIGIN}/logo-icon.svg`;
+const LOGO_URL = `${FRONTEND_ORIGIN}/logo-icon.svg`;
+const LOGO_URL_PNG = `${FRONTEND_ORIGIN}/icons/icon-192.png`;
 const PLATFORM_URL = `${FRONTEND_ORIGIN}/investor-portal`;
 const SUPPORT_EMAIL = 'support@12tribesinvestments.com';
 
@@ -3659,7 +3659,7 @@ function brandedEmailTemplate(userName, contentHtml, opts = {}) {
           <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
             <tr>
               <td style="padding-right:14px;vertical-align:middle;">
-                <img src="${LOGO_URL}" alt="12 Tribes" width="52" height="52" style="display:block;border-radius:12px;border:1px solid rgba(212,172,13,0.25);" />
+                <img src="${LOGO_URL}" alt="12 Tribes" width="64" height="64" onerror="this.onerror=null;this.src='${LOGO_URL_PNG}';" style="display:block;border-radius:14px;border:1px solid rgba(212,172,13,0.25);box-shadow:0 2px 12px rgba(212,172,13,0.15);" />
               </td>
               <td style="vertical-align:middle;text-align:left;">
                 <div style="font-size:22px;font-weight:800;letter-spacing:1.5px;color:#D4AC0D;line-height:1.1;">12 TRIBES</div>
@@ -3815,9 +3815,10 @@ function onboardingWelcomeHtml(firstName) {
 // ─── SEND FUNCTIONS (use branded template) ───
 
 async function sendAccountUpdateEmail(userId, updateType, details) {
-  if (!INVESTOR_NOTIFICATIONS_ENABLED) { console.log(`[Email] Investor notifications disabled — skipping account update email for user ${userId}`); return; }
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) return;
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
+  if (!(user.email_notification_prefs?.account_updates)) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
   const html = brandedEmailTemplate(firstName, accountUpdateHtml(updateType, details), {
     preheader: details.title || 'Account update from 12 Tribes Investments',
@@ -3827,9 +3828,10 @@ async function sendAccountUpdateEmail(userId, updateType, details) {
 }
 
 async function sendAnnouncementEmail(userId, headline, body, urgency = 'info') {
-  if (!INVESTOR_NOTIFICATIONS_ENABLED) { console.log(`[Email] Investor notifications disabled — skipping announcement email for user ${userId}`); return; }
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) return;
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
+  if (!(user.email_notification_prefs?.announcements)) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
   const html = brandedEmailTemplate(firstName, announcementHtml(headline, body, urgency), {
     preheader: headline,
@@ -3854,9 +3856,10 @@ async function sendBroadcastAnnouncement(headline, body, urgency = 'info') {
 }
 
 async function sendOnboardingWelcomeEmail(userId) {
-  if (!INVESTOR_NOTIFICATIONS_ENABLED) { console.log(`[Email] Investor notifications disabled — skipping onboarding welcome email for user ${userId}`); return; }
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) return;
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
+  if (!(user.email_notification_prefs?.onboarding)) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
   const html = brandedEmailTemplate(firstName, onboardingWelcomeHtml(firstName), {
     preheader: `Welcome to ${APP_NAME} — your AI investment journey begins now`,
@@ -4120,6 +4123,32 @@ api.get('/api/auth/me', auth, (req, res) => {
 api.get('/api/auth/login-history', auth, (req, res) => {
   const logs = db.findMany('login_log', l => l.user_id === req.userId).slice(-50).reverse();
   json(res, 200, logs);
+});
+
+// ─── AUTH: EMAIL NOTIFICATION PREFERENCES ───
+const EMAIL_NOTIF_KEYS = ['trade_confirmations', 'account_updates', 'announcements', 'onboarding'];
+const EMAIL_NOTIF_DEFAULTS = { trade_confirmations: false, account_updates: false, announcements: false, onboarding: false };
+
+api.get('/api/auth/notification-prefs', auth, (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user) return json(res, 404, { error: 'User not found' });
+  json(res, 200, { prefs: { ...EMAIL_NOTIF_DEFAULTS, ...(user.email_notification_prefs || {}) } });
+});
+
+api.put('/api/auth/notification-prefs', auth, async (req, res) => {
+  const body = await readBody(req);
+  const { prefs } = body;
+  if (!prefs || typeof prefs !== 'object') return json(res, 400, { error: 'prefs object required' });
+  const sanitized = {};
+  for (const key of EMAIL_NOTIF_KEYS) {
+    if (key in prefs) sanitized[key] = !!prefs[key];
+  }
+  const existing = db.findOne('users', u => u.id === req.userId);
+  if (!existing) return json(res, 404, { error: 'User not found' });
+  const merged = { ...EMAIL_NOTIF_DEFAULTS, ...(existing.email_notification_prefs || {}), ...sanitized };
+  db.update('users', u => u.id === req.userId, { email_notification_prefs: merged });
+  console.log(`[Email] Notification prefs updated for ${existing.email}: ${JSON.stringify(merged)}`);
+  json(res, 200, { success: true, prefs: merged });
 });
 
 // ─── ACCESS REQUESTS (waitlist / approval gate) ───
@@ -4461,8 +4490,8 @@ api.post('/api/admin/users', auth, async (req, res) => {
     created_at: new Date().toISOString(),
   });
 
-  // Send welcome email with temporary password if Resend is configured and notifications are on
-  if (RESEND_API_KEY && INVESTOR_NOTIFICATIONS_ENABLED) {
+  // Send welcome email with temporary password — transactional, always sends (user needs it to log in)
+  if (RESEND_API_KEY) {
     try {
       await sendEmail(emailKey, `Welcome to ${APP_NAME}`,
         `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:20px;">
@@ -6149,9 +6178,10 @@ async function alpacaRequest(path, method = 'GET', body = null) {
 }
 
 async function sendTradeConfirmationEmail(userId, trade) {
-  if (!INVESTOR_NOTIFICATIONS_ENABLED) return; // suppressed — high-volume per-trade email
+  if (!INVESTOR_NOTIFICATIONS_ENABLED) return;
   const user = db.findOne('users', u => u.id === userId);
   if (!user || !user.email) return;
+  if (!(user.email_notification_prefs?.trade_confirmations)) return;
   const firstName = user.first_name || user.name?.split(' ')[0] || 'Investor';
   const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
   const html = brandedEmailTemplate(firstName, tradeConfirmationHtml(trade), {

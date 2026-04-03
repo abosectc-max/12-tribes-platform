@@ -4692,33 +4692,124 @@ function FeedbackView({ investor, isMobile }) {
 //   NOTIFICATIONS SECTION (Settings)
 // ════════════════════════════════════════
 
-function NotificationsSection() {
+const EMAIL_NOTIF_CONFIG = [
+  {
+    key: "trade_confirmations",
+    label: "Trade Confirmations",
+    description: "Email every time a trade is executed on your account",
+    icon: "⚡",
+    color: "#00D4FF",
+  },
+  {
+    key: "account_updates",
+    label: "Account Updates",
+    description: "Balance changes, ownership adjustments, and capital account events",
+    icon: "💼",
+    color: "#A855F7",
+  },
+  {
+    key: "announcements",
+    label: "Platform Announcements",
+    description: "Fund news, strategy updates, and important notices from 12 Tribes",
+    icon: "📣",
+    color: "#F59E0B",
+  },
+  {
+    key: "onboarding",
+    label: "Onboarding & Welcome",
+    description: "Account setup confirmations and platform onboarding messages",
+    icon: "🏛️",
+    color: "#10B981",
+  },
+];
+
+const API_BASE_NOTIF = (() => {
+  try {
+    if (import.meta?.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
+    const host = window.location.hostname;
+    return host === 'localhost' ? 'http://localhost:4000/api' : 'https://one2-tribes-api.onrender.com/api';
+  } catch { return 'https://one2-tribes-api.onrender.com/api'; }
+})();
+
+function NotificationsSection({ investor }) {
+  // Push notification state
   const [permState, setPermState] = useState(getPermissionState());
   const [testSent, setTestSent] = useState(false);
   const supported = isPushSupported();
+
+  // Email notification prefs
+  const [emailPrefs, setEmailPrefs] = useState({
+    trade_confirmations: false,
+    account_updates: false,
+    announcements: false,
+    onboarding: false,
+  });
+  const [prefsLoading, setPrefsLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState(null); // key currently being saved
+  const [saveMsg, setSaveMsg] = useState(null); // { type, text }
+
+  // Load prefs on mount
+  useEffect(() => {
+    if (!investor) return;
+    const token = (() => { try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; } })();
+    if (!token) { setPrefsLoading(false); return; }
+    fetch(`${API_BASE_NOTIF}/auth/notification-prefs`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(data => { if (data.prefs) setEmailPrefs(data.prefs); })
+      .catch(() => {})
+      .finally(() => setPrefsLoading(false));
+  }, [investor]);
+
+  const handleToggle = async (key) => {
+    haptics.medium();
+    const newVal = !emailPrefs[key];
+    const updated = { ...emailPrefs, [key]: newVal };
+    setEmailPrefs(updated);
+    setSavingKey(key);
+    setSaveMsg(null);
+    try {
+      const token = (() => { try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; } })();
+      const resp = await fetch(`${API_BASE_NOTIF}/auth/notification-prefs`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ prefs: updated }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        haptics.success();
+        setSaveMsg({ type: 'success', text: `${EMAIL_NOTIF_CONFIG.find(c => c.key === key)?.label} ${newVal ? 'enabled' : 'disabled'}` });
+      } else {
+        // Revert on failure
+        setEmailPrefs(prev => ({ ...prev, [key]: !newVal }));
+        haptics.error();
+        setSaveMsg({ type: 'error', text: data.error || 'Failed to save preference' });
+      }
+    } catch {
+      setEmailPrefs(prev => ({ ...prev, [key]: !newVal }));
+      haptics.error();
+      setSaveMsg({ type: 'error', text: 'Network error — preference not saved' });
+    }
+    setSavingKey(null);
+    setTimeout(() => setSaveMsg(null), 3000);
+  };
 
   const handleEnable = async () => {
     haptics.medium();
     const result = await requestPermission();
     setPermState(result);
-    if (result === 'granted') {
-      haptics.success();
-    } else {
-      haptics.error();
-    }
+    if (result === 'granted') haptics.success(); else haptics.error();
   };
 
   const handleTest = async () => {
     haptics.medium();
-    await pushNotify.systemAlert('Notifications are working! You\'ll receive trade alerts, signals, and portfolio updates here.');
+    await pushNotify.systemAlert("Notifications are working! You'll receive trade alerts, signals, and portfolio updates here.");
     setTestSent(true);
     haptics.success();
     setTimeout(() => setTestSent(false), 3000);
   };
 
-  const sectionStyle = {
-    ...glass, padding: 28, marginBottom: 2, borderRadius: 20,
-  };
+  const sectionStyle = { ...glass, padding: 28, marginBottom: 2, borderRadius: 20 };
+  const dividerStyle = { height: 1, background: "rgba(255,255,255,0.06)", margin: "20px 0" };
 
   return (
     <div style={sectionStyle}>
@@ -4726,47 +4817,127 @@ function NotificationsSection() {
         <span style={{ fontSize: 20 }}>🔔</span> Notifications
       </div>
 
-      {!supported ? (
-        <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>
-          Push notifications are not supported on this device/browser. Install the app as a PWA for notification support.
+      {/* ─── EMAIL NOTIFICATIONS ─── */}
+      <div style={{ marginBottom: 4 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.4)", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 16 }}>
+          Email Notifications
         </div>
-      ) : permState === 'granted' ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />
-            <span style={{ fontSize: 14, color: "#10B981", fontWeight: 600 }}>Notifications Enabled</span>
+
+        {prefsLoading ? (
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.3)", padding: "12px 0" }}>Loading preferences…</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {EMAIL_NOTIF_CONFIG.map(cfg => {
+              const isOn = !!emailPrefs[cfg.key];
+              const isSaving = savingKey === cfg.key;
+              return (
+                <div key={cfg.key} style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "14px 16px", borderRadius: 16,
+                  background: isOn ? `${cfg.color}08` : "rgba(255,255,255,0.02)",
+                  border: `1px solid ${isOn ? cfg.color + '25' : 'rgba(255,255,255,0.06)'}`,
+                  transition: "all 0.2s",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      width: 40, height: 40, borderRadius: 12, flexShrink: 0,
+                      background: isOn ? `${cfg.color}18` : "rgba(255,255,255,0.04)",
+                      border: `1px solid ${isOn ? cfg.color + '30' : 'rgba(255,255,255,0.08)'}`,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 18, transition: "all 0.2s",
+                    }}>{cfg.icon}</div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: isOn ? "#fff" : "rgba(255,255,255,0.65)", marginBottom: 2 }}>{cfg.label}</div>
+                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", lineHeight: 1.4 }}>{cfg.description}</div>
+                    </div>
+                  </div>
+                  {/* Toggle switch */}
+                  <button
+                    onClick={() => !isSaving && handleToggle(cfg.key)}
+                    disabled={isSaving}
+                    style={{
+                      position: "relative", width: 48, height: 28, borderRadius: 14,
+                      border: "none", cursor: isSaving ? "wait" : "pointer", flexShrink: 0,
+                      background: isOn ? `linear-gradient(135deg, ${cfg.color}, ${cfg.color}cc)` : "rgba(255,255,255,0.1)",
+                      transition: "all 0.25s", boxShadow: isOn ? `0 2px 12px ${cfg.color}40` : "none",
+                      opacity: isSaving ? 0.6 : 1,
+                    }}
+                  >
+                    <span style={{
+                      position: "absolute", top: 4, left: isOn ? 24 : 4,
+                      width: 20, height: 20, borderRadius: "50%",
+                      background: "#fff", transition: "left 0.25s",
+                      boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+                    }} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
-          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0, lineHeight: 1.6 }}>
-            You'll receive alerts for trade executions, new signals, risk events, and portfolio updates.
-          </p>
-          <button onClick={handleTest} style={{
-            padding: "12px 20px", borderRadius: 14, border: "1px solid rgba(0,212,255,0.3)",
-            background: testSent ? "rgba(16,185,129,0.15)" : "rgba(0,212,255,0.08)",
-            color: testSent ? "#10B981" : "#00D4FF", fontSize: 13, fontWeight: 600,
-            cursor: "pointer", transition: "all 0.2s",
+        )}
+
+        {saveMsg && (
+          <div style={{
+            marginTop: 12, fontSize: 13, padding: "8px 14px", borderRadius: 10,
+            color: saveMsg.type === 'success' ? "#10B981" : "#EF4444",
+            background: saveMsg.type === 'success' ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)",
+            border: `1px solid ${saveMsg.type === 'success' ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
           }}>
-            {testSent ? '✓ Test Sent' : 'Send Test Notification'}
-          </button>
+            {saveMsg.type === 'success' ? '✓' : '✗'} {saveMsg.text}
+          </div>
+        )}
+      </div>
+
+      <div style={dividerStyle} />
+
+      {/* ─── PUSH NOTIFICATIONS ─── */}
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.4)", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 16 }}>
+          Push Notifications
         </div>
-      ) : permState === 'denied' ? (
-        <div style={{ fontSize: 13, color: "rgba(239,68,68,0.8)", lineHeight: 1.6 }}>
-          Notifications are blocked. To enable them, go to your browser settings and allow notifications for this site.
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0, lineHeight: 1.6 }}>
-            Enable push notifications to receive real-time trade alerts, signal updates, risk warnings, and portfolio changes on your device.
-          </p>
-          <button onClick={handleEnable} style={{
-            padding: "14px 20px", borderRadius: 14, border: "none", cursor: "pointer",
-            background: "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff",
-            fontSize: 14, fontWeight: 600, transition: "all 0.2s",
-            boxShadow: "0 4px 16px rgba(0,212,255,0.25)",
-          }}>
-            Enable Notifications
-          </button>
-        </div>
-      )}
+
+        {!supported ? (
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>
+            Push notifications are not supported on this device/browser. Install the app as a PWA for notification support.
+          </div>
+        ) : permState === 'granted' ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />
+              <span style={{ fontSize: 14, color: "#10B981", fontWeight: 600 }}>Push Enabled</span>
+            </div>
+            <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0, lineHeight: 1.6 }}>
+              You'll receive real-time alerts for trade executions, new signals, and risk events on your device.
+            </p>
+            <button onClick={handleTest} style={{
+              padding: "12px 20px", borderRadius: 14, border: "1px solid rgba(0,212,255,0.3)",
+              background: testSent ? "rgba(16,185,129,0.15)" : "rgba(0,212,255,0.08)",
+              color: testSent ? "#10B981" : "#00D4FF", fontSize: 13, fontWeight: 600,
+              cursor: "pointer", transition: "all 0.2s",
+            }}>
+              {testSent ? '✓ Test Sent' : 'Send Test Notification'}
+            </button>
+          </div>
+        ) : permState === 'denied' ? (
+          <div style={{ fontSize: 13, color: "rgba(239,68,68,0.8)", lineHeight: 1.6 }}>
+            Push notifications are blocked. To enable them, open your browser settings and allow notifications for this site.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0, lineHeight: 1.6 }}>
+              Enable push notifications to receive real-time trade alerts, signal updates, and risk warnings directly on your device.
+            </p>
+            <button onClick={handleEnable} style={{
+              padding: "14px 20px", borderRadius: 14, border: "none", cursor: "pointer",
+              background: "linear-gradient(135deg, #00D4FF, #A855F7)", color: "#fff",
+              fontSize: 14, fontWeight: 600, transition: "all 0.2s",
+              boxShadow: "0 4px 16px rgba(0,212,255,0.25)",
+            }}>
+              Enable Push Notifications
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -5183,7 +5354,7 @@ function SettingsView({ investor, isMobile }) {
       <AppearanceSection glass={glass} sectionStyle={sectionStyle} isMobile={isMobile} />
 
       {/* Notifications */}
-      <NotificationsSection />
+      <NotificationsSection investor={investor} />
 
       {/* Change Password */}
       <div style={sectionStyle}>
