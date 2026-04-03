@@ -42,6 +42,16 @@ const glass = {
   boxShadow: "0 4px 30px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.4), inset 0 -0.5px 0 rgba(255,255,255,0.05)",
 };
 
+// === SLATE GRAY — Headers & Footer ===
+// Matches iOS Settings / Apple Slate aesthetic
+const slateGlass = {
+  background: "rgba(51, 65, 85, 0.72)",
+  backdropFilter: "blur(40px) saturate(160%)",
+  WebkitBackdropFilter: "blur(40px) saturate(160%)",
+  border: "1px solid rgba(100, 116, 139, 0.22)",
+  boxShadow: "0 4px 24px rgba(0,0,0,0.14), inset 0 0.5px 0 rgba(148,163,184,0.15)",
+};
+
 const inputStyle = {
   width: "100%", padding: "14px 18px", borderRadius: 16,
   border: "1px solid rgba(255,255,255,0.2)",
@@ -1198,7 +1208,7 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
       <div style={{
         position: "fixed", top: 0, left: 0, bottom: 0, width: sidebarWidth,
         zIndex: 201,
-        ...glass, borderRadius: 0, borderLeft: "none", borderTop: "none", borderBottom: "none",
+        ...slateGlass, borderRadius: 0, borderLeft: "none", borderTop: "none", borderBottom: "none",
         display: "flex", flexDirection: "column",
         transform: isMobile ? (isOpen ? "translateX(0)" : `translateX(-${sidebarWidth}px)`) : "translateX(0)",
         transition: "transform 0.3s ease",
@@ -3645,7 +3655,7 @@ function PortfolioDashboard({ investor, onLogout }) {
       <div style={{ marginLeft: sidebarWidth, minHeight: "100vh", transition: "margin 0.3s" }}>
         {/* Top Bar */}
         <div style={{
-          ...glass, borderRadius: 0, borderTop: "none", borderRight: "none",
+          ...slateGlass, borderRadius: 0, borderTop: "none", borderRight: "none",
           padding: `calc(14px + ${safeAreaTop}) ${isMobile ? 16 : 24}px 14px ${isMobile ? 16 : 24}px`, display: "flex", alignItems: "center", justifyContent: "space-between",
           position: "sticky", top: 0, zIndex: 100, gap: 12,
         }}>
@@ -3963,7 +3973,12 @@ function PortfolioDashboard({ investor, onLogout }) {
         </div>
 
         {/* Footer */}
-        <div style={{ padding: "20px 24px", textAlign: "center", fontSize: 10, color: "rgba(255,255,255,0.15)" }}>
+        <div style={{
+          ...slateGlass, borderRadius: 0,
+          borderLeft: "none", borderRight: "none", borderBottom: "none",
+          padding: "16px 24px", textAlign: "center",
+          fontSize: 10, letterSpacing: 1, color: "rgba(148,163,184,0.55)",
+        }}>
           12 TRIBES v2.0 | AI-Powered Investment Platform | Investor Portal
         </div>
       </div>
@@ -4776,55 +4791,91 @@ function AppearanceSection({ glass, sectionStyle, isMobile }) {
 
   const activeIdx = options.findIndex(o => o.id === preference);
 
-  // iPhone-style preview screens
+  // iPhone-accurate screen data
   const previews = [
     { id: 'auto', screens: [
-      { bg: '#0f1225', bar: '#1a1e3a', accent: '#00D4FF', lines: ['rgba(255,255,255,0.12)', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.06)'] },
-      { bg: '#F2F4F8', bar: '#ffffff', accent: '#0077CC', lines: ['rgba(0,0,0,0.06)', 'rgba(0,0,0,0.04)', 'rgba(0,0,0,0.03)'] },
+      { bg: '#0f1225', isLight: false, accent: '#00D4FF', lines: ['rgba(255,255,255,0.14)', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.05)'] },
+      { bg: '#F2F4F8', isLight: true,  accent: '#0077CC', lines: ['rgba(0,0,0,0.08)', 'rgba(0,0,0,0.05)', 'rgba(0,0,0,0.03)'] },
     ]},
     { id: 'dark', screens: [
-      { bg: '#0f1225', bar: '#1a1e3a', accent: '#00D4FF', lines: ['rgba(255,255,255,0.12)', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.06)'] },
+      { bg: '#0f1225', isLight: false, accent: '#00D4FF', lines: ['rgba(255,255,255,0.14)', 'rgba(255,255,255,0.08)', 'rgba(255,255,255,0.05)'] },
     ]},
     { id: 'light', screens: [
-      { bg: '#F2F4F8', bar: '#ffffff', accent: '#0077CC', lines: ['rgba(0,0,0,0.06)', 'rgba(0,0,0,0.04)', 'rgba(0,0,0,0.03)'] },
+      { bg: '#F2F4F8', isLight: true,  accent: '#0077CC', lines: ['rgba(0,0,0,0.08)', 'rgba(0,0,0,0.05)', 'rgba(0,0,0,0.03)'] },
     ]},
   ];
 
-  const MiniScreen = ({ screen, width = 64, height = 88 }) => (
-    <div style={{
-      width, height, borderRadius: 10, overflow: 'hidden',
-      background: screen.bg,
-      border: `1px solid ${screen.bg === '#F2F4F8' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)'}`,
-      display: 'flex', flexDirection: 'column',
-      boxShadow: '0 2px 12px rgba(0,0,0,0.15)',
-    }}>
-      {/* Status bar */}
-      <div style={{ height: 8, background: screen.bar, borderBottom: `0.5px solid ${screen.bg === '#F2F4F8' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)'}` }} />
-      {/* Nav bar */}
-      <div style={{ height: 12, background: screen.bar, display: 'flex', alignItems: 'center', padding: '0 6px', gap: 3, borderBottom: `0.5px solid ${screen.bg === '#F2F4F8' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)'}` }}>
-        <div style={{ width: 16, height: 3, borderRadius: 1.5, background: screen.accent, opacity: 0.8 }} />
-        <div style={{ flex: 1 }} />
-        <div style={{ width: 4, height: 4, borderRadius: 2, background: screen.accent, opacity: 0.5 }} />
+  // Authentic iPhone mockup — matches iOS Settings > Display & Brightness exactly
+  const iPhoneFrame = ({ screen, w, h }) => {
+    const isDark = !screen.isLight;
+    const deviceBorder = isDark ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.22)';
+    const islandBg = '#000';
+    const statusFg = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)';
+    const homePill = isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.18)';
+    const cardBg = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.05)';
+    const cardBorder = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+    const r = Math.round(w * 0.2);
+    return (
+      <div style={{
+        width: w, height: h,
+        borderRadius: r,
+        background: screen.bg,
+        border: `1.5px solid ${deviceBorder}`,
+        boxShadow: `0 6px 24px rgba(0,0,0,0.28), 0 2px 6px rgba(0,0,0,0.16), inset 0 0.5px 0 rgba(255,255,255,0.1)`,
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+        position: 'relative',
+      }}>
+        {/* Dynamic Island */}
+        <div style={{ height: Math.round(h * 0.12), display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: 5, flexShrink: 0 }}>
+          <div style={{ width: Math.round(w * 0.34), height: Math.round(h * 0.055), borderRadius: 99, background: islandBg }} />
+        </div>
+
+        {/* Status bar — time left, icons right */}
+        <div style={{ height: Math.round(h * 0.075), display: 'flex', alignItems: 'center', padding: `0 ${Math.round(w * 0.12)}px`, justifyContent: 'space-between', flexShrink: 0 }}>
+          <div style={{ width: Math.round(w * 0.22), height: 2.5, borderRadius: 1.5, background: statusFg }} />
+          <div style={{ display: 'flex', gap: 2.5, alignItems: 'center' }}>
+            <div style={{ width: 10, height: 5, borderRadius: 1, background: screen.accent, opacity: 0.75 }} />
+            <div style={{ width: 5, height: 5, borderRadius: '50%', background: statusFg, opacity: 0.7 }} />
+            <div style={{ width: 7, height: 5, borderRadius: 1, border: `1px solid ${statusFg}`, opacity: 0.6 }}>
+              <div style={{ width: '70%', height: '100%', background: statusFg, borderRadius: 0.5 }} />
+            </div>
+          </div>
+        </div>
+
+        {/* App content area */}
+        <div style={{ flex: 1, padding: `${Math.round(h * 0.04)}px ${Math.round(w * 0.1)}px`, display: 'flex', flexDirection: 'column', gap: Math.round(h * 0.04) }}>
+          {/* Header block */}
+          <div style={{ height: Math.round(h * 0.1), borderRadius: Math.round(w * 0.06), background: screen.lines[0] }} />
+          {/* Sub-lines */}
+          <div style={{ height: Math.round(h * 0.065), borderRadius: Math.round(w * 0.04), background: screen.lines[1], width: '78%' }} />
+          <div style={{ height: Math.round(h * 0.065), borderRadius: Math.round(w * 0.04), background: screen.lines[2], width: '55%' }} />
+          {/* Card */}
+          <div style={{ flex: 1, borderRadius: Math.round(w * 0.08), background: cardBg, border: `0.5px solid ${cardBorder}`, marginTop: Math.round(h * 0.02), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: '60%', height: Math.round(h * 0.055), borderRadius: 99, background: screen.accent, opacity: 0.7 }} />
+          </div>
+        </div>
+
+        {/* Home indicator */}
+        <div style={{ height: Math.round(h * 0.08), display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: Math.round(w * 0.32), height: 3, borderRadius: 1.5, background: homePill }} />
+        </div>
       </div>
-      {/* Content lines */}
-      <div style={{ flex: 1, padding: '6px 6px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{ height: 14, borderRadius: 4, background: screen.lines[0] }} />
-        <div style={{ height: 10, borderRadius: 3, background: screen.lines[1], width: '80%' }} />
-        <div style={{ height: 10, borderRadius: 3, background: screen.lines[2], width: '60%' }} />
-        <div style={{ flex: 1 }} />
-        {/* Mini card */}
-        <div style={{ height: 16, borderRadius: 4, background: screen.lines[0], marginBottom: 2 }} />
-        <div style={{ height: 5, borderRadius: 2, background: screen.accent, opacity: 0.5, width: '50%', alignSelf: 'center' }} />
-      </div>
-    </div>
-  );
+    );
+  };
+
+  // iOS-blue for selected indicator — matches Settings.app exactly
+  const IOS_BLUE = '#007AFF';
+  const fw = isMobile ? 52 : 62;
+  const fh = isMobile ? 104 : 124;
 
   return (
     <div style={{ ...sectionStyle }}>
-      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20 }}>Appearance</div>
+      {/* Section title — matches iOS Settings section header style */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 18 }}>Appearance</div>
 
-      {/* Preview thumbnails — iPhone style */}
-      <div style={{ display: 'flex', justifyContent: 'center', gap: isMobile ? 20 : 32, marginBottom: 28 }}>
+      {/* Appearance thumbnails — iPhone Settings > Display & Brightness layout */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: isMobile ? 18 : 28, marginBottom: 28 }}>
         {previews.map(p => {
           const isActive = preference === p.id;
           return (
@@ -4833,45 +4884,61 @@ function AppearanceSection({ glass, sectionStyle, isMobile }) {
               onClick={() => handleThemeChange(p.id)}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer', outline: 'none',
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
-                padding: 0, opacity: isActive ? 1 : 0.55,
-                transition: 'opacity 0.3s ease, transform 0.3s ease',
-                transform: isActive ? 'scale(1)' : 'scale(0.95)',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 9,
+                padding: 0,
+                WebkitTapHighlightColor: 'transparent',
+                transition: 'transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)',
+                transform: isActive ? 'scale(1.06)' : 'scale(0.96)',
               }}
             >
-              {/* Screen previews */}
-              <div style={{ display: 'flex', gap: p.screens.length > 1 ? -8 : 0, position: 'relative' }}>
-                {p.screens.map((s, i) => (
-                  <div key={i} style={{
-                    position: 'relative',
-                    zIndex: p.screens.length - i,
-                    transform: p.screens.length > 1 ? `translateX(${i * -6}px) rotate(${i === 0 ? -3 : 3}deg)` : 'none',
-                  }}>
-                    <MiniScreen screen={s} width={isMobile ? 54 : 64} height={isMobile ? 76 : 88} />
-                  </div>
-                ))}
+              {/* Device frame(s) */}
+              <div style={{
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'flex-end',
+                // Active: subtle blue ring behind device
+                filter: isActive ? `drop-shadow(0 0 8px rgba(0,122,255,0.45))` : 'none',
+                transition: 'filter 0.3s ease',
+              }}>
+                {p.screens.length === 1 ? (
+                  iPhoneFrame({ screen: p.screens[0], w: fw, h: fh })
+                ) : (
+                  // Automatic: two phones slightly overlapping at angle
+                  <>
+                    <div style={{ transform: 'rotate(-6deg) translateX(6px)', zIndex: 1, transformOrigin: 'bottom center' }}>
+                      {iPhoneFrame({ screen: p.screens[0], w: fw - 8, h: fh - 16 })}
+                    </div>
+                    <div style={{ transform: 'rotate(6deg) translateX(-6px)', zIndex: 2, transformOrigin: 'bottom center' }}>
+                      {iPhoneFrame({ screen: p.screens[1], w: fw - 8, h: fh - 16 })}
+                    </div>
+                  </>
+                )}
               </div>
 
-              {/* Label */}
+              {/* Label — same weight/size as iOS Settings */}
               <span style={{
-                fontSize: 12, fontWeight: isActive ? 600 : 400,
-                color: isActive ? '#00D4FF' : 'rgba(255,255,255,0.5)',
-                transition: 'color 0.3s ease',
+                fontSize: 12,
+                fontWeight: 500,
+                color: isActive ? '#fff' : 'rgba(255,255,255,0.45)',
+                transition: 'color 0.2s ease',
+                letterSpacing: 0.1,
               }}>
                 {options.find(o => o.id === p.id)?.label}
               </span>
 
-              {/* Active radio dot */}
+              {/* iOS-style radio — filled blue circle + white checkmark when active */}
               <div style={{
-                width: 20, height: 20, borderRadius: '50%',
-                border: isActive ? 'none' : '2px solid rgba(255,255,255,0.15)',
-                background: isActive ? '#00D4FF' : 'transparent',
+                width: 22, height: 22, borderRadius: '50%',
+                background: isActive ? IOS_BLUE : 'transparent',
+                border: isActive ? `none` : `1.5px solid rgba(255,255,255,0.22)`,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'all 0.3s ease',
+                transition: 'all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)',
+                transform: isActive ? 'scale(1)' : 'scale(0.9)',
+                boxShadow: isActive ? `0 2px 8px rgba(0,122,255,0.5)` : 'none',
               }}>
                 {isActive && (
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                    <path d="M2 5.5L4 7.5L8 3" stroke="#000" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                  <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                    <path d="M2.2 5.8L4.4 8L8.8 3" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
                 )}
               </div>
@@ -4880,50 +4947,43 @@ function AppearanceSection({ glass, sectionStyle, isMobile }) {
         })}
       </div>
 
-      {/* iOS Segmented Control */}
+      {/* iOS-authentic segmented control — white pill on system gray track */}
       <div style={{
         position: 'relative',
         display: 'flex',
-        background: 'rgba(255,255,255,0.06)',
+        background: 'rgba(118,118,128,0.18)',
         borderRadius: 10,
         padding: 2,
-        gap: 0,
       }}>
-        {/* Sliding pill */}
+        {/* Sliding white pill */}
         <div style={{
           position: 'absolute',
-          top: 2, left: `calc(${(activeIdx / options.length) * 100}% + 2px)`,
+          top: 2,
+          left: `calc(${(activeIdx / options.length) * 100}% + 2px)`,
           width: `calc(${100 / options.length}% - 4px)`,
           height: 'calc(100% - 4px)',
           borderRadius: 8,
-          background: 'rgba(255,255,255,0.12)',
-          backdropFilter: 'blur(8px)',
-          WebkitBackdropFilter: 'blur(8px)',
-          boxShadow: '0 1px 4px rgba(0,0,0,0.15), inset 0 0.5px 0 rgba(255,255,255,0.15)',
-          transition: 'left 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
+          background: 'rgba(255,255,255,0.14)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.2), 0 0.5px 0 rgba(255,255,255,0.12)',
+          transition: 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
           zIndex: 1,
         }} />
-
-        {options.map(opt => {
+        {options.map((opt) => {
           const isActive = preference === opt.id;
           return (
             <button
               key={opt.id}
               onClick={() => handleThemeChange(opt.id)}
               style={{
-                flex: 1,
-                position: 'relative',
-                zIndex: 2,
-                padding: '8px 0',
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                outline: 'none',
-                fontSize: 13,
-                fontWeight: isActive ? 600 : 400,
-                color: isActive ? '#fff' : 'rgba(255,255,255,0.45)',
-                transition: 'color 0.3s ease, font-weight 0.3s ease',
-                letterSpacing: isActive ? '0.01em' : '0',
+                flex: 1, position: 'relative', zIndex: 2,
+                padding: '7px 0', border: 'none', background: 'transparent',
+                cursor: 'pointer', outline: 'none',
+                fontSize: 13, fontWeight: isActive ? 600 : 400,
+                color: isActive ? '#fff' : 'rgba(255,255,255,0.5)',
+                transition: 'color 0.2s ease',
+                WebkitTapHighlightColor: 'transparent',
               }}
             >
               {opt.label}

@@ -37,6 +37,15 @@ const glass = {
   boxShadow: "0 8px 40px rgba(0,0,0,0.08), 0 0 0 0.5px rgba(255,255,255,0.06), inset 0 0.5px 0 rgba(255,255,255,0.3)",
 }
 
+// Slate gray — nav bar & footer headers
+const slateGlass = {
+  background: "rgba(51, 65, 85, 0.75)",
+  backdropFilter: "blur(48px) saturate(160%)",
+  WebkitBackdropFilter: "blur(48px) saturate(160%)",
+  border: "1px solid rgba(100, 116, 139, 0.22)",
+  boxShadow: "0 4px 24px rgba(0,0,0,0.16), inset 0 0.5px 0 rgba(148,163,184,0.15)",
+}
+
 const NAV_ITEMS = [
   { path: '/', label: 'Home', icon: '⬡' },
   { path: '/mission-control', label: 'Command', icon: '◉' },
@@ -72,7 +81,7 @@ function AppNav() {
         <button onClick={() => setMobileOpen(!mobileOpen)} style={{
           position: 'fixed', bottom: 16, right: 16, zIndex: 10001,
           width: 52, height: 52, borderRadius: 16, border: 'none', cursor: 'pointer',
-          ...glass, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          ...slateGlass, display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 20, color: '#00D4FF',
         }}>
           {mobileOpen ? '✕' : '☰'}
@@ -89,7 +98,7 @@ function AppNav() {
         {/* Mobile nav panel */}
         <div style={{
           position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 10000,
-          ...glass, borderRadius: '20px 20px 0 0', padding: '20px 16px',
+          ...slateGlass, borderRadius: '20px 20px 0 0', padding: '20px 16px',
           paddingBottom: 'calc(20px + env(safe-area-inset-bottom))',
           transform: mobileOpen ? 'translateY(0)' : 'translateY(100%)',
           transition: 'transform 0.3s ease',
@@ -117,10 +126,10 @@ function AppNav() {
     )
   }
 
-  // Desktop: floating bar with refined glass
+  // Desktop: floating bar with refined slate glass
   return (
     <div style={{
-      ...glass,
+      ...slateGlass,
       position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
       zIndex: 9999, borderRadius: 22, padding: '6px 8px',
       display: 'flex', gap: 2, alignItems: 'center',
