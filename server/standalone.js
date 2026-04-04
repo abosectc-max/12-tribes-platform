@@ -2577,7 +2577,7 @@ function _executeTrade(userId, order, bypassFlags) {
   }
 
   // Deduct balance — full cost for LONG, 50% margin for SHORT
-  wallet.balance -= marginRequired;
+  wallet.balance = roundTo(wallet.balance - marginRequired, 2);
   wallet.trade_count = (wallet.trade_count || 0) + 1;
   db._save('wallets');
 
@@ -2705,8 +2705,8 @@ function closePosition(userId, positionId) {
   const holdTime = Math.round((Date.now() - new Date(pos.opened_at).getTime()) / 1000);
 
   // Update wallet
-  wallet.balance += returnBack;
-  wallet.realized_pnl = (wallet.realized_pnl || 0) + pnl;
+  wallet.balance = roundTo(wallet.balance + returnBack, 2);
+  wallet.realized_pnl = roundTo((wallet.realized_pnl || 0) + pnl, 2);
   if (pnl >= 0) wallet.win_count = (wallet.win_count || 0) + 1;
   else wallet.loss_count = (wallet.loss_count || 0) + 1;
   if (!wallet.first_trade_at) wallet.first_trade_at = new Date().toISOString();
@@ -2991,8 +2991,12 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'X-XSS-Protection': '1; mode=block',
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'",
+  // API-hardened CSP: this server delivers JSON only — no scripts, styles, frames, or plugins
+  // default-src 'none' blocks all resource types; remaining directives close specific vectors
+  'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
+  'Cross-Origin-Opener-Policy': 'same-origin',
 };
 
 function json(res, status, data) {
@@ -6822,15 +6826,15 @@ api.put('/api/admin/withdrawals/:requestId', auth, async (req, res) => {
     const wrUserId = wr.userId || wr.userid;
     const wallet = db.findOne('wallets', w => w.user_id === wrUserId);
     if (wallet) {
-      wallet.balance = Math.max(0, (wallet.balance || 0) - wr.amount);
-      wallet.equity = Math.max(0, (wallet.equity || 0) - wr.amount);
+      wallet.balance = roundTo(Math.max(0, (wallet.balance || 0) - wr.amount), 2);
+      wallet.equity = roundTo(Math.max(0, (wallet.equity || 0) - wr.amount), 2);
       // Track total withdrawals for drawdown adjustment
-      wallet.total_withdrawals = (wallet.total_withdrawals || 0) + wr.amount;
+      wallet.total_withdrawals = roundTo((wallet.total_withdrawals || 0) + wr.amount, 2);
       // Adjust initial_balance so withdrawal doesn't look like a trading loss
-      wallet.initial_balance = Math.max(1000, (wallet.initial_balance || 100000) - wr.amount);
+      wallet.initial_balance = roundTo(Math.max(1000, (wallet.initial_balance || 100000) - wr.amount), 2);
       // Adjust peak_equity to account for withdrawal
       if (wallet.peak_equity) {
-        wallet.peak_equity = Math.max(wallet.equity, (wallet.peak_equity || 0) - wr.amount);
+        wallet.peak_equity = roundTo(Math.max(wallet.equity, (wallet.peak_equity || 0) - wr.amount), 2);
       }
       // Reset kill switch if it was incorrectly triggered by withdrawal
       if (wallet.kill_switch_active && wallet.balance > 0) {
@@ -7699,14 +7703,17 @@ const server = createServer(async (req, res) => {
       const isPublicPost = req.url.startsWith('/api/auth/') || req.url === '/api/contact' || req.url === '/api/health' || req.url === '/api/admin/qa-reports';
       if (!isPublicPost) {
         // Hard enforcement — block requests without CSRF header
-        console.warn(`[CSRF] Blocked ${req.method} ${req.url} — missing X-Requested-With header`);
+        // Strip query params from log to avoid leaking tokens/PII in server logs
+        const csrfPathOnly = req.url.split('?')[0];
+        console.warn(`[CSRF] Blocked ${req.method} ${csrfPathOnly} — missing X-Requested-With header`);
         return json(res, 403, { error: 'CSRF validation failed. Missing X-Requested-With header.' });
       }
     }
   }
 
   const matched = await api.handle(req, res);
-  if (!matched) json(res, 404, { error: 'Not found', path: req.url });
+  // Strip query params from 404 path echo — never reflect query strings (may contain tokens)
+  if (!matched) json(res, 404, { error: 'Not found', path: req.url.split('?')[0] });
 });
 
 // WebSocket upgrade

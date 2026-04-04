@@ -121,7 +121,10 @@ function OrderEntry({ prices, onTrade, isMobile }) {
       {/* Asset Category Tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
         {Object.keys(ASSET_CLASSES).map(cat => (
-          <button key={cat} onClick={() => { haptics.select(); setCategory(cat); setSymbol(ASSET_CLASSES[cat][0]) }}
+          <button key={cat}
+            aria-label={`Select ${cat} asset class`}
+            aria-pressed={category === cat}
+            onClick={() => { haptics.select(); setCategory(cat); setSymbol(ASSET_CLASSES[cat][0]) }}
             style={{
               padding: '8px 14px', borderRadius: 10, border: 'none', cursor: 'pointer', minHeight: 36,
               fontSize: 12, fontWeight: 600,
@@ -138,6 +141,7 @@ function OrderEntry({ prices, onTrade, isMobile }) {
         <div>
           <label style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 }}>SYMBOL</label>
           <select value={symbol} onChange={e => setSymbol(e.target.value)}
+            aria-label="Trading symbol"
             style={{
               width: '100%', padding: '10px 12px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.12)',
               background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 14, outline: 'none',
@@ -151,6 +155,7 @@ function OrderEntry({ prices, onTrade, isMobile }) {
         <div>
           <label style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 }}>INVESTOR</label>
           <select value={investor} onChange={e => setInvestor(e.target.value)}
+            aria-label="Select investor account"
             style={{
               width: '100%', padding: '10px 12px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.12)',
               background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 14, outline: 'none',
@@ -169,7 +174,10 @@ function OrderEntry({ prices, onTrade, isMobile }) {
       {/* Side Toggle */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {['LONG', 'SHORT'].map(s => (
-          <button key={s} onClick={() => { haptics.medium(); setSide(s); }}
+          <button key={s}
+            aria-label={s === 'LONG' ? 'Buy Long — bullish position' : 'Sell Short — bearish position'}
+            aria-pressed={side === s}
+            onClick={() => { haptics.medium(); setSide(s); }}
             style={{
               flex: 1, padding: '10px 0', borderRadius: 12, border: 'none', cursor: 'pointer', minHeight: 44,
               fontSize: 13, fontWeight: 700, letterSpacing: 1,
@@ -192,6 +200,8 @@ function OrderEntry({ prices, onTrade, isMobile }) {
           <input
             type="number" value={quantity} onChange={e => setQuantity(e.target.value)}
             placeholder="0.00"
+            aria-label="Trade quantity — number of shares or units"
+            min="0"
             style={{
               width: '100%', padding: '10px 12px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.12)',
               background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 14, outline: 'none',
@@ -203,6 +213,7 @@ function OrderEntry({ prices, onTrade, isMobile }) {
         <div>
           <label style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 }}>AI AGENT</label>
           <select value={agent} onChange={e => setAgent(e.target.value)}
+            aria-label="Select AI trading agent"
             style={{
               width: '100%', padding: '10px 12px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.12)',
               background: 'rgba(255,255,255,0.06)', color: '#fff', fontSize: 14, outline: 'none',
@@ -240,7 +251,9 @@ function OrderEntry({ prices, onTrade, isMobile }) {
       </div>
 
       {/* Execute Button */}
-      <button onClick={() => { haptics.heavy(); handleSubmit(); }}
+      <button
+        aria-label={`Execute ${side} trade: ${quantity || 0} shares of ${symbol}`}
+        onClick={() => { haptics.heavy(); handleSubmit(); }}
         style={{
           width: '100%', padding: '14px 0', borderRadius: 14, border: 'none', cursor: 'pointer', minHeight: 48,
           fontSize: 14, fontWeight: 700, letterSpacing: 1,
@@ -328,7 +341,9 @@ function PositionsPanel({ positions, onClose, isMobile }) {
                 }}>{pos.returnPct >= 0 ? '+' : ''}{pos.returnPct}%</td>
                 <td style={{ padding: '10px', color: '#7B61FF' }}>{pos.agent}</td>
                 <td style={{ padding: '10px' }}>
-                  <button onClick={() => { haptics.heavy(); onClose(pos.id); }}
+                  <button
+                    aria-label={`Close ${pos.symbol} ${pos.side} position`}
+                    onClick={() => { haptics.heavy(); onClose(pos.id); }}
                     style={{
                       padding: '8px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', minHeight: 36,
                       fontSize: 11, fontWeight: 600,

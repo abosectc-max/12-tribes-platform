@@ -358,12 +358,15 @@ function PriceChart({ data }) {
         </div>
         <div style={{ display: "flex", gap: 4, overflowX: "auto" }}>
           {["1m", "5m", "15m", "1H", "1D"].map((tf, i) => (
-            <button key={tf} style={{
-              padding: isMobile ? "3px 6px" : "4px 10px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: i === 2 ? "rgba(0,212,255,0.15)" : "transparent",
-              color: i === 2 ? "#00D4FF" : "rgba(255,255,255,0.4)", fontSize: isMobile ? 10 : 11,
-              whiteSpace: "nowrap",
-            }}>{tf}</button>
+            <button key={tf}
+              aria-label={`${tf} timeframe`}
+              aria-pressed={i === 2}
+              style={{
+                padding: isMobile ? "3px 6px" : "4px 10px", borderRadius: 8, border: "none", cursor: "pointer",
+                background: i === 2 ? "rgba(0,212,255,0.15)" : "transparent",
+                color: i === 2 ? "#00D4FF" : "rgba(255,255,255,0.4)", fontSize: isMobile ? 10 : 11,
+                whiteSpace: "nowrap",
+              }}>{tf}</button>
           ))}
         </div>
       </div>
@@ -513,13 +516,16 @@ export default function TwelveTribes_TradingEngine() {
         </div>
         <nav style={{ display: "flex", gap: 3, overflowX: "auto", flexBasis: isMobile ? "100%" : "auto", order: isMobile ? 3 : 0 }}>
           {views.map(v => (
-            <button key={v.id} onClick={() => { haptics.light(); setView(v.id); }} style={{
-              padding: isMobile ? "10px 14px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer", minHeight: 44,
-              fontSize: isMobile ? 11 : 13, fontWeight: 500, transition: "all 0.2s",
-              background: view === v.id ? "rgba(0,212,255,0.12)" : "transparent",
-              color: view === v.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
-              whiteSpace: "nowrap",
-            }}>
+            <button key={v.id}
+              aria-label={`Navigate to ${v.label} view`}
+              aria-current={view === v.id ? 'page' : undefined}
+              onClick={() => { haptics.light(); setView(v.id); }} style={{
+                padding: isMobile ? "10px 14px" : "8px 18px", borderRadius: 12, border: "none", cursor: "pointer", minHeight: 44,
+                fontSize: isMobile ? 11 : 13, fontWeight: 500, transition: "all 0.2s",
+                background: view === v.id ? "rgba(0,212,255,0.12)" : "transparent",
+                color: view === v.id ? "#00D4FF" : "rgba(255,255,255,0.5)",
+                whiteSpace: "nowrap",
+              }}>
               <span style={{ marginRight: isMobile ? 2 : 5 }}>{v.icon}</span>{isMobile ? "" : v.label}
             </button>
           ))}
