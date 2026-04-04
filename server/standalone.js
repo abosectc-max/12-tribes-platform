@@ -46,6 +46,14 @@ const JWT_SECRET = process.env.JWT_SECRET || (() => {
   console.warn('[SECURITY] ⚠️  JWT_SECRET not set — generated ephemeral secret. Set JWT_SECRET env var for production.');
   return generated;
 })();
+// QA agent service key — deterministic from JWT_SECRET so it survives reboots.
+// Override via QA_API_KEY env var on Render; otherwise the derived value is logged at boot.
+const QA_API_KEY = process.env.QA_API_KEY ||
+  createHash('sha256').update(`qa-service:${JWT_SECRET}`).digest('hex').slice(0, 40);
+if (!process.env.QA_API_KEY) {
+  console.log(`[QA] Service key (first 8 chars): ${QA_API_KEY.slice(0, 8)}… — set QA_API_KEY env var to override`);
+}
+
 const DATA_DIR = process.env.DATA_DIR || join(__dirname, 'data');
 const INITIAL_BALANCE = 100000;  // $100,000 virtual wallet
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').toLowerCase();
@@ -2972,7 +2980,7 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'X-XSS-Protection': '1; mode=block',
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'",
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
 
@@ -4625,7 +4633,7 @@ api.get('/api/admin/qa-reports', auth, (req, res) => {
 api.post('/api/admin/qa-reports', async (req, res) => {
   // Accept reports from scheduled QA agent (API key or admin auth)
   const apiKey = req.headers['x-qa-api-key'];
-  const isApiKey = apiKey && process.env.QA_API_KEY && apiKey === process.env.QA_API_KEY;
+  const isApiKey = apiKey && apiKey === QA_API_KEY;
 
   if (!isApiKey) {
     // Fall back to admin auth
@@ -7615,7 +7623,7 @@ const server = createServer(async (req, res) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
     const xrw = req.headers['x-requested-with'];
     if (!xrw) {
-      const isPublicPost = req.url.startsWith('/api/auth/') || req.url === '/api/contact' || req.url === '/api/health';
+      const isPublicPost = req.url.startsWith('/api/auth/') || req.url === '/api/contact' || req.url === '/api/health' || req.url === '/api/admin/qa-reports';
       if (!isPublicPost) {
         // Hard enforcement — block requests without CSRF header
         console.warn(`[CSRF] Blocked ${req.method} ${req.url} — missing X-Requested-With header`);
