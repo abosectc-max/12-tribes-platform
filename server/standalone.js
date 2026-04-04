@@ -87,6 +87,8 @@ const ALLOWED_ORIGINS = [
 ].filter((v, i, a) => v && a.indexOf(v) === i); // dedupe + filter nulls
 
 // ─── Rate Limiter ───
+// In-memory Map is the hot path (zero latency). PostgreSQL is the persistence layer
+// so rate limits survive server restarts — preventing brute-force via redeploy.
 const rateLimitStore = new Map();
 function rateLimit(key, maxAttempts, windowMs) {
   const now = Date.now();
@@ -95,15 +97,28 @@ function rateLimit(key, maxAttempts, windowMs) {
   if (recent.length >= maxAttempts) return false;
   recent.push(now);
   rateLimitStore.set(key, recent);
+  // Fire-and-forget persist to PG — silent fail keeps hot path synchronous
+  if (db?.pool) {
+    db.pool.query(
+      `INSERT INTO rate_limit_store (key, attempts, updated_at)
+       VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (key) DO UPDATE SET attempts = $2::jsonb, updated_at = $3`,
+      [key, JSON.stringify(recent), now]
+    ).catch(() => {});
+  }
   return true;
 }
-// Clean rate limit store every 5 minutes
+// Clean rate limit store every 5 minutes — both memory and PG
 const rateLimitCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, times] of rateLimitStore) {
     const recent = times.filter(t => now - t < 3600000);
     if (recent.length === 0) rateLimitStore.delete(key);
     else rateLimitStore.set(key, recent);
+  }
+  // Prune PG entries older than 1 hour
+  if (db?.pool) {
+    db.pool.query('DELETE FROM rate_limit_store WHERE updated_at < $1', [now - 3600000]).catch(() => {});
   }
 }, 300000);
 
@@ -630,7 +645,14 @@ if (USE_POSTGRES) {
         }
         // Relax NOT NULL constraints on trades.opened_at (some auto-trades may not set it)
         try { await db.pool.query(`ALTER TABLE trades ALTER COLUMN opened_at DROP NOT NULL`); } catch(e) {}
-        console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages, audit_log, trade_audit schemas ensured');
+        // ─── RATE LIMIT PERSISTENCE TABLE ───
+        // Survives server restarts so brute-force cooldowns remain active across deploys.
+        await db.pool.query(`CREATE TABLE IF NOT EXISTS rate_limit_store (
+          key TEXT PRIMARY KEY,
+          attempts JSONB DEFAULT '[]'::jsonb,
+          updated_at BIGINT DEFAULT 0
+        )`);
+        console.log('[Migration] ✅ Fee engine, trading mode, onboarding, capital calls, distributions, messages, audit_log, trade_audit, rate_limit_store schemas ensured');
 
         // ─── PRODUCTION READINESS VALIDATION ───
         let prodChecks = 0;
@@ -641,6 +663,32 @@ if (USE_POSTGRES) {
         if (process.env.DATABASE_URL) { prodChecks++; } else { console.warn('[Boot] ⚠️ DATABASE_URL not set — using file-based database'); }
         if (process.env.RENDER_INSTANCE_ID) { prodChecks++; } else { console.warn('[Boot] ⚠️ Not running on Render — local/dev environment detected'); }
         console.log(`[Boot] 🏁 Production readiness: ${prodChecks}/${prodTotal} checks passed`);
+
+        // ─── F-023: PostgreSQL FREE TIER EXPIRY GUARD ───
+        // Render free-tier PostgreSQL instances are deleted after 90 days with no warning.
+        // This check fires on every boot and escalates urgency as the deadline approaches.
+        // ACTION: Upgrade to Render PostgreSQL Starter ($7/month) before the deadline.
+        try {
+          const { rows: pgRows } = await db.pool.query(
+            `SELECT pg_postmaster_start_time() AS start_time, version() AS pg_version`
+          );
+          const dbCreatedEnv = process.env.DB_CREATED_AT; // Set this env var to track creation date
+          if (dbCreatedEnv) {
+            const dbAgeMs = Date.now() - new Date(dbCreatedEnv).getTime();
+            const dbAgeDays = Math.floor(dbAgeMs / 86400000);
+            if (dbAgeDays >= 75) {
+              console.error(`[DB EXPIRY] 🔴 CRITICAL: PostgreSQL instance is ${dbAgeDays} days old. FREE TIER EXPIRES AT 90 DAYS. Upgrade NOW at render.com or all data will be DELETED.`);
+            } else if (dbAgeDays >= 60) {
+              console.warn(`[DB EXPIRY] ⚠️ WARNING: PostgreSQL instance is ${dbAgeDays} days old. Free tier expires in ~${90 - dbAgeDays} days. Plan upgrade.`);
+            } else if (dbAgeDays >= 45) {
+              console.warn(`[DB EXPIRY] PostgreSQL instance is ${dbAgeDays} days old. Free tier expires in ~${90 - dbAgeDays} days.`);
+            }
+          } else {
+            console.warn('[DB EXPIRY] ⚠️ DB_CREATED_AT env var not set. Cannot track PostgreSQL free-tier expiry. Set DB_CREATED_AT=<ISO date> in Render env vars.');
+          }
+        } catch (pgCheckErr) {
+          console.warn('[DB EXPIRY] Could not check DB age:', pgCheckErr.message);
+        }
 
         // ─── USER BOOTSTRAP: ROLE ENFORCEMENT ───
         // Ensure the designated admin email always has the admin role.
@@ -11706,12 +11754,33 @@ api.get('/api/signals', auth, (req, res) => {
   const total = signals.length;
   signals = signals.slice(offset, offset + limit);
 
-  json(res, 200, { total, offset, limit, signals });
+  // F-012: Include data mode disclosure so frontend can label signals generated on simulated data
+  const realCount = Object.values(priceDataSource).filter(s => s === 'real').length;
+  json(res, 200, {
+    total, offset, limit, signals,
+    dataMode: MARKET_DATA_MODE,
+    realDataAvailable,
+    realSymbolCount: realCount,
+    disclosure: realCount === 0
+      ? 'SIMULATED_DATA — All signals generated from synthetic price engine. Not based on live market data.'
+      : realCount < Object.keys(priceDataSource).length
+        ? 'HYBRID_DATA — Some signals based on live market data; others on simulated prices.'
+        : 'LIVE_DATA — Signals generated from live market data.',
+  });
 });
 
 // Signal stats — aggregated performance analytics
 api.get('/api/signals/stats', auth, (req, res) => {
-  json(res, 200, computeSignalStats(req.userId));
+  const stats = computeSignalStats(req.userId);
+  const realCount = Object.values(priceDataSource).filter(s => s === 'real').length;
+  json(res, 200, {
+    ...stats,
+    dataMode: MARKET_DATA_MODE,
+    realDataAvailable,
+    disclosure: realCount === 0
+      ? 'SIMULATED_DATA — Performance stats computed on synthetic price data. Historical results do not reflect live market execution.'
+      : 'LIVE_DATA',
+  });
 });
 
 // Live signal feed — real-time buffer (last 200 signals across all users)
@@ -13718,6 +13787,50 @@ api.post('/api/admin/recovery/snapshot-now', auth, async (req, res) => {
   }
 });
 
+// GET /api/admin/recovery/export — F-024: Off-database backup export
+// Downloads the full current state as a JSON file that can be stored externally.
+// Protects against Render free-tier DB deletion by giving admin a portable backup.
+api.get('/api/admin/recovery/export', auth, (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  try {
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      exportVersion: '1.0',
+      platform: '12-tribes-platform',
+      note: 'Full data export for off-database backup. Store this file externally (cloud storage, email, etc.).',
+      tables: {
+        users: db.findMany('users').map(u => ({ ...u, password: undefined })), // strip password hashes
+        wallets: db.findMany('wallets'),
+        positions: db.findMany('positions'),
+        trades: db.findMany('trades'),
+        capital_accounts: db.findMany('capital_accounts'),
+        withdrawal_requests: db.findMany('withdrawal_requests'),
+        fee_ledger: db.findMany('fee_ledger'),
+        fund_settings: db.findMany('fund_settings'),
+        distribution_records: db.findMany('distribution_records'),
+      },
+      rowCounts: {},
+    };
+    // Compute row counts
+    Object.keys(exportData.tables).forEach(t => {
+      exportData.rowCounts[t] = (exportData.tables[t] || []).length;
+    });
+
+    const filename = `12tribes-backup-${new Date().toISOString().slice(0,10)}.json`;
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Cache-Control': 'no-store',
+      ...SECURITY_HEADERS,
+    });
+    res.end(JSON.stringify(exportData, null, 2));
+  } catch (e) {
+    apiError(res, e, 'Export failed');
+  }
+});
+
 // POST /api/admin/capital-accounts/reconcile-from-wallets
 // FIX (Bug 2): Re-derives allocated_income, allocated_losses, ending_balance
 // directly from each investor's wallet realized_pnl and equity.
@@ -14476,6 +14589,23 @@ server.listen(PORT, '0.0.0.0', async () => {
     }
   } catch (err) {
     console.error(`[BOOT] User normalization failed: ${err.message}`);
+  }
+
+  // ── Rate Limit Hydration: Restore active rate limit entries from PG so cooldowns survive restarts ──
+  if (db?.pool) {
+    try {
+      const { rows } = await db.pool.query('SELECT key, attempts, updated_at FROM rate_limit_store');
+      const now = Date.now();
+      let hydrated = 0;
+      for (const row of rows) {
+        const attempts = Array.isArray(row.attempts) ? row.attempts : JSON.parse(row.attempts || '[]');
+        const recent = attempts.filter(t => now - t < 3600000); // only keep entries < 1 hour old
+        if (recent.length > 0) { rateLimitStore.set(row.key, recent); hydrated++; }
+      }
+      if (hydrated > 0) console.log(`[RateLimit] Hydrated ${hydrated} active rate limit entries from PG — brute-force cooldowns restored`);
+    } catch (err) {
+      console.warn(`[RateLimit] PG hydration skipped (non-fatal): ${err.message}`);
+    }
   }
 
   // ── Compliance: Restore audit chain hash from DB so chain stays intact across restarts ──

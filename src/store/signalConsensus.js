@@ -875,6 +875,23 @@ export function getMarketRegime() {
 // ============================================================================
 
 /**
+ * Clear session-scoped ML signal data on logout.
+ * Removes signal history, agent accuracy, trade outcomes, and error log
+ * from localStorage so cross-session ML state leakage cannot occur.
+ * F-021: ML signal state must not persist across user sessions.
+ * @returns {void}
+ */
+export function clearSessionCache() {
+  try {
+    signalQueue = [];
+    lastTradeTimestamp = {};
+    Object.values(STORAGE_KEYS).forEach(key => {
+      try { localStorage.removeItem(key); } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
+}
+
+/**
  * Clear all signal history and performance data (WARNING: destructive)
  * @param {boolean} confirm - Must explicitly pass true
  * @returns {boolean}

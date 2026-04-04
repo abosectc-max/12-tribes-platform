@@ -1060,6 +1060,15 @@ export default function TwelveTribes_MissionControl() {
         </div>
       </div>
 
+      {/* Paper Trading Disclosure — F-012 */}
+      <div role="note" aria-label="Paper trading disclosure" style={{
+        background: "rgba(245,158,11,0.08)", borderBottom: "1px solid rgba(245,158,11,0.15)",
+        padding: "6px 32px", display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <span style={{ fontSize: 9, color: "#F59E0B", fontWeight: 700, letterSpacing: 1 }}>⚠ PAPER TRADING MODE</span>
+        <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)" }}>All trades, balances, and performance data are simulated. Results do not reflect live market execution and are not indicative of future performance.</span>
+      </div>
+
       {/* Content */}
       <div style={{ padding: isMobile ? "12px 8px" : isTablet ? "20px 24px" : "24px 32px", maxWidth: 1600, margin: "0 auto", paddingBottom: isMobile ? 100 : 24 }}>
         {activeView === "overview" && <OverviewView growthData={growthData} trades={liveTrades} liveTrades={liveTrades} liveAgents={liveAgents} groupData={groupData} isMobile={isMobile} isTablet={isTablet} />}

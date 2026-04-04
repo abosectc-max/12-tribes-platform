@@ -5,6 +5,7 @@
 //   Falls back to localStorage-only if server unreachable
 // ═══════════════════════════════════════════
 import { clearLocalCache } from './walletStore.js';
+import { clearSessionCache as clearSignalCache } from './signalConsensus.js';
 
 // ═══════ BACKEND API SYNC LAYER ═══════
 const API_BASE = (() => {
@@ -1119,6 +1120,9 @@ export async function logout() {
   // 2. Clear all locally cached financial data so the next user of this device
   //    cannot see wallet balances, positions, or trade history from this session.
   clearLocalCache();
+  // 3. Clear ML signal state (F-021) — signal history, agent accuracy, and trade
+  //    outcomes must not persist across sessions to prevent cross-user data leakage.
+  clearSignalCache();
   currentSession = null;
   removeFromStorage(STORAGE_KEY_SESSION);
   clearToken();
