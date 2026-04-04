@@ -1,22 +1,26 @@
 #!/usr/bin/env node
 
 // ═══════════════════════════════════════════════════════════════════════
-//   12 TRIBES — STANDALONE BACKEND SERVER v1.0
-//   Zero external dependencies — Node.js built-ins only
-//   JSON file database | Crypto auth | Raw WebSocket | HTTP router
+//   12 TRIBES INVESTMENTS — PRODUCTION BACKEND SERVER
+//   ▸ CANONICAL ENTRY POINT — this is the only deployed server
+//   ▸ Render start command: node --max-old-space-size=6144 --expose-gc server/standalone.js
 //
-//   Run: node standalone.js
-//   Production: swap JsonDB for PostgreSQL adapter (schema in db/schema.sql)
+//   Architecture:
+//     - Pure Node.js HTTP (no Express) — zero framework surface area
+//     - PostgreSQL via db/pg-adapter.js (in-memory cache + async PG writes)
+//     - JWT auth | Raw WebSocket | HMAC CSRF protection
+//     - Modular compliance layer: ./compliance.js
 //
-//   DATABASE MIGRATION PATH (from QA audit):
-//   Current: JSON file DB + jsonblob cloud sync (suitable for MVP/beta, ≤50 users)
-//   Target:  PostgreSQL via DATABASE_URL env var (config/database.js has pool setup)
-//   Steps:   1. Provision PostgreSQL (Render, Supabase, Neon, or Railway)
-//            2. Set DATABASE_URL env var on Render
-//            3. Run db/schema.sql to create tables
-//            4. Use cloudSyncPull() to export current data, then bulk-insert into PG
-//            5. Switch server.js (Express) to primary, standalone.js to fallback
-//   Benefits: ACID transactions, concurrent writes, indexed queries, proper backups
+//   Server directory layout (post-cleanup):
+//     standalone.js   ← this file (deployed entry point)
+//     compliance.js   ← compliance rules module
+//     db/             ← pg-adapter.js + schema docs
+//     data/           ← historical flat-file backups (not used at runtime)
+//
+//   Env vars required on Render:
+//     DATABASE_URL, JWT_SECRET, QA_API_KEY, ADMIN_EMAIL
+//     Optional: PW_ADMIN, PW_DRE, PW_WILL, PW_ROD, PW_EFFORTLESS
+//     Optional: DB_CREATED_AT (ISO date — activates free-tier expiry guard)
 // ═══════════════════════════════════════════════════════════════════════
 
 import { createServer } from 'node:http';
@@ -2785,6 +2789,74 @@ function closePosition(userId, positionId) {
     if (pdtCheck.violation) {
       console.warn(`[Compliance] PDT violation detected for user ${userId}: ${pdtCheck.day_trade_count} day trades, equity $${pdtCheck.equity}`);
       db.insert('compliance_alerts', { type: 'PDT_VIOLATION', ...pdtCheck, created_at: new Date().toISOString() });
+    }
+
+    // ── F-026: WASH TRADE & VELOCITY ANOMALY DETECTION ──
+    // Rule 1 — RAPID_CLOSE: position held < 30 seconds (strong wash-trade signal)
+    // Rule 2 — ROUND_TRIP: same user opened a new position in same symbol within 60s of this close
+    // Rule 3 — VELOCITY: > 5 closed trades in same symbol within last 60 seconds
+    try {
+      const nowMs = Date.now();
+      const washFlags = [];
+
+      // Rule 1: Rapid close
+      if (holdTime < 30) {
+        washFlags.push({
+          rule: 'RAPID_CLOSE',
+          detail: `Position held only ${holdTime}s (threshold: 30s). Possible wash trade.`,
+          symbol: pos.symbol, holdTime,
+        });
+      }
+
+      // Rule 2: Round-trip — user already has another open position in same symbol
+      const sameSymbolOpen = db.findMany('positions', p =>
+        p.user_id === userId && p.symbol === pos.symbol && p.status === 'OPEN' && p.id !== pos.id
+      );
+      if (sameSymbolOpen.length > 0) {
+        washFlags.push({
+          rule: 'ROUND_TRIP',
+          detail: `User has ${sameSymbolOpen.length} open position(s) in ${pos.symbol} immediately after closing one. Round-trip pattern.`,
+          symbol: pos.symbol, openPositionIds: sameSymbolOpen.map(p => p.id),
+        });
+      }
+
+      // Rule 3: Velocity — more than 5 closed trades in same symbol in last 60s
+      const recentSymbolTrades = allTrades.filter(t =>
+        t.symbol === pos.symbol &&
+        t.closed_at &&
+        nowMs - new Date(t.closed_at).getTime() < 60000
+      );
+      if (recentSymbolTrades.length > 5) {
+        washFlags.push({
+          rule: 'VELOCITY_ANOMALY',
+          detail: `${recentSymbolTrades.length} ${pos.symbol} trades closed in the last 60 seconds (threshold: 5).`,
+          symbol: pos.symbol, tradeCount: recentSymbolTrades.length,
+        });
+      }
+
+      if (washFlags.length > 0) {
+        const alertId = randomUUID();
+        console.warn(`[WashTrade] ${washFlags.length} flag(s) for user ${userId} on ${pos.symbol}:`, washFlags.map(f => f.rule));
+        db.insert('compliance_alerts', {
+          id: alertId,
+          type: 'WASH_TRADE_SUSPECT',
+          user_id: userId,
+          position_id: pos.id,
+          symbol: pos.symbol,
+          flags: washFlags,
+          pnl,
+          hold_time_seconds: holdTime,
+          created_at: new Date().toISOString(),
+        });
+        // Write to immutable audit log
+        const washAuditEntry = compliance.createImmutableAuditEntry('COMPLIANCE', 'WASH_TRADE_SUSPECT', {
+          alertId, position_id: pos.id, symbol: pos.symbol, flags: washFlags.map(f => f.rule),
+          hold_time_seconds: holdTime, pnl,
+        }, userId);
+        db.insert('audit_log', washAuditEntry);
+      }
+    } catch (washErr) {
+      console.error('[WashTrade] Non-blocking detection error:', washErr.message);
     }
   } catch (compErr) {
     console.error('[Compliance] Non-blocking compliance error in position close:', compErr.message);
@@ -13906,11 +13978,29 @@ api.get('/api/compliance/risk', auth, (req, res) => {
 });
 
 // GET /api/compliance/alerts — Compliance alerts (admin)
+// Query params: ?type=WASH_TRADE_SUSPECT|PDT_VIOLATION|SUSPICIOUS_ACTIVITY|ALL (default ALL)
+//               ?limit=N (default 100, max 500)
 api.get('/api/compliance/alerts', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
-  const alerts = db.findMany('compliance_alerts', () => true).slice(-100);
-  json(res, 200, { alerts });
+
+  const typeFilter = req.query?.type ? req.query.type.toUpperCase() : 'ALL';
+  const limit = Math.min(parseInt(req.query?.limit) || 100, 500);
+
+  let alerts = db.findMany('compliance_alerts', () => true);
+  if (typeFilter !== 'ALL') alerts = alerts.filter(a => a.type === typeFilter);
+  alerts = [...alerts].sort((a, b) =>
+    new Date(b.created_at || 0) - new Date(a.created_at || 0)
+  ).slice(0, limit);
+
+  // Summary counts by type
+  const allAlerts = db.findMany('compliance_alerts', () => true);
+  const summary = allAlerts.reduce((acc, a) => {
+    acc[a.type] = (acc[a.type] || 0) + 1;
+    return acc;
+  }, {});
+
+  json(res, 200, { total: alerts.length, typeFilter, summary, alerts });
 });
 
 // GET /api/compliance/disclaimers — FTC required disclaimers
