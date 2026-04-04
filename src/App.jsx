@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom'
 import { haptics } from './hooks/useHaptics.js'
+import { getSession } from './store/authStore.js'
 
 // ── CSRF: Global fetch interceptor — adds X-Requested-With to all API requests ──
 const _origFetch = window.fetch;
@@ -28,6 +29,17 @@ import { initializeTheme } from './store/themeService.js'
 
 // Initialize theme immediately on module load (before first render)
 initializeTheme();
+
+// ═══════ PROTECTED ROUTE ═══════
+// Redirects unauthenticated users to the landing page.
+// Checks both server-synced session and local auth token.
+function ProtectedRoute({ children }) {
+  const session = getSession();
+  if (!session) {
+    return <Navigate to="/" replace />;
+  }
+  return children;
+}
 
 const glass = {
   background: "rgba(255,255,255,0.055)",
@@ -192,14 +204,14 @@ export default function App() {
       <div style={{ paddingBottom: 70 }}>
         <Routes>
           <Route path="/" element={<Landing />} />
-          <Route path="/mission-control" element={<ErrorBoundary><MissionControl /></ErrorBoundary>} />
-          <Route path="/investor-portal" element={<ErrorBoundary><InvestorPortal /></ErrorBoundary>} />
-          <Route path="/trading-engine" element={<ErrorBoundary><TradingEngine /></ErrorBoundary>} />
-          <Route path="/risk-analytics" element={<ErrorBoundary><RiskAnalytics /></ErrorBoundary>} />
-          <Route path="/performance" element={<ErrorBoundary><Performance /></ErrorBoundary>} />
-          <Route path="/market-intel" element={<ErrorBoundary><MarketIntel /></ErrorBoundary>} />
-          <Route path="/mobile" element={<ErrorBoundary><MobileApp /></ErrorBoundary>} />
-          <Route path="/paper-trading" element={<ErrorBoundary><PaperTrading /></ErrorBoundary>} />
+          <Route path="/mission-control" element={<ProtectedRoute><ErrorBoundary><MissionControl /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/investor-portal" element={<ProtectedRoute><ErrorBoundary><InvestorPortal /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/trading-engine" element={<ProtectedRoute><ErrorBoundary><TradingEngine /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/risk-analytics" element={<ProtectedRoute><ErrorBoundary><RiskAnalytics /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/performance" element={<ProtectedRoute><ErrorBoundary><Performance /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/market-intel" element={<ProtectedRoute><ErrorBoundary><MarketIntel /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/mobile" element={<ProtectedRoute><ErrorBoundary><MobileApp /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/paper-trading" element={<ProtectedRoute><ErrorBoundary><PaperTrading /></ErrorBoundary></ProtectedRoute>} />
           <Route path="/terms" element={<TermsConditions />} />
         </Routes>
         <AppNav />

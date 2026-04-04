@@ -20,7 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { createServer } from 'node:http';
-import { createHash, scryptSync, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, scryptSync, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, unlinkSync, copyFileSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,12 +46,11 @@ const JWT_SECRET = process.env.JWT_SECRET || (() => {
   console.warn('[SECURITY] ⚠️  JWT_SECRET not set — generated ephemeral secret. Set JWT_SECRET env var for production.');
   return generated;
 })();
-// QA agent service key — deterministic from JWT_SECRET so it survives reboots.
-// Override via QA_API_KEY env var on Render; otherwise the derived value is logged at boot.
-const QA_API_KEY = process.env.QA_API_KEY ||
-  createHash('sha256').update(`qa-service:${JWT_SECRET}`).digest('hex').slice(0, 40);
-if (!process.env.QA_API_KEY) {
-  console.log(`[QA] Service key (first 8 chars): ${QA_API_KEY.slice(0, 8)}… — set QA_API_KEY env var to override`);
+// QA agent service key — must be set independently via QA_API_KEY env var on Render.
+// SECURITY: Never derive from JWT_SECRET; each service credential must be independent.
+const QA_API_KEY = process.env.QA_API_KEY || '';
+if (!QA_API_KEY) {
+  console.warn('[SECURITY] ⚠️  QA_API_KEY not set — QA service endpoints will be disabled until set.');
 }
 
 const DATA_DIR = process.env.DATA_DIR || join(__dirname, 'data');
@@ -643,36 +642,29 @@ if (USE_POSTGRES) {
         if (process.env.RENDER_INSTANCE_ID) { prodChecks++; } else { console.warn('[Boot] ⚠️ Not running on Render — local/dev environment detected'); }
         console.log(`[Boot] 🏁 Production readiness: ${prodChecks}/${prodTotal} checks passed`);
 
-        // ─── USER BOOTSTRAP: PASSWORD RESET + ROLE ENFORCEMENT ───
-        // On every boot, reset ALL user passwords to known defaults so no one gets locked out.
-        // Passwords are per-user, set from env vars with sensible defaults.
-        // Also enforces admin role for the designated admin email.
-        const USER_PASSWORDS = KNOWN_USER_PASSWORDS; // use module-level map
-        const DESIGNATED_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'abose.ctc@gmail.com').toLowerCase();
+        // ─── USER BOOTSTRAP: ROLE ENFORCEMENT ───
+        // Ensure the designated admin email always has the admin role.
+        // SECURITY: Boot-time password reset removed — users own their passwords.
+        //           Use POST /api/admin/users/:id to reset a specific user's password if needed.
+        const DESIGNATED_ADMIN_EMAIL = ADMIN_EMAIL; // set via ADMIN_EMAIL env var
 
-        const allUsers = db.findMany('users');
-        let pwResetCount = 0;
-        for (const u of allUsers) {
-          const updates = {};
-          // Password reset — ONLY reset passwords for hardcoded known accounts.
-          // New investors who registered with their own passwords must NOT be overwritten
-          // on every server boot, or they will be permanently locked out.
-          if (USER_PASSWORDS[u.email]) {
-            updates.password_hash = hashPassword(USER_PASSWORDS[u.email]);
-            pwResetCount++;
+        if (DESIGNATED_ADMIN_EMAIL) {
+          const allUsers = db.findMany('users');
+          for (const u of allUsers) {
+            const updates = {};
+            if (u.email === DESIGNATED_ADMIN_EMAIL && u.role !== 'admin') {
+              updates.role = 'admin';
+            } else if (u.email !== DESIGNATED_ADMIN_EMAIL && u.role === 'admin') {
+              updates.role = 'investor';
+            }
+            if (Object.keys(updates).length > 0) {
+              db.update('users', uu => uu.id === u.id, updates);
+            }
           }
-          // Role enforcement
-          if (u.email === DESIGNATED_ADMIN_EMAIL && u.role !== 'admin') {
-            updates.role = 'admin';
-          } else if (u.email !== DESIGNATED_ADMIN_EMAIL && u.role === 'admin') {
-            updates.role = 'investor';
-          }
-          if (Object.keys(updates).length > 0) {
-            db.update('users', uu => uu.id === u.id, updates);
-          }
+          console.log(`[Bootstrap] ✅ Admin role enforced for ${DESIGNATED_ADMIN_EMAIL}`);
+        } else {
+          console.warn('[Bootstrap] ⚠️  ADMIN_EMAIL not set — skipping role enforcement. Set ADMIN_EMAIL env var.');
         }
-        console.log(`[Bootstrap] ✅ ${pwResetCount} known-user passwords reset to boot defaults (new registrants preserved)`);
-        console.log(`[Bootstrap] ✅ Admin role enforced for ${DESIGNATED_ADMIN_EMAIL}`);
 
         // ─── DATA RECOVERY: AUTO-SNAPSHOT ON BOOT ───
         // Capture a full wallet snapshot every time the server boots so we always have
@@ -779,14 +771,14 @@ function createJWT(payload, expiresInSec = 86400) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const now = Math.floor(Date.now() / 1000);
   const body = Buffer.from(JSON.stringify({ ...payload, iat: now, exp: now + expiresInSec })).toString('base64url');
-  const signature = createHash('sha256').update(`${header}.${body}.${JWT_SECRET}`).digest('base64url');
+  const signature = createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
   return `${header}.${body}.${signature}`;
 }
 
 function verifyJWT(token) {
   try {
     const [header, body, signature] = token.split('.');
-    const expected = createHash('sha256').update(`${header}.${body}.${JWT_SECRET}`).digest('base64url');
+    const expected = createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
     if (signature !== expected) return null;
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
@@ -2998,6 +2990,15 @@ function json(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+// ─── Safe error response helper ───
+// Never expose raw err.message in production — attacker intel.
+// Use apiError() for all catch blocks that return 500.
+function apiError(res, err, publicMsg = 'Internal server error') {
+  console.error('[API ERROR]', err?.message || err);
+  const detail = process.env.NODE_ENV === 'development' ? { detail: err?.message } : {};
+  return json(res, 500, { error: publicMsg, ...detail });
+}
+
 function readBody(req) {
   return new Promise((resolve) => {
     let data = '';
@@ -3022,41 +3023,13 @@ const api = new Router();
 
 // ─── HEALTH ───
 api.get('/api/health', (req, res) => {
-  // MEMORY FIX: Surface memory metrics for monitoring
-  const mem = process.memoryUsage();
-  const tableSizes = {};
-  for (const t of DB_TABLES) {
-    if (db.tables[t] && db.tables[t].length > 0) tableSizes[t] = db.tables[t].length;
-  }
+  // Public health check — Render uses this to verify the deploy is live.
+  // SECURITY: Only expose the minimum required. Full diagnostics are at /api/admin/health (auth required).
   json(res, 200, {
     status: 'operational',
     version: '1.0.0-standalone',
-    database: USE_POSTGRES ? 'postgresql' : (process.env.DATABASE_URL ? 'json-file-fallback' : 'json-file'),
-    wsClients: wsClients.size,
-    symbols: Object.keys(marketPrices).length,
-    users: db.count('users'),
     uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
-    memory: {
-      rss_mb: Math.round(mem.rss / 1048576),
-      heap_used_mb: Math.round(mem.heapUsed / 1048576),
-      heap_total_mb: Math.round(mem.heapTotal / 1048576),
-      external_mb: Math.round(mem.external / 1048576),
-    },
-    tableSizes,
-    cloudSync: {
-      enabled: CLOUD_SYNC_ENABLED,
-      backend: CLOUD_BACKEND,
-      blobId: BLOB_ID || null,
-      lastSync: lastCloudSyncTime || null,
-    },
-    rateLimit: {
-      maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour,
-      tradesThisHour: platformHourlyTradeCount,
-      windowResetsIn: Math.max(0, Math.ceil((platformHourlyWindowStart + 3600000 - Date.now()) / 60000)) + 'min',
-    },
-    errorTracking: { recentErrors: errorLog.length, lastError: errorLog.length > 0 ? errorLog[errorLog.length - 1].timestamp : null },
-    productionReady: { alpaca: !!ALPACA_API_KEY, email: !!RESEND_API_KEY, database: !!process.env.DATABASE_URL, jwt: !!process.env.JWT_SECRET },
   });
 });
 
@@ -3213,8 +3186,8 @@ api.post('/api/auth/login', async (req, res) => {
 
   if (user.status === 'suspended') return json(res, 403, { error: 'Account suspended' });
 
-  // Enforce admin role for designated admin email (fallback to hardcoded if env var empty)
-  const designatedAdmin = ADMIN_EMAIL || 'abose.ctc@gmail.com';
+  // Enforce admin role for designated admin email (requires ADMIN_EMAIL env var)
+  const designatedAdmin = ADMIN_EMAIL;
   if (user.email === designatedAdmin && user.role !== 'admin') {
     db.update('users', u => u.id === user.id, { role: 'admin' });
     user.role = 'admin';
@@ -3250,7 +3223,8 @@ api.post('/api/auth/change-password', auth, async (req, res) => {
   const { currentPassword, newPassword } = body;
 
   if (!currentPassword || !newPassword) return json(res, 400, { error: 'Current and new password required' });
-  if (newPassword.length < 6) return json(res, 400, { error: 'New password must be at least 6 characters' });
+  if (newPassword.length < 8) return json(res, 400, { error: 'New password must be at least 8 characters' });
+  if (!/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) return json(res, 400, { error: 'Password must contain at least one uppercase letter and one number' });
 
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user) return json(res, 404, { error: 'User not found' });
@@ -4710,7 +4684,7 @@ api.post('/api/admin/backup', auth, (req, res) => {
     db._rotateBackup();
     json(res, 200, { success: true, message: 'Full backup completed', timestamp: new Date().toISOString() });
   } catch (err) {
-    json(res, 500, { error: `Backup failed: ${err.message}` });
+    apiError(res, err, 'Backup failed');
   }
 });
 
@@ -4916,7 +4890,7 @@ api.get('/api/admin/backup/list', auth, (req, res) => {
       files,
     });
   } catch (err) {
-    json(res, 500, { error: `Failed to list backups: ${err.message}` });
+    apiError(res, err, 'Failed to list backups');
   }
 });
 
@@ -4939,7 +4913,7 @@ api.get('/api/admin/backup/download/:filename', auth, (req, res) => {
     const parsed = JSON.parse(data);
     json(res, 200, { filename, data: parsed });
   } catch (err) {
-    json(res, 500, { error: `Failed to read backup: ${err.message}` });
+    apiError(res, err, 'Failed to read backup');
   }
 });
 
@@ -5023,7 +4997,7 @@ api.post('/api/admin/backup/restore', auth, async (req, res) => {
     });
   } catch (err) {
     console.error(`[RESTORE] Failed: ${err.message}`);
-    json(res, 500, { error: `Restore failed: ${err.message}` });
+    apiError(res, err, 'Restore failed');
   }
 });
 
@@ -13060,7 +13034,7 @@ api.post('/api/admin/tax/allocations/:year', auth, async (req, res) => {
     json(res, 200, { success: true, fundTotals: normalizedSummary, allocations: result.allocations });
   } catch (err) {
     console.error(`[TaxEngine] K-1 computation failed for ${taxYear}:`, err.message, err.stack);
-    json(res, 500, { error: `K-1 computation failed: ${err.message}` });
+    apiError(res, err, 'K-1 computation failed');
   }
 });
 
@@ -13467,7 +13441,7 @@ api.post('/api/admin/users/fix-roles', auth, async (req, res) => {
   const admin = db.findOne('users', u => u.id === req.userId);
   if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
 
-  const DESIGNATED_ADMIN = ADMIN_EMAIL || 'abose.ctc@gmail.com';
+  const DESIGNATED_ADMIN = ADMIN_EMAIL; // set via ADMIN_EMAIL env var
   const users = db.findMany('users');
   const fixes = [];
   for (const u of users) {
@@ -13524,7 +13498,7 @@ api.get('/api/admin/recovery/snapshots', auth, async (req, res) => {
     );
     json(res, 200, { count: result.rows.length, snapshots: result.rows });
   } catch (e) {
-    json(res, 500, { error: 'Failed to list snapshots', detail: e.message });
+    apiError(res, e, 'Failed to list snapshots');
   }
 });
 
@@ -13540,7 +13514,7 @@ api.get('/api/admin/recovery/snapshot', auth, async (req, res) => {
     if (result.rows.length === 0) return json(res, 404, { error: 'Snapshot not found' });
     json(res, 200, result.rows[0]);
   } catch (e) {
-    json(res, 500, { error: 'Failed to get snapshot', detail: e.message });
+    apiError(res, e, 'Failed to get snapshot');
   }
 });
 
@@ -13594,7 +13568,7 @@ api.post('/api/admin/recovery/restore', auth, async (req, res) => {
     console.log(`[Recovery] ✅ Restored from snapshot ${body.snapshotId}: ${report.length} wallets`);
     json(res, 200, { success: true, snapshotId: body.snapshotId, snapshotTime: snapData.timestamp, report });
   } catch (e) {
-    json(res, 500, { error: 'Restore failed', detail: e.message });
+    apiError(res, e, 'Restore failed');
   }
 });
 
@@ -13634,7 +13608,7 @@ api.post('/api/admin/recovery/snapshot-now', auth, async (req, res) => {
     );
     json(res, 200, { success: true, snapshotId, timestamp: snapshotData.timestamp, wallets: wallets.length, users: users.length });
   } catch (e) {
-    json(res, 500, { error: 'Snapshot failed', detail: e.message });
+    apiError(res, e, 'Snapshot failed');
   }
 });
 
