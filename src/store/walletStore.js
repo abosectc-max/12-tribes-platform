@@ -28,6 +28,9 @@ function saveToStorage(key, value) {
 
 // ═══════ WALLET STATE ═══════
 let walletState = {
+  // NOTE: localStorage values are treated as stale cache only.
+  // Components MUST check `isServerSynced()` before treating wallet data as authoritative.
+  // The server is the single source of truth. localStorage is only a fallback for offline mode.
   wallets: loadFromStorage(STORAGE_KEY_WALLETS) || {},
   positions: loadFromStorage(STORAGE_KEY_POSITIONS) || [],
   tradeHistory: loadFromStorage(STORAGE_KEY_HISTORY) || [],
@@ -35,6 +38,9 @@ let walletState = {
   marketPrices: {},
   lastUpdate: Date.now(),
   dataSource: 'simulated',
+  // Sync tracking — always false at startup; set to true only after a successful server sync
+  _serverSynced: false,
+  _serverSyncedAt: null,
 };
 
 // Initialize agent stats if empty
@@ -482,6 +488,8 @@ export async function syncFromServer(userId) {
     }
 
     clearTimeout(timeout);
+    walletState._serverSynced = true;
+    walletState._serverSyncedAt = Date.now();
     console.log('[WalletStore] Server sync complete — wallet, positions, history, agents hydrated');
     return true;
   } catch (err) {
@@ -489,6 +497,42 @@ export async function syncFromServer(userId) {
     console.warn('[WalletStore] Server sync failed (using local cache):', err.message);
     return false;
   }
+}
+
+/**
+ * Returns true only after a successful server sync in this session.
+ * Use this to gate rendering of financial data — never show localStorage
+ * data as authoritative until confirmed by the server.
+ */
+export function isServerSynced() {
+  return walletState._serverSynced === true;
+}
+
+/**
+ * Returns the timestamp of the last successful server sync, or null.
+ */
+export function getLastSyncTime() {
+  return walletState._serverSyncedAt;
+}
+
+/**
+ * Clear all locally cached financial data on logout.
+ * This prevents a different user (or an attacker who gains device access)
+ * from seeing stale financial data from a previous session.
+ */
+export function clearLocalCache() {
+  walletState.wallets = {};
+  walletState.positions = [];
+  walletState.tradeHistory = [];
+  walletState.agentStats = {};
+  walletState._serverSynced = false;
+  walletState._serverSyncedAt = null;
+  try {
+    localStorage.removeItem(STORAGE_KEY_WALLETS);
+    localStorage.removeItem(STORAGE_KEY_POSITIONS);
+    localStorage.removeItem(STORAGE_KEY_HISTORY);
+    localStorage.removeItem(STORAGE_KEY_AGENT_STATS);
+  } catch { /* localStorage unavailable */ }
 }
 
 export { executeTrade, closePosition, tickPrices, INITIAL_BALANCE, AI_AGENTS };

@@ -4,6 +4,7 @@
 //   Backend Sync: Registers/logins sync to server for cross-device access
 //   Falls back to localStorage-only if server unreachable
 // ═══════════════════════════════════════════
+import { clearLocalCache } from './walletStore.js';
 
 // ═══════ BACKEND API SYNC LAYER ═══════
 const API_BASE = (() => {
@@ -1101,7 +1102,23 @@ export function getSession() {
   return currentSession;
 }
 
-export function logout() {
+export async function logout() {
+  // 1. Revoke the token server-side so it cannot be replayed after logout
+  if (authToken) {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      });
+    } catch { /* server unreachable — token will expire naturally on its own */ }
+  }
+  // 2. Clear all locally cached financial data so the next user of this device
+  //    cannot see wallet balances, positions, or trade history from this session.
+  clearLocalCache();
   currentSession = null;
   removeFromStorage(STORAGE_KEY_SESSION);
   clearToken();

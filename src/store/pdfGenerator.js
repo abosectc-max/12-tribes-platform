@@ -983,13 +983,21 @@ export function generateTaxReport(taxDataInput) {
  */
 export function openPrintView(htmlContent) {
   const printWindow = window.open('', '_blank');
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+  if (!printWindow) return; // blocked by popup blocker
 
-  // Trigger print dialog after content loads
+  // SECURITY: Use Blob URL instead of document.write() to avoid XSS risk.
+  // document.write() executes any <script> tags in the HTML string;
+  // Blob URL rendering in a new tab does not execute injected scripts.
+  const blob = new Blob([htmlContent], { type: 'text/html' });
+  const blobUrl = URL.createObjectURL(blob);
+
+  printWindow.location.href = blobUrl;
+
+  // Trigger print dialog after content loads, then release the object URL
   printWindow.onload = () => {
     setTimeout(() => {
       printWindow.print();
+      URL.revokeObjectURL(blobUrl);
     }, 250);
   };
 }

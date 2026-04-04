@@ -767,10 +767,27 @@ function verifyPassword(password, stored) {
   return test === hash;
 }
 
+// ─── Token Revocation Store ───
+// Maps jti → expiry timestamp. Checked on every verifyJWT call.
+// Pruned every 10 minutes to remove expired entries (memory safety).
+const revokedTokens = new Map(); // jti -> exp (unix seconds)
+setInterval(() => {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [jti, exp] of revokedTokens) {
+    if (exp < now) revokedTokens.delete(jti);
+  }
+}, 600000);
+
+function revokeToken(jti, exp) {
+  if (jti && exp) revokedTokens.set(jti, exp);
+}
+
 function createJWT(payload, expiresInSec = 86400) {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const now = Math.floor(Date.now() / 1000);
-  const body = Buffer.from(JSON.stringify({ ...payload, iat: now, exp: now + expiresInSec })).toString('base64url');
+  // jti (JWT ID) enables per-token revocation on logout
+  const jti = randomBytes(12).toString('base64url');
+  const body = Buffer.from(JSON.stringify({ ...payload, jti, iat: now, exp: now + expiresInSec })).toString('base64url');
   const signature = createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
   return `${header}.${body}.${signature}`;
 }
@@ -782,6 +799,8 @@ function verifyJWT(token) {
     if (signature !== expected) return null;
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    // Check revocation list
+    if (payload.jti && revokedTokens.has(payload.jti)) return null;
     return payload;
   } catch { return null; }
 }
@@ -3237,6 +3256,86 @@ api.post('/api/auth/change-password', auth, async (req, res) => {
   db._save('users');
 
   json(res, 200, { success: true, message: 'Password changed successfully' });
+});
+
+// ─── POST /api/auth/logout — Revoke current token (server-side invalidation) ───
+api.post('/api/auth/logout', auth, (req, res) => {
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+      if (payload.jti && payload.exp) {
+        revokeToken(payload.jti, payload.exp);
+      }
+    } catch { /* invalid token — already expired or malformed, nothing to revoke */ }
+  }
+  json(res, 200, { success: true, message: 'Logged out. Token invalidated.' });
+});
+
+// ─── DELETE /api/auth/account — Self-service account deletion (GDPR Art. 17 / CCPA) ───
+// Requires password re-authentication to prevent accidental or unauthorized deletion.
+api.delete('/api/auth/account', auth, async (req, res) => {
+  const body = await readBody(req);
+  const { password } = body;
+
+  if (!password) return json(res, 400, { error: 'Password required to confirm account deletion' });
+
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user) return json(res, 404, { error: 'User not found' });
+
+  // Re-authenticate: require current password
+  if (!verifyPassword(password, user.password_hash)) {
+    return json(res, 401, { error: 'Incorrect password. Account not deleted.' });
+  }
+
+  // Admins cannot self-delete via this endpoint (prevents accidental lockout)
+  if (user.role === 'admin') {
+    return json(res, 403, { error: 'Admin accounts cannot be self-deleted. Contact another admin.' });
+  }
+
+  const userId = user.id;
+  const userEmail = user.email;
+
+  // 1. Close all open positions
+  db.findMany('positions', p => p.user_id === userId && p.status === 'OPEN').forEach(pos => {
+    pos.status = 'CLOSED';
+    pos.closed_at = new Date().toISOString();
+    pos.close_reason = 'account_deleted_by_user';
+  });
+  db._save('positions');
+
+  // 2. Anonymize PII in trade history (retain for regulatory record-keeping, but strip identity)
+  db.findMany('trades', t => t.user_id === userId).forEach(t => {
+    t.user_id = `deleted:${userId.slice(0, 8)}`;
+  });
+  db._save('trades');
+
+  // 3. Remove wallet, login log, signals, and agent stats
+  db.remove('wallets', w => w.user_id === userId);
+  db.remove('login_log', l => l.user_id === userId);
+  db.remove('signals', s => s.user_id === userId);
+  db.remove('agent_stats', a => a.user_id === userId);
+  db.remove('snapshots', s => s.user_id === userId);
+  db.remove('verification_codes', v => v.email === userEmail);
+
+  // 4. Delete user record (PII erased)
+  db.remove('users', u => u.id === userId);
+
+  // 5. Audit log the deletion
+  db.insert('audit_log', {
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    category: 'account',
+    action: 'ACCOUNT_DELETED_BY_USER',
+    user_id: `deleted:${userId.slice(0, 8)}`,
+    details: { email_hash: createHash('sha256').update(userEmail).digest('hex').slice(0, 16) },
+    immutable: true,
+    created_at: new Date().toISOString(),
+  });
+
+  console.log(`[GDPR] Account self-deleted: ${userEmail} (${userId})`);
+  json(res, 200, { success: true, message: 'Account and associated data deleted.' });
 });
 
 // ═══════════════════════════════════════════
