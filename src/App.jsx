@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom'
 import { haptics } from './hooks/useHaptics.js'
 import { getSession } from './store/authStore.js'
@@ -12,20 +12,45 @@ window.fetch = function(url, opts = {}) {
   return _origFetch.call(this, url, opts);
 };
 
-// Pages
+// ── Eager imports (always needed on initial load) ──
 import Landing from './pages/Landing.jsx'
-import MissionControl from './pages/MissionControl.jsx'
-import InvestorPortal from './pages/InvestorPortal.jsx'
-import TradingEngine from './pages/TradingEngine.jsx'
-import RiskAnalytics from './pages/RiskAnalytics.jsx'
-import Performance from './pages/Performance.jsx'
-import MarketIntel from './pages/MarketIntel.jsx'
-import MobileApp from './pages/MobileApp.jsx'
-import PaperTrading from './pages/PaperTrading.jsx'
 import TermsConditions from './pages/TermsConditions.jsx'
 import InstallPrompt from './components/InstallPrompt.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { initializeTheme } from './store/themeService.js'
+
+// ── Lazy page imports (loaded on-demand, per route) ──
+// Each authenticated page loads only when navigated to.
+// recharts, walletStore, signalConsensus etc. are deferred until needed.
+const MissionControl  = lazy(() => import('./pages/MissionControl.jsx'));
+const InvestorPortal  = lazy(() => import('./pages/InvestorPortal.jsx'));
+const TradingEngine   = lazy(() => import('./pages/TradingEngine.jsx'));
+const RiskAnalytics   = lazy(() => import('./pages/RiskAnalytics.jsx'));
+const Performance     = lazy(() => import('./pages/Performance.jsx'));
+const MarketIntel     = lazy(() => import('./pages/MarketIntel.jsx'));
+const MobileApp       = lazy(() => import('./pages/MobileApp.jsx'));
+const PaperTrading    = lazy(() => import('./pages/PaperTrading.jsx'));
+
+// ── Page loading skeleton ──
+function PageLoader() {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      minHeight: '60vh', flexDirection: 'column', gap: 16,
+    }}>
+      <div style={{
+        width: 40, height: 40, borderRadius: '50%',
+        border: '3px solid rgba(255,255,255,0.08)',
+        borderTopColor: 'rgba(139,92,246,0.8)',
+        animation: 'spin 0.7s linear infinite',
+      }} />
+      <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', letterSpacing: 2 }}>
+        LOADING
+      </span>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
 
 // Initialize theme immediately on module load (before first render)
 initializeTheme();
@@ -202,18 +227,20 @@ export default function App() {
   return (
     <BrowserRouter>
       <div style={{ paddingBottom: 70 }}>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/mission-control" element={<ProtectedRoute><ErrorBoundary><MissionControl /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/investor-portal" element={<ProtectedRoute><ErrorBoundary><InvestorPortal /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/trading-engine" element={<ProtectedRoute><ErrorBoundary><TradingEngine /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/risk-analytics" element={<ProtectedRoute><ErrorBoundary><RiskAnalytics /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/performance" element={<ProtectedRoute><ErrorBoundary><Performance /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/market-intel" element={<ProtectedRoute><ErrorBoundary><MarketIntel /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/mobile" element={<ProtectedRoute><ErrorBoundary><MobileApp /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/paper-trading" element={<ProtectedRoute><ErrorBoundary><PaperTrading /></ErrorBoundary></ProtectedRoute>} />
-          <Route path="/terms" element={<TermsConditions />} />
-        </Routes>
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route path="/mission-control" element={<ProtectedRoute><ErrorBoundary><MissionControl /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/investor-portal" element={<ProtectedRoute><ErrorBoundary><InvestorPortal /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/trading-engine" element={<ProtectedRoute><ErrorBoundary><TradingEngine /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/risk-analytics" element={<ProtectedRoute><ErrorBoundary><RiskAnalytics /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/performance" element={<ProtectedRoute><ErrorBoundary><Performance /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/market-intel" element={<ProtectedRoute><ErrorBoundary><MarketIntel /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/mobile" element={<ProtectedRoute><ErrorBoundary><MobileApp /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/paper-trading" element={<ProtectedRoute><ErrorBoundary><PaperTrading /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/terms" element={<TermsConditions />} />
+          </Routes>
+        </Suspense>
         <AppNav />
         <InstallPrompt />
       </div>
