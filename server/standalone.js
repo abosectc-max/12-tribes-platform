@@ -3168,10 +3168,16 @@ const api = new Router();
 api.get('/api/health', (req, res) => {
   // Public health check — Render uses this to verify the deploy is live.
   // SECURITY: Only expose the minimum required. Full diagnostics are at /api/admin/health (auth required).
+  const uptimeSecs = Math.round(process.uptime());
   json(res, 200, {
     status: 'operational',
     version: '1.0.0-standalone',
-    uptime: Math.round(process.uptime()),
+    uptime: uptimeSecs,
+    // deployedAt: approximate boot timestamp — useful for confirming a fresh deploy
+    // (Date.now() - uptime) may drift slightly due to process.uptime() granularity
+    deployedAt: new Date(Date.now() - uptimeSecs * 1000).toISOString(),
+    // commit: first 8 chars of the Render-injected git SHA — safe to expose for deploy verification
+    commit: (process.env.RENDER_GIT_COMMIT || 'local').slice(0, 8),
     timestamp: new Date().toISOString(),
   });
 });
@@ -9908,16 +9914,25 @@ const autoTradeInterval = setInterval(() => {
       const heapMB = Math.round(mem.heapUsed / 1048576);
       const rssMB = Math.round(mem.rss / 1048576);
       console.log(`[PERF] Tick #${autoTradeTickCount}: ${tickDuration}ms | avg=${metrics.avgTickMs}ms | heap=${heapMB}MB rss=${rssMB}MB | indCache=${metrics.indicatorHitRate} | sigCache=${metrics.signalHitRate} | computed=${perfMetrics.signalsComputed} | skipped=${perfMetrics.signalsSkippedUnchanged}`);
-      // Memory pressure warning + emergency measures
-      if (rssMB > 350) {
-        console.warn(`[MEMORY] ⚠️ RSS at ${rssMB}MB — approaching Render 512MB limit`);
-        // Emergency: purge all caches
+      // ── Memory pressure guard — tiered for Render Starter (8 GB RAM, heap limit 6144 MB) ──
+      // Tier 1 — INFO    : RSS > 2048 MB (~25% of RAM)  → log only, no action
+      // Tier 2 — WARNING : RSS > 4096 MB (~50% of RAM)  → evict caches + prune tables
+      // Tier 3 — CRITICAL: RSS > 6144 MB (= heap ceiling) → everything above + force GC
+      if (rssMB > 6144) {
+        console.error(`[MEMORY] 🔴 CRITICAL: RSS at ${rssMB}MB — at heap ceiling (6144MB). Purging caches + forcing GC.`);
         for (const key in indicatorCache) delete indicatorCache[key];
         for (const key in signalCache) delete signalCache[key];
-        // Force prune tables
         db.pruneOperationalTables();
         if (typeof global.gc === 'function') global.gc();
-        console.warn(`[MEMORY] Emergency cache purge + table prune executed`);
+        console.warn(`[MEMORY] Emergency cache purge + table prune + GC executed`);
+      } else if (rssMB > 4096) {
+        console.warn(`[MEMORY] ⚠️ WARNING: RSS at ${rssMB}MB — exceeds 50% of RAM. Purging caches.`);
+        for (const key in indicatorCache) delete indicatorCache[key];
+        for (const key in signalCache) delete signalCache[key];
+        db.pruneOperationalTables();
+        console.warn(`[MEMORY] Preventive cache purge + table prune executed`);
+      } else if (rssMB > 2048) {
+        console.info(`[MEMORY] ℹ️ INFO: RSS at ${rssMB}MB — above 25% of RAM. Monitoring.`);
       }
 
       // Routine cache cleanup every 30 ticks (~5min) — evict stale entries

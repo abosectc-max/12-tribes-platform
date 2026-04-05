@@ -1,9 +1,15 @@
 // ═══════════════════════════════════════════
-//   12 TRIBES — SERVICE WORKER v1.0
+//   12 TRIBES — SERVICE WORKER v3
 //   Offline-first PWA with cache strategies
+//
+//   v3 (2026-04-04): Bump required to purge the pre-split 1.2 MB
+//   single-bundle cached in v2. Vite now emits 15 content-hashed
+//   chunks (vendor-react, vendor-charts, per-route pages).
+//   Stale-while-revalidate is safe because Vite content-hash names
+//   guarantee cache miss on any changed chunk.
 // ═══════════════════════════════════════════
 
-const CACHE_NAME = '12tribes-v2';
+const CACHE_NAME = '12tribes-v3';
 const OFFLINE_URL = '/offline.html';
 
 // Assets to pre-cache on install
@@ -52,8 +58,13 @@ self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (request.method !== 'GET') return;
 
-  // Skip external API calls (CoinGecko, Yahoo Finance) — always network
+  // Skip all external requests (Render backend, CoinGecko, Yahoo Finance) — always network
   if (url.hostname !== self.location.hostname) return;
+
+  // Skip /api/ paths — financial data must never be stale-cached
+  // (Belt-and-suspenders: the backend is on a different hostname so this guard
+  // is redundant today, but protects against future same-origin API proxying.)
+  if (url.pathname.startsWith('/api/')) return;
 
   // Navigation requests: Network-first, fallback to offline page
   if (request.mode === 'navigate') {
