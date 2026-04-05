@@ -12,10 +12,9 @@
 // DEPENDENCIES (Relative imports from src/store/)
 // ============================================================================
 
-// NOTE: Import these when integrating with actual store modules:
-// import { executeTrade, getWalletState } from './walletStore.js';
-// import { getConsensusSignal, getAgentAccuracy } from './signalConsensus.js';
-// import { emergencyStop as monitorEmergencyStop } from './healthMonitor.js';
+import { executeTrade, getWalletState } from './walletStore.js';
+import { getConsensus, getAgentLeaderboard } from './signalConsensus.js';
+import { getCircuitBreakerStatus } from './healthMonitor.js';
 
 // ============================================================================
 // STATE MANAGEMENT
@@ -335,8 +334,8 @@ async function runTradingTick() {
       return;
     }
 
-    // 4. Get consensus signal (stub: would call signalConsensus module)
-    const consensusSignal = getStubConsensusSignal();
+    // 4. Get best actionable consensus signal across all allowed assets
+    const consensusSignal = getBestConsensusSignal();
 
     if (!consensusSignal || consensusSignal.score < 0.5) {
       console.debug('[AutoTrader] Consensus signal below threshold');
@@ -371,19 +370,40 @@ async function runTradingTick() {
 }
 
 /**
- * Gets stub consensus signal for testing
+ * Scans all allowed assets and returns the highest-confidence actionable consensus signal.
+ * Returns null if no symbol clears the confidence threshold or all are sentinel-vetoed.
  * @private
  */
-function getStubConsensusSignal() {
-  // In real implementation, call signalConsensus.getConsensus()
-  return {
-    asset: 'BTC',
-    action: 'buy',
-    score: 0.75,
-    confidence: 0.82,
-    agents: { bullish: 3, bearish: 1, neutral: 1 },
-    timestamp: Date.now(),
-  };
+function getBestConsensusSignal() {
+  const allowedAssets = autoTraderConfig.allowedAssets || ['BTC', 'ETH', 'AAPL', 'GOOGL', 'SPY'];
+  let bestSignal = null;
+
+  for (const symbol of allowedAssets) {
+    const consensus = getConsensus(symbol);
+    if (!consensus) continue;
+    if (consensus.sentinelVeto) continue;
+    if (!consensus.direction || consensus.direction === 'NEUTRAL') continue;
+
+    const normalizedConfidence = consensus.confidence / 100; // 0-100 → 0-1
+    if (!bestSignal || normalizedConfidence > bestSignal.confidence) {
+      bestSignal = {
+        asset: symbol,
+        action: consensus.direction === 'LONG' ? 'buy' : 'sell',
+        score: consensus.score / 100,        // 0-100 → 0-1
+        confidence: normalizedConfidence,
+        direction: consensus.direction,
+        recommendation: consensus.recommendation,
+        agents: {
+          bullish: consensus.direction === 'LONG' ? (consensus.agentAgreement || 0) : 0,
+          bearish: consensus.direction === 'SHORT' ? (consensus.agentAgreement || 0) : 0,
+          neutral: 0,
+        },
+        timestamp: Date.now(),
+      };
+    }
+  }
+
+  return bestSignal;
 }
 
 // ============================================================================
@@ -536,12 +556,35 @@ function validateConsensus(consensus) {
 }
 
 /**
- * Checks Sentinel veto (stub)
+ * Checks Sentinel veto via circuit breaker status and per-symbol sentinel signal.
+ * Non-blocking: if the check itself errors, trade is allowed with a warning.
  * @private
  */
 async function checkSentinelVeto(signal) {
-  // In real implementation, call Sentinel monitoring service
-  return { vetoed: false, reason: null };
+  try {
+    // 1. Platform-level circuit breaker (healthMonitor)
+    const cbStatus = getCircuitBreakerStatus();
+    if (cbStatus && cbStatus.tripped) {
+      return {
+        vetoed: true,
+        reason: `Circuit breaker tripped: ${cbStatus.reason || 'risk threshold exceeded'}`,
+      };
+    }
+
+    // 2. Symbol-level sentinel signal (signalConsensus)
+    const consensus = getConsensus(signal.asset);
+    if (consensus && consensus.sentinelVeto) {
+      return {
+        vetoed: true,
+        reason: `Sentinel agent issued block signal for ${signal.asset}`,
+      };
+    }
+
+    return { vetoed: false, reason: null };
+  } catch (e) {
+    console.warn('[AutoTrader] Sentinel veto check failed (non-blocking):', e.message);
+    return { vetoed: false, reason: null };
+  }
 }
 
 /**
@@ -567,26 +610,50 @@ function calculatePositionSize(signal, consensus) {
 }
 
 /**
- * Places order via wallet (stub)
+ * Places order via walletStore.executeTrade().
+ * Converts Kelly-fraction position size (%) to discrete units based on account balance.
  * @private
  */
-async function placeOrder(signal, quantity) {
+async function placeOrder(signal, positionSizePct) {
   try {
-    // In real implementation: call walletStore.executeTrade()
-    // For now, stub successful order
+    const investorId = autoTraderConfig.investorId;
+    if (!investorId) {
+      return { success: false, error: 'No investorId configured in autoTraderConfig' };
+    }
+
+    const walletState = getWalletState();
+    const wallet = walletState?.wallets?.[investorId];
+    if (!wallet) {
+      return { success: false, error: `Wallet not found for investor ${investorId}` };
+    }
+
+    const prices = walletState?.marketPrices || {};
+    const currentPrice = prices[signal.asset];
+    if (!currentPrice || currentPrice <= 0) {
+      return { success: false, error: `No live price for ${signal.asset}` };
+    }
+
+    // Convert % of account → discrete units (minimum 1)
+    const tradeValue = wallet.balance * (positionSizePct / 100);
+    const units = Math.max(1, Math.floor(tradeValue / currentPrice));
+
+    const side = signal.action === 'buy' ? 'LONG' : 'SHORT';
+    const result = executeTrade({ symbol: signal.asset, side, quantity: units, investorId });
+
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
     return {
       success: true,
-      orderId: `ORDER_${Date.now()}`,
+      orderId: result.trade.id,
       asset: signal.asset,
-      quantity,
-      executedPrice: 45000, // Stub price
+      quantity: units,
+      executedPrice: currentPrice,
       timestamp: Date.now(),
     };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return { success: false, error: error.message };
   }
 }
 
@@ -874,7 +941,7 @@ export function runDailyRecap() {
     bestTrade: dailyStats.bestTrade ? `$${dailyStats.bestTrade.toFixed(2)}` : 'N/A',
     worstTrade: dailyStats.worstTrade ? `$${dailyStats.worstTrade.toFixed(2)}` : 'N/A',
     activePositions: getActivePositionSummary(),
-    agentPerformance: getStubAgentPerformance(),
+    agentPerformance: getAgentPerformance(),
     riskEvents: [],
     portfolioState: {
       totalValue: 100000, // Stub
@@ -904,15 +971,27 @@ export function runDailyRecap() {
 }
 
 /**
- * Gets stub agent performance (real implementation would aggregate agent accuracy)
+ * Returns live agent performance from signalConsensus leaderboard.
+ * Falls back to empty object if no data is available yet.
  * @private
  */
-function getStubAgentPerformance() {
-  return {
-    bullishAgent: { accuracy: 0.72, signals: 5 },
-    bearishAgent: { accuracy: 0.68, signals: 3 },
-    neutralAgent: { accuracy: 0.65, signals: 2 },
-  };
+function getAgentPerformance() {
+  try {
+    const leaderboard = getAgentLeaderboard();
+    const perf = {};
+    for (const agent of leaderboard) {
+      perf[agent.agentId] = {
+        accuracy: agent.winRate / 100,   // 0-100 → 0.0-1.0
+        signals: agent.totalTrades,
+        sharpe: agent.sharpe,
+        totalPnL: agent.totalPnL,
+      };
+    }
+    return perf;
+  } catch (e) {
+    console.warn('[AutoTrader] Agent performance lookup failed:', e.message);
+    return {};
+  }
 }
 
 /**

@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "lint": "eslint src --ext .js,.jsx --max-warnings 0"
+    "lint": "eslint src --ext .js,.jsx --max-warnings 0",
+    "test:security": "node --test server/tests/security.test.js",
+    "test:security:prod": "TEST_SERVER_URL=https://one2-tribes-api.onrender.com node --test server/tests/security.test.js"
   },
   "dependencies": {
     "pg": "^8.20.0",
