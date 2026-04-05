@@ -4389,12 +4389,15 @@ api.put('/api/auth/notification-prefs', auth, async (req, res) => {
 // Submit a request (public — no auth)
 api.post('/api/access-requests', async (req, res) => {
   const body = await readBody(req);
-  const { firstName, lastName, email, message } = body;
+  const firstName = String(body.firstName || '').trim().slice(0, 100);
+  const lastName  = String(body.lastName  || '').trim().slice(0, 100);
+  const email     = String(body.email     || '').trim().slice(0, 254);
+  const message   = String(body.message   || '').trim().slice(0, 1000);
 
   if (!firstName || !lastName || !email) {
     return json(res, 400, { error: 'firstName, lastName, and email are required' });
   }
-  if (!email.includes('@') || !email.includes('.')) {
+  if (!EMAIL_RE.test(email)) {
     return json(res, 400, { error: 'Invalid email address' });
   }
 
@@ -6603,10 +6606,12 @@ api.get('/api/distributions', auth, (req, res) => {
 
 api.post('/api/messages', auth, async (req, res) => {
   const body = await readBody(req);
-  if (!body.body) return json(res, 400, { error: 'Message body required' });
+  if (!body.body || !String(body.body).trim()) return json(res, 400, { error: 'Message body required' });
+  const msgBody    = String(body.body).trim().slice(0, 5000);
+  const msgSubject = String(body.subject || '').trim().slice(0, 200);
   const msg = db.insert('messages', {
     id: randomUUID(), from_user_id: req.userId, to_user_id: body.toUserId || null,
-    subject: body.subject || '', body: body.body, read: false,
+    subject: msgSubject, body: msgBody, read: false,
     parent_id: body.parentId || null, created_at: new Date().toISOString()
   });
   json(res, 201, { success: true, message: msg });
@@ -6641,13 +6646,15 @@ api.post('/api/admin/messages/broadcast', auth, async (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
   const body = await readBody(req);
-  if (!body.body) return json(res, 400, { error: 'Message body required' });
+  if (!body.body || !String(body.body).trim()) return json(res, 400, { error: 'Message body required' });
+  const bcastBody    = String(body.body).trim().slice(0, 5000);
+  const bcastSubject = String(body.subject || 'Announcement').trim().slice(0, 200);
   const investors = db.findMany('users', u => u.role !== 'admin');
   const msgs = [];
   for (const inv of investors) {
     msgs.push(db.insert('messages', {
       id: randomUUID(), from_user_id: req.userId, to_user_id: inv.id,
-      subject: body.subject || 'Announcement', body: body.body,
+      subject: bcastSubject, body: bcastBody,
       read: false, parent_id: null, created_at: new Date().toISOString()
     }));
   }
@@ -6660,8 +6667,10 @@ api.post('/api/admin/email/broadcast', auth, async (req, res) => {
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
   const body = await readBody(req);
   if (!body.headline || !body.body) return json(res, 400, { error: 'headline and body required' });
-  const urgency = body.urgency || 'info';
-  const results = await sendBroadcastAnnouncement(body.headline, body.body, urgency);
+  const urgency         = ['info', 'warning', 'critical'].includes(body.urgency) ? body.urgency : 'info';
+  const emailHeadline   = String(body.headline).trim().slice(0, 200);
+  const emailBody       = String(body.body).trim().slice(0, 10000);
+  const results = await sendBroadcastAnnouncement(emailHeadline, emailBody, urgency);
   json(res, 200, { success: true, sent: results.filter(r => r.success).length, total: results.length });
 });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
 import * as recharts from "recharts";
 import { useResponsive } from '../hooks/useResponsive';
 import {
@@ -17,10 +17,14 @@ import {
 } from '../store/fundManager.js';
 import BrandLogo from '../components/BrandLogo.jsx';
 import { haptics } from '../hooks/useHaptics.js';
-// ── Extracted sub-components (W8-D) ──
-import AdminPanel from '../components/portal/AdminPanel.jsx';
-import ResearchView from '../components/portal/ResearchView.jsx';
-import SignalTracker from '../components/portal/SignalTracker.jsx';
+// ── Lazy-loaded tab panels (W10-C) — each becomes its own Vite chunk ──
+// React.lazy() here means: the chunk is only fetched when the user first
+// clicks that tab. Initial portal load never downloads admin/research/signals.
+const AdminPanel    = lazy(() => import('../components/portal/AdminPanel.jsx'));
+const ResearchView  = lazy(() => import('../components/portal/ResearchView.jsx'));
+const SignalTracker = lazy(() => import('../components/portal/SignalTracker.jsx'));
+const PerformanceView   = lazy(() => import('../components/portal/PerformanceView.jsx'));
+const AgentManagementView = lazy(() => import('../components/portal/AgentManagementView.jsx'));
 import { isPushSupported, getPermissionState, requestPermission, notifications as pushNotify } from '../hooks/useNotifications.js';
 import { generateMonthlyStatement, openPrintView } from '../store/pdfGenerator.js';
 import { getTheme, getThemePreference, setTheme, getAvailableThemes, applyTheme } from '../store/themeService.js';
@@ -1357,375 +1361,11 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
 //   PERFORMANCE VIEW — Daily/Weekly/Monthly/Annual
 // ════════════════════════════════════════
 
-function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }) {
-  const [chartPeriod, setChartPeriod] = useState("monthly");
-  const [serverPerf, setServerPerf] = useState(null);
-
-  const token = (() => { try { return localStorage.getItem('12tribes_auth_token') || ''; } catch { return ''; } })();
-  const apiBase = (() => {
-    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
-    return `http://${window.location.hostname}:4000/api`;
-  })();
-
-  const fetchPerf = useCallback(async () => {
-    try {
-      const res = await fetch(`${apiBase}/wallet/performance?period=${chartPeriod}`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      if (res.ok) setServerPerf(await res.json());
-    } catch {}
-  }, [chartPeriod]);
-
-  useEffect(() => {
-    fetchPerf();
-    const interval = setInterval(fetchPerf, 30000);
-    return () => clearInterval(interval);
-  }, [chartPeriod]);
-
-  const perf = getPerformanceMetrics(investor.id, wallet);
-  const chartData = getEquityHistoryByPeriod(investor.id, chartPeriod, perf.currentEquity, perf.initialBalance);
-  const breakdown = getPositionPerformance(positions, tradeHistory);
-
-  // Use server data to compute accurate all-time return when available
-  const currentEquity = serverPerf?.currentEquity || wallet?.equity || perf.currentEquity;
-  const initialBalance = serverPerf?.initialBalance || wallet?.initialBalance || perf.initialBalance;
-  const allTimePnL = currentEquity - initialBalance;
-  const allTimeReturn = initialBalance > 0 ? (allTimePnL / initialBalance * 100) : 0;
-
-  // Server-backed risk metrics (fallback when local snapshots are sparse)
-  const serverSharpe = perf.sharpeRatio || serverPerf?.sharpeRatio || 0;
-  const serverMaxDD = Math.abs(perf.maxDrawdown) || serverPerf?.maxDrawdown || 0;
-  const serverVolatility = perf.volatility || (() => {
-    const snaps = serverPerf?.snapshots;
-    if (!snaps || snaps.length < 3) return 0;
-    const r = [];
-    for (let i = 1; i < snaps.length; i++) {
-      if (snaps[i - 1].equity > 0) r.push((snaps[i].equity - snaps[i - 1].equity) / snaps[i - 1].equity * 100);
-    }
-    if (r.length < 2) return 0;
-    const m = r.reduce((a, b) => a + b, 0) / r.length;
-    return Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / r.length);
-  })();
-
-  // Override perf periods with server-computed data when snapshots are sparse
-  const hasGoodHistory = perf.equityHistory.length >= 7;
-  const periods = hasGoodHistory ? [
-    { key: "daily", label: "Today", ...perf.daily },
-    { key: "weekly", label: "7 Days", ...perf.weekly },
-    { key: "monthly", label: "30 Days", ...perf.monthly },
-    { key: "annual", label: "1 Year", ...perf.annual },
-  ] : [
-    // When history is sparse, use all-time return for all periods (they're equivalent)
-    { key: "daily", label: "Today", return: allTimeReturn, pnl: allTimePnL },
-    { key: "weekly", label: "7 Days", return: allTimeReturn, pnl: allTimePnL },
-    { key: "monthly", label: "30 Days", return: allTimeReturn, pnl: allTimePnL },
-    { key: "annual", label: "1 Year", return: allTimeReturn, pnl: allTimePnL },
-  ];
-
-  // Radial gauge for return %
-  const ReturnGauge = ({ pct, label, pnl, size = 130 }) => {
-    const clamped = Math.max(-20, Math.min(20, pct));
-    const normalized = ((clamped + 20) / 40); // 0 to 1
-    const angle = normalized * 270 - 135; // -135 to +135 degrees
-    const isPositive = pct >= 0;
-    const color = isPositive ? "#10B981" : "#EF4444";
-    const bgColor = isPositive ? "rgba(16,185,129,0.08)" : "rgba(239,68,68,0.08)";
-    const borderColor = isPositive ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)";
-    const r = size * 0.38;
-    const cx = size / 2;
-    const cy = size / 2 + 4;
-
-    // Create arc path for the gauge track
-    const startAngle = -225 * (Math.PI / 180);
-    const endAngle = 45 * (Math.PI / 180);
-    const fillAngle = (startAngle + (endAngle - startAngle) * normalized);
-
-    const arcPath = (start, end) => {
-      const x1 = cx + r * Math.cos(start);
-      const y1 = cy + r * Math.sin(start);
-      const x2 = cx + r * Math.cos(end);
-      const y2 = cy + r * Math.sin(end);
-      const largeArc = (end - start) > Math.PI ? 1 : 0;
-      return `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`;
-    };
-
-    return (
-      <div style={{
-        background: bgColor, border: `1px solid ${borderColor}`,
-        borderRadius: 20, padding: isMobile ? 16 : 20,
-        display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-      }}>
-        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 600 }}>
-          {label}
-        </div>
-        <svg width={size} height={size * 0.68} viewBox={`0 0 ${size} ${size * 0.72}`}>
-          {/* Track */}
-          <path d={arcPath(startAngle, endAngle)} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={8} strokeLinecap="round" />
-          {/* Fill */}
-          <path d={arcPath(startAngle, fillAngle)} fill="none" stroke={color} strokeWidth={8} strokeLinecap="round" />
-          {/* Center text */}
-          <text x={cx} y={cy - 6} textAnchor="middle" fill={color} fontSize={size * 0.18} fontWeight="800" fontFamily="system-ui">
-            {isPositive ? "+" : ""}{pct.toFixed(2)}%
-          </text>
-          <text x={cx} y={cy + 12} textAnchor="middle" fill="rgba(255,255,255,0.35)" fontSize={10} fontFamily="system-ui">
-            {isPositive ? "+" : ""}${Math.abs(pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          </text>
-        </svg>
-      </div>
-    );
-  };
-
-  // Risk metric bar
-  const RiskBar = ({ label, value, max, color, suffix = "" }) => {
-    const pct = Math.min(Math.abs(value) / max * 100, 100);
-    return (
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{label}</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color }}>{typeof value === 'number' ? (isNaN(value) ? '0.00' : value.toFixed(2)) : (value || '—')}{suffix}</span>
-        </div>
-        <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,0.06)" }}>
-          <div style={{ height: "100%", borderRadius: 3, background: color, width: `${pct}%`, transition: "width 0.5s ease" }} />
-        </div>
-      </div>
-    );
-  };
-
-  const chartXKey = chartPeriod === 'daily' ? 'time' : 'date';
-  const chartColor = (chartData.length >= 2 && chartData[chartData.length - 1]?.equity >= chartData[0]?.equity) ? "#10B981" : "#EF4444";
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-
-      {/* ─── HEADER WITH REFRESH ─── */}
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <RefreshButton onRefresh={fetchPerf} />
-      </div>
-
-      {/* ─── PERIOD RETURN METERS ─── */}
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 14 }}>
-        {periods.map(p => (
-          <ReturnGauge key={p.key} pct={p.return} label={p.label} pnl={p.pnl} size={isMobile ? 110 : 140} />
-        ))}
-      </div>
-
-      {/* ─── ALL-TIME SUMMARY BAR ─── */}
-      <div style={{
-        ...glass, padding: isMobile ? 16 : 24,
-        display: "flex", alignItems: isMobile ? "flex-start" : "center",
-        flexDirection: isMobile ? "column" : "row",
-        gap: isMobile ? 12 : 32, justifyContent: "center",
-      }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>Current Equity</div>
-          <div style={{ fontSize: 28, fontWeight: 800, color: "#fff" }}>${currentEquity.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
-        </div>
-        <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.04)", display: isMobile ? "none" : "block" }} />
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>All-Time P&L</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: allTimePnL >= 0 ? "#10B981" : "#EF4444" }}>
-            {allTimePnL >= 0 ? "+" : ""}${Math.abs(allTimePnL).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          </div>
-        </div>
-        <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.04)", display: isMobile ? "none" : "block" }} />
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>All-Time Return</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: allTimeReturn >= 0 ? "#10B981" : "#EF4444" }}>
-            {allTimeReturn >= 0 ? "+" : ""}{allTimeReturn.toFixed(2)}%
-          </div>
-        </div>
-        {perf.winStreak > 0 && (
-          <>
-            <div style={{ width: 1, height: 40, background: "rgba(255,255,255,0.04)", display: isMobile ? "none" : "block" }} />
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>Win Streak</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: "#10B981" }}>{perf.winStreak} days</div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* ─── EQUITY CHART WITH PERIOD TOGGLE ─── */}
-      <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Equity Curve</div>
-          <div style={{ display: "flex", gap: 4 }}>
-            {[
-              { k: "daily", l: "1D" },
-              { k: "weekly", l: "1W" },
-              { k: "monthly", l: "1M" },
-              { k: "annual", l: "1Y" },
-            ].map(btn => (
-              <button key={btn.k} onClick={() => setChartPeriod(btn.k)}
-                style={{
-                  padding: "6px 14px", borderRadius: 10, border: "none", cursor: "pointer",
-                  fontSize: 12, fontWeight: 700, letterSpacing: 0.5,
-                  background: chartPeriod === btn.k ? "rgba(0,212,255,0.15)" : "rgba(255,255,255,0.04)",
-                  color: chartPeriod === btn.k ? "#00D4FF" : "rgba(255,255,255,0.4)",
-                  transition: "all 0.15s",
-                }}>
-                {btn.l}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div style={{ height: isMobile ? 220 : 300 }}>
-          <ResponsiveContainer>
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="perfGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={chartColor} stopOpacity={0.25} />
-                  <stop offset="100%" stopColor={chartColor} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-              <XAxis dataKey={chartXKey} stroke="rgba(255,255,255,0.2)" fontSize={10} tickLine={false}
-                tickFormatter={v => {
-                  if (chartPeriod === 'daily') return v;
-                  if (!v) return '';
-                  const parts = v.split('-');
-                  return `${parts[1]}/${parts[2]}`;
-                }}
-              />
-              <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} tickLine={false}
-                tickFormatter={v => `$${(v / 1000).toFixed(1)}k`}
-                domain={['auto', 'auto']}
-              />
-              <Tooltip
-                contentStyle={{ background: "rgba(0,0,0,0.9)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, fontSize: 12 }}
-                formatter={(v) => [`$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, "Equity"]}
-              />
-              <Area type="monotone" dataKey="equity" stroke={chartColor} fill="url(#perfGrad)" strokeWidth={2.5} dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* ─── RISK METRICS + BEST/WORST ─── */}
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 20 }}>
-        {/* Risk Metrics */}
-        <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Risk Metrics</div>
-          <RiskBar label="Sharpe Ratio" value={serverSharpe} max={3} color="#00D4FF" />
-          <RiskBar label="CAGR" value={serverPerf?.cagr || allTimeReturn} max={100} color="#10B981" suffix="%" />
-          <RiskBar label="Daily Volatility" value={serverVolatility} max={5} color="#F59E0B" suffix="%" />
-          <RiskBar label="Max Drawdown" value={serverMaxDD} max={25} color="#EF4444" suffix="%" />
-          <div style={{ marginTop: 8, padding: "12px 14px", borderRadius: 12, background: "rgba(255,255,255,0.03)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)" }}>Win / Loss Streak</span>
-              <div>
-                {perf.winStreak > 0 && <span style={{ fontSize: 13, fontWeight: 700, color: "#10B981", marginRight: 8 }}>{perf.winStreak}W</span>}
-                {perf.lossStreak > 0 && <span style={{ fontSize: 13, fontWeight: 700, color: "#EF4444" }}>{perf.lossStreak}L</span>}
-                {perf.winStreak === 0 && perf.lossStreak === 0 && <span style={{ fontSize: 12, color: "rgba(255,255,255,0.3)" }}>—</span>}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Best / Worst Days */}
-        <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Highlights</div>
-
-          <div style={{ padding: "14px 16px", borderRadius: 14, background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.12)", marginBottom: 12 }}>
-            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
-              {hasGoodHistory ? 'Best Day' : 'Total Gain'}
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>
-                {hasGoodHistory ? perf.bestDay.date : new Date().toISOString().split('T')[0]}
-              </span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: "#10B981" }}>
-                +{(hasGoodHistory ? perf.bestDay.return : (allTimeReturn > 0 ? allTimeReturn : 0)).toFixed(2)}%
-              </span>
-            </div>
-          </div>
-
-          <div style={{ padding: "14px 16px", borderRadius: 14, background: allTimeReturn < 0 ? "rgba(239,68,68,0.06)" : "rgba(255,255,255,0.03)", border: `1px solid ${allTimeReturn < 0 ? "rgba(239,68,68,0.12)" : "rgba(255,255,255,0.06)"}`, marginBottom: 16 }}>
-            <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
-              {hasGoodHistory ? 'Worst Day' : 'Win Rate'}
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>
-                {hasGoodHistory ? perf.worstDay.date : `${wallet?.winCount || 0}W / ${wallet?.lossCount || 0}L`}
-              </span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: hasGoodHistory ? "#EF4444" : "#00D4FF" }}>
-                {hasGoodHistory ? `${(perf.worstDay?.return || 0).toFixed(2)}%` : `${wallet?.winRate?.toFixed(1) || 0}%`}
-              </span>
-            </div>
-          </div>
-
-          {/* Performance by Asset Class */}
-          {breakdown.byAsset.length > 0 && (
-            <>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.5)", marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>By Asset Class</div>
-              {breakdown.byAsset.map(a => (
-                <div key={a.asset} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                  <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}>{a.asset}</span>
-                  <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                    <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>{a.trades} trades</span>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: a.pnl >= 0 ? "#10B981" : "#EF4444" }}>
-                      {a.pnl >= 0 ? "+" : ""}${a.pnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* ─── AGENT PERFORMANCE BREAKDOWN ─── */}
-      {breakdown.byAgent.length > 0 && (
-        <div style={{ ...glass, padding: isMobile ? 16 : 24 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginBottom: 16 }}>Agent Performance</div>
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 12 }}>
-            {breakdown.byAgent.map(a => {
-              const winRate = a.trades > 0 ? ((a.wins / a.trades) * 100) : 0;
-              return (
-                <div key={a.agent} style={{
-                  padding: "14px 16px", borderRadius: 14,
-                  background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
-                }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#00D4FF", marginBottom: 6 }}>{a.agent}</div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>P&L</span>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: a.pnl >= 0 ? "#10B981" : "#EF4444" }}>
-                      {a.pnl >= 0 ? "+" : ""}${a.pnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Win Rate</span>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: winRate >= 50 ? "#10B981" : "#EF4444" }}>{winRate.toFixed(1)}%</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>Trades</span>
-                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.6)" }}>{a.trades}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 
 // ════════════════════════════════════════
-//   RESEARCH VIEW — extracted to src/components/portal/ResearchView.jsx (W8-D)
+//   PERFORMANCE VIEW — extracted to src/components/portal/PerformanceView.jsx (W10-C)
 // ════════════════════════════════════════
-// ResearchView is imported above from ../components/portal/ResearchView.jsx
-
-
-
-// ════════════════════════════════════════
-//   FUND MANAGEMENT VIEW
-// ════════════════════════════════════════
-
-// ════════════════════════════════════════
-//   WITHDRAWAL REQUEST PANEL
-// ════════════════════════════════════════
+// PerformanceView is lazy-imported above from ../components/portal/PerformanceView.jsx
 
 function WithdrawalRequestPanel({ investorId, wallet, isMobile, glassStyle, pillBtn }) {
   const [amount, setAmount] = useState('');
@@ -2988,12 +2628,12 @@ function PortfolioDashboard({ investor, onLogout }) {
 
           {/* ═══ PERFORMANCE VIEW ═══ */}
           {activeTab === "performance" && (
-            <PerformanceView investor={investor} wallet={wallet} positions={positions} tradeHistory={tradeHistory} isMobile={isMobile} />
+            <Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:60, color:"rgba(255,255,255,0.3)", fontSize:13 }}>Loading...</div>}><PerformanceView investor={investor} wallet={wallet} positions={positions} tradeHistory={tradeHistory} isMobile={isMobile} /></Suspense>
           )}
 
           {/* ═══ RESEARCH VIEW ═══ */}
           {activeTab === "research" && (
-            <ResearchView isMobile={isMobile} />
+            <Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:60, color:"rgba(255,255,255,0.3)", fontSize:13 }}>Loading...</div>}><ResearchView isMobile={isMobile} /></Suspense>
           )}
 
           {/* ═══ ACTIVITY VIEW — Live Trade Feed ═══ */}
@@ -3048,7 +2688,7 @@ function PortfolioDashboard({ investor, onLogout }) {
 
           {/* ═══ AI AGENTS VIEW ═══ */}
           {activeTab === "agents" && (
-            <AgentManagementView isMobile={isMobile} isTablet={isTablet} glass={glass} />
+            <Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:60, color:"rgba(255,255,255,0.3)", fontSize:13 }}>Loading...</div>}><AgentManagementView isMobile={isMobile} isTablet={isTablet} glass={glass} /></Suspense>
           )}
 
           {/* ═══ STATEMENTS VIEW ═══ */}
@@ -3116,7 +2756,7 @@ function PortfolioDashboard({ investor, onLogout }) {
 
           {/* ═══ SIGNAL TRACKER ═══ */}
           {activeTab === "signals" && (
-            <SignalTracker investor={investor} isMobile={isMobile} />
+            <Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:60, color:"rgba(255,255,255,0.3)", fontSize:13 }}>Loading...</div>}><SignalTracker investor={investor} isMobile={isMobile} /></Suspense>
           )}
 
           {/* ═══ PAPER TRADING LINK ═══ */}
@@ -3179,7 +2819,7 @@ function PortfolioDashboard({ investor, onLogout }) {
 
           {/* ═══ ADMIN PANEL ═══ */}
           {activeTab === "admin" && investor?.role === 'admin' && (
-            <AdminPanel investor={investor} isMobile={isMobile} />
+            <Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:60, color:"rgba(255,255,255,0.3)", fontSize:13 }}>Loading...</div>}><AdminPanel investor={investor} isMobile={isMobile} /></Suspense>
           )}
         </div>
 
@@ -5056,302 +4696,11 @@ export default function TwelveTribes_InvestorPortal() {
 //   AGENT MANAGEMENT VIEW — Live status + toggle control
 // ════════════════════════════════════════
 
-function AgentManagementView({ isMobile, isTablet, glass }) {
-  const [agents, setAgents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [toggling, setToggling] = useState(null);
-  const [postMortems, setPostMortems] = useState([]);
-  const [insights, setInsights] = useState([]);
-  const [activeView, setActiveView] = useState('agents'); // 'agents' | 'post-mortems' | 'insights'
-
-  const AGENT_META = {
-    Viper: { icon: '⚡', color: '#00E676', role: 'Momentum & Speed' },
-    Oracle: { icon: '🔮', color: '#A855F7', role: 'Macro Intelligence' },
-    Spectre: { icon: '👻', color: '#FF6B6B', role: 'Options Strategy' },
-    Sentinel: { icon: '🛡️', color: '#00D4FF', role: 'Risk Guardian' },
-    Phoenix: { icon: '🔥', color: '#FFD93D', role: 'Self-Healing' },
-    Titan: { icon: '🏛️', color: '#FF8A65', role: 'Position Sizing' },
-  };
-
-  const token = (() => { try { return localStorage.getItem('12tribes_auth_token'); } catch { return null; } })();
-  const API = (() => {
-    if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_URL) return import.meta.env.VITE_API_URL;
-    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-    return `http://${hostname}:4000/api`;
-  })();
-  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
-
-  const fetchAgents = async () => {
-    try {
-      const resp = await fetch(`${API}/agents/status`, { headers });
-      if (resp.ok) { const data = await resp.json(); setAgents(data.agents || []); }
-    } catch (e) { console.error('Failed to fetch agents:', e); }
-    setLoading(false);
-  };
-
-  const fetchPostMortems = async () => {
-    try {
-      const resp = await fetch(`${API}/agents/post-mortems?limit=30`, { headers });
-      if (resp.ok) { const data = await resp.json(); setPostMortems(data.post_mortems || []); }
-    } catch (e) { console.error('Failed to fetch post-mortems:', e); }
-  };
-
-  const fetchInsights = async () => {
-    try {
-      const resp = await fetch(`${API}/agents/learning-insights`, { headers });
-      if (resp.ok) { const data = await resp.json(); setInsights(data.insights || []); }
-    } catch (e) { console.error('Failed to fetch insights:', e); }
-  };
-
-  useEffect(() => { fetchAgents(); fetchPostMortems(); fetchInsights(); const iv = setInterval(fetchAgents, 30000); return () => clearInterval(iv); }, []);
-
-  const toggleAgent = async (name, currentlyEnabled) => {
-    setToggling(name);
-    try {
-      const resp = await fetch(`${API}/agents/${name}/toggle`, {
-        method: 'PUT', headers, body: JSON.stringify({ enabled: !currentlyEnabled }),
-      });
-      if (resp.ok) {
-        setAgents(prev => prev.map(a => a.name === name ? { ...a, enabled: !currentlyEnabled } : a));
-      }
-    } catch (e) { console.error('Toggle failed:', e); }
-    setToggling(null);
-  };
-
-  const viewTabStyle = (active) => ({
-    padding: isMobile ? '8px 14px' : '10px 20px', borderRadius: 12, border: 'none', cursor: 'pointer',
-    background: active ? 'rgba(0,212,255,0.15)' : 'rgba(255,255,255,0.04)',
-    color: active ? '#00D4FF' : 'rgba(255,255,255,0.4)',
-    fontSize: isMobile ? 11 : 13, fontWeight: 600, whiteSpace: 'nowrap',
-  });
-
-  const enabledCount = agents.filter(a => a.enabled).length;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Header + Sub-tabs */}
-      <div style={{ display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'space-between', flexDirection: isMobile ? 'column' : 'row', gap: 12 }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>AI Trading Agents</div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>{enabledCount} of {agents.length} agents active</div>
-        </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={() => setActiveView('agents')} style={viewTabStyle(activeView === 'agents')}>Agents</button>
-          <button onClick={() => { setActiveView('post-mortems'); fetchPostMortems(); }} style={viewTabStyle(activeView === 'post-mortems')}>Post-Mortems</button>
-          <button onClick={() => { setActiveView('insights'); fetchInsights(); }} style={viewTabStyle(activeView === 'insights')}>Learning</button>
-        </div>
-      </div>
-
-      {/* ── Agent Cards Grid ── */}
-      {activeView === 'agents' && (
-        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : isTablet ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)', gap: 14 }}>
-          {loading ? (
-            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: 40, color: 'rgba(255,255,255,0.3)' }}>Loading agents...</div>
-          ) : agents.map(a => {
-            const meta = AGENT_META[a.name] || { icon: '🤖', color: '#888', role: 'Agent' };
-            return (
-              <div key={a.name} style={{
-                padding: 20, borderRadius: 20,
-                background: a.enabled ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.015)',
-                border: `1px solid ${a.enabled ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.03)'}`,
-                opacity: a.enabled ? 1 : 0.55,
-                transition: 'all 0.3s ease',
-              }}>
-                {/* Top: Icon + Name + Toggle */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                  <span style={{ fontSize: 30 }}>{meta.icon}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: meta.color }}>{a.name}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{meta.role}</div>
-                  </div>
-                  {/* Toggle Switch */}
-                  <button
-                    onClick={() => toggleAgent(a.name, a.enabled)}
-                    disabled={toggling === a.name}
-                    style={{
-                      width: 48, height: 26, borderRadius: 13, border: 'none', cursor: 'pointer',
-                      background: a.enabled ? '#10B981' : 'rgba(255,255,255,0.1)',
-                      position: 'relative', transition: 'background 0.3s',
-                      opacity: toggling === a.name ? 0.5 : 1,
-                    }}
-                  >
-                    <div style={{
-                      width: 20, height: 20, borderRadius: '50%',
-                      background: '#fff',
-                      position: 'absolute', top: 3,
-                      left: a.enabled ? 25 : 3,
-                      transition: 'left 0.3s',
-                      boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-                    }} />
-                  </button>
-                </div>
-
-                {/* Status indicator */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
-                  <span style={{
-                    width: 7, height: 7, borderRadius: '50%',
-                    background: a.enabled ? '#10B981' : '#6B7280',
-                    boxShadow: a.enabled ? '0 0 8px #10B981' : 'none',
-                  }} />
-                  <span style={{ fontSize: 11, color: a.enabled ? '#10B981' : 'rgba(255,255,255,0.3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                    {a.enabled ? 'Active' : 'Disabled'}
-                  </span>
-                  {a.openPositions > 0 && (
-                    <span style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 8px', borderRadius: 8, background: 'rgba(0,212,255,0.1)', color: '#00D4FF' }}>
-                      {a.openPositions} open
-                    </span>
-                  )}
-                </div>
-
-                {/* Stats Grid */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                  {[
-                    { l: 'Trades', v: a.trades || 0 },
-                    { l: 'Win Rate', v: a.winRate === 'N/A' ? '—' : `${a.winRate}%` },
-                    { l: 'P&L', v: a.totalPnl >= 0 ? `+$${Math.abs(a.totalPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : `-$${Math.abs(a.totalPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}` },
-                  ].map(s => (
-                    <div key={s.l} style={{ textAlign: 'center', padding: '8px 0', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
-                      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{s.l}</div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>{s.v}</div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Best/Worst trade row */}
-                {a.trades > 0 && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                    <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>Best: <span style={{ color: '#10B981', fontWeight: 600 }}>+${Math.max(0, a.bestTrade).toFixed(0)}</span></span>
-                    <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>Worst: <span style={{ color: '#EF4444', fontWeight: 600 }}>${Math.min(0, a.worstTrade).toFixed(0)}</span></span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ── Post-Mortem Feed ── */}
-      {activeView === 'post-mortems' && (
-        <div style={{ ...glass, padding: 20 }}>
-          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 14 }}>Trade Post-Mortems</div>
-          {postMortems.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: 30, color: 'rgba(255,255,255,0.3)', fontSize: 13 }}>No post-mortem analyses yet. Trades will be analyzed as they close.</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {postMortems.slice(0, 20).map((pm, i) => {
-                const meta = AGENT_META[pm.agent] || { icon: '🤖', color: '#888' };
-                return (
-                  <div key={pm.id || i} style={{
-                    padding: 14, borderRadius: 14,
-                    background: pm.outcome === 'WIN' ? 'rgba(16,185,129,0.04)' : 'rgba(239,68,68,0.04)',
-                    border: `1px solid ${pm.outcome === 'WIN' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)'}`,
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                      <span style={{ fontSize: 18 }}>{meta.icon}</span>
-                      <div style={{ flex: 1 }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: meta.color }}>{pm.agent}</span>
-                        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginLeft: 8 }}>{pm.symbol} {pm.side}</span>
-                      </div>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: pm.outcome === 'WIN' ? '#10B981' : '#EF4444' }}>
-                        {pm.pnl >= 0 ? '+' : ''}{pm.pnl?.toFixed(2)}
-                      </span>
-                      <span style={{
-                        fontSize: 10, padding: '2px 8px', borderRadius: 6, fontWeight: 700,
-                        background: pm.outcome === 'WIN' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-                        color: pm.outcome === 'WIN' ? '#10B981' : '#EF4444',
-                      }}>{pm.outcome}</span>
-                    </div>
-                    {/* Patterns */}
-                    {pm.patterns_detected?.length > 0 && (
-                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 6 }}>
-                        {pm.patterns_detected.map((p, j) => (
-                          <span key={j} style={{ fontSize: 9, padding: '2px 7px', borderRadius: 6, background: 'rgba(168,85,247,0.1)', color: '#A855F7', fontWeight: 600 }}>
-                            {p.replace(/_/g, ' ')}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    {/* Self-healing action */}
-                    {pm.self_healing_action && (
-                      <div style={{ fontSize: 11, color: '#FFD93D', marginTop: 4 }}>
-                        🔧 {pm.self_healing_detail}
-                      </div>
-                    )}
-                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 6 }}>
-                      Hold: {pm.hold_time_display} · Entry: ${pm.entry_price?.toFixed(2)} → Exit: ${pm.close_price?.toFixed(2)} · Return: {pm.return_pct?.toFixed(2)}%
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Learning Insights ── */}
-      {activeView === 'insights' && (
-        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)', gap: 14 }}>
-          {insights.map(ins => {
-            const meta = AGENT_META[ins.agent] || { icon: '🤖', color: '#888' };
-            return (
-              <div key={ins.agent} style={{ ...glass, padding: 20 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-                  <span style={{ fontSize: 24 }}>{meta.icon}</span>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: meta.color }}>{ins.agent}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{ins.totalAnalyzed} trades analyzed</div>
-                  </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 }}>
-                  {[
-                    { l: 'Avg P&L', v: `$${ins.avgPnl?.toFixed(0) || 0}` },
-                    { l: 'Avg Hold', v: ins.avgHoldTime > 3600 ? `${(ins.avgHoldTime / 3600).toFixed(1)}h` : `${Math.round(ins.avgHoldTime / 60)}m` },
-                    { l: 'Healed', v: ins.selfHealingActions || 0 },
-                  ].map(s => (
-                    <div key={s.l} style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', marginBottom: 3 }}>{s.l}</div>
-                      <div style={{ fontSize: 14, fontWeight: 700 }}>{s.v}</div>
-                    </div>
-                  ))}
-                </div>
-                {ins.bestPatterns?.length > 0 && (
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 4, textTransform: 'uppercase' }}>Best Patterns</div>
-                    {ins.bestPatterns.map((p, i) => (
-                      <div key={i} style={{ fontSize: 11, color: '#10B981', marginBottom: 2 }}>✓ {p.pattern.replace(/_/g, ' ')} — {p.winRate} ({p.trades} trades)</div>
-                    ))}
-                  </div>
-                )}
-                {ins.worstPatterns?.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 4, textTransform: 'uppercase' }}>Avoid Patterns</div>
-                    {ins.worstPatterns.map((p, i) => (
-                      <div key={i} style={{ fontSize: 11, color: '#EF4444', marginBottom: 2 }}>✗ {p.pattern.replace(/_/g, ' ')} — {p.winRate} ({p.trades} trades)</div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {insights.length === 0 && (
-            <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: 40, color: 'rgba(255,255,255,0.3)' }}>Learning insights will appear as trades are analyzed.</div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ════════════════════════════════════════
-//   ADMIN PANEL — Access Request Management
+//   AGENT MANAGEMENT VIEW — extracted to src/components/portal/AgentManagementView.jsx (W10-C)
 // ════════════════════════════════════════
-
-
-// ════════════════════════════════════════
-//   ADMIN PANEL — extracted to src/components/portal/AdminPanel.jsx (W8-D)
-//   Includes: ADMIN_API_BASE, AdminTaxSection, AdminPanel
-// ════════════════════════════════════════
-// AdminPanel is imported above from ../components/portal/AdminPanel.jsx
+// AgentManagementView is lazy-imported above from ../components/portal/AgentManagementView.jsx
 
 function MessagesView({ investor, isMobile }) {
   const [messages, setMessages] = useState([]);
