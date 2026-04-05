@@ -24,7 +24,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { createServer } from 'node:http';
-import { createHash, createHmac, scryptSync, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, scryptSync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, unlinkSync, copyFileSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -828,7 +828,12 @@ function hashPassword(password) {
 function verifyPassword(password, stored) {
   const [salt, hash] = stored.split(':');
   const test = scryptSync(password, salt, 64, SCRYPT_PARAMS).toString('hex');
-  return test === hash;
+  // timingSafeEqual prevents timing attacks that could leak hash bits via response latency
+  try {
+    return timingSafeEqual(Buffer.from(test, 'hex'), Buffer.from(hash, 'hex'));
+  } catch {
+    return false; // buffer length mismatch → corrupted stored hash
+  }
 }
 
 // ─── Token Revocation Store ───
@@ -860,7 +865,10 @@ function verifyJWT(token) {
   try {
     const [header, body, signature] = token.split('.');
     const expected = createHmac('sha256', JWT_SECRET).update(`${header}.${body}`).digest('base64url');
-    if (signature !== expected) return null;
+    // timingSafeEqual prevents HMAC oracle attacks via response-time analysis
+    const sigBuf = Buffer.from(signature || '',  'base64url');
+    const expBuf = Buffer.from(expected,          'base64url');
+    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
     const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
     // Check revocation list
@@ -3199,6 +3207,20 @@ function auth(req, res, next) {
   next();
 }
 
+// adminAuth — verifies JWT AND confirms role === 'admin' before calling next().
+// Use this instead of auth for any route that must be admin-only.
+// Existing inline role checks (db.findOne + role check) can stay — defence in depth.
+function adminAuth(req, res, next) {
+  const user = extractUser(req);
+  if (!user) { json(res, 401, { error: 'Authentication required' }); return; }
+  // Re-fetch from DB so a revoked/downgraded user can't use a cached token
+  const dbUser = db.findOne('users', u => u.id === user.id);
+  if (!dbUser || dbUser.role !== 'admin') { json(res, 403, { error: 'Admin access required' }); return; }
+  req.user = dbUser;
+  req.userId = dbUser.id;
+  next();
+}
+
 // ═══════════════════════════════════════════
 //   API ROUTES
 // ═══════════════════════════════════════════
@@ -3224,7 +3246,7 @@ api.get('/api/health', (req, res) => {
 });
 
 // ─── ADMIN: GET / SET RATE LIMIT CONFIG ───
-api.get('/api/admin/rate-limit', auth, (req, res) => {
+api.get('/api/admin/rate-limit', adminAuth, (req, res) => {
   json(res, 200, {
     config: { maxTradesPerHour: AUTO_TRADE_CONFIG.maxTradesPerHour },
     state: {
@@ -3234,7 +3256,7 @@ api.get('/api/admin/rate-limit', auth, (req, res) => {
   });
 });
 
-api.post('/api/admin/rate-limit', auth, (req, res) => {
+api.post('/api/admin/rate-limit', adminAuth, (req, res) => {
   const { maxTradesPerHour, resetHour } = req.body || {};
   const changes = [];
   if (typeof maxTradesPerHour === 'number' && maxTradesPerHour >= 0) {
@@ -7475,7 +7497,7 @@ api.post('/api/trading/kill-switch', auth, async (req, res) => {
 });
 
 // ─── MARKET: PRICES ───
-api.get('/api/market/prices', (req, res) => {
+api.get('/api/market/prices', auth, (req, res) => {
   const realCount = Object.values(priceDataSource).filter(s => s === 'real').length;
   const totalCount = Object.keys(priceDataSource).length;
   json(res, 200, {
@@ -11593,7 +11615,7 @@ api.get('/api/auto-trades', auth, (req, res) => {
 });
 
 // Trading health — watchdog status (no auth required for monitoring)
-api.get('/api/trading/health', (req, res) => {
+api.get('/api/trading/health', auth, (req, res) => {
   const fiveMinAgo = Date.now() - 5 * 60 * 1000;
   const recentTradeCount = db.findMany('auto_trade_log').filter(
     l => new Date(l.timestamp).getTime() > fiveMinAgo
