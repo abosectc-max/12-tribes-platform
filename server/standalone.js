@@ -11,8 +11,10 @@
 //     - JWT auth | Raw WebSocket | HMAC CSRF protection
 //     - Modular compliance layer: ./compliance.js
 //
-//   Server directory layout (post-cleanup):
+//   Server directory layout:
 //     standalone.js   ← this file (deployed entry point)
+//     auth.js         ← JWT, scrypt, token revocation (pure utilities)
+//     email.js        ← Resend API, branded templates, HTML builders (pure utilities)
 //     compliance.js   ← compliance rules module
 //     db/             ← pg-adapter.js + schema docs
 //     data/           ← historical flat-file backups (not used at runtime)
@@ -1947,7 +1949,7 @@ function updatePositionValues() {
 
 const wsClients = new Set();
 
-function handleUpgrade(req, socket) {
+function handleUpgrade(req, socket, wsUser) {
   const key = req.headers['sec-websocket-key'];
   if (!key) { socket.destroy(); return; }
 
@@ -1962,7 +1964,7 @@ function handleUpgrade(req, socket) {
     `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
 
-  const client = { socket, alive: true, subscriptions: new Set() };
+  const client = { socket, alive: true, subscriptions: new Set(), userId: wsUser?.id };
   wsClients.add(client);
 
   // Send price snapshot immediately
@@ -7465,10 +7467,22 @@ const server = createServer(async (req, res) => {
   if (!matched) json(res, 404, { error: 'Not found', path: req.url.split('?')[0] });
 });
 
-// WebSocket upgrade
-server.on('upgrade', (req, socket, head) => {
-  if (req.url === '/ws/prices') {
-    handleUpgrade(req, socket);
+// WebSocket upgrade — JWT required via ?token= query param.
+// Browser WebSocket API does not support custom headers, so the JWT is passed
+// as a URL query parameter. Clients connect as:
+//   wss://<host>/ws/prices?token=<accessToken>
+server.on('upgrade', (req, socket) => {
+  if (req.url.startsWith('/ws/prices')) {
+    // Validate JWT before completing the handshake
+    const wsUrl = new URL(req.url, `http://localhost`);
+    const token = wsUrl.searchParams.get('token');
+    const wsUser = token ? verifyJWT(token) : null;
+    if (!wsUser) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    handleUpgrade(req, socket, wsUser);
   } else {
     socket.destroy();
   }
