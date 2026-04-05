@@ -814,15 +814,20 @@ if (USE_POSTGRES) {
 //   AUTHENTICATION (scrypt + HMAC JWT)
 // ═══════════════════════════════════════════
 
+// scrypt params — N/r/p MUST NOT be changed without a full password migration.
+// All stored hashes were generated with these exact values (Node default: N=16384,r=8,p=1).
+// Changing N would silently break every existing user's login.
+const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1 };
+
 function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync(password, salt, 64).toString('hex');
+  const hash = scryptSync(password, salt, 64, SCRYPT_PARAMS).toString('hex');
   return `${salt}:${hash}`;
 }
 
 function verifyPassword(password, stored) {
   const [salt, hash] = stored.split(':');
-  const test = scryptSync(password, salt, 64).toString('hex');
+  const test = scryptSync(password, salt, 64, SCRYPT_PARAMS).toString('hex');
   return test === hash;
 }
 
@@ -3146,6 +3151,19 @@ function json(res, status, data, extraHeaders = {}) {
   res.end(JSON.stringify(data));
 }
 
+// ─── HTML escaping utility ───
+// MUST be applied to ALL user-supplied strings interpolated into HTML email templates.
+// Prevents stored/reflected XSS in email clients that render raw HTML.
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#39;');
+}
+
 // ─── Safe error response helper ───
 // Never expose raw err.message in production — attacker intel.
 // Use apiError() for all catch blocks that return 500.
@@ -3158,8 +3176,18 @@ function apiError(res, err, publicMsg = 'Internal server error') {
 function readBody(req) {
   return new Promise((resolve) => {
     let data = '';
-    req.on('data', chunk => { data += chunk; if (data.length > 1e6) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch (e) { resolve({ _parseError: true, _rawLength: data.length }); } });
+    let settled = false;
+    const settle = (val) => { if (!settled) { settled = true; resolve(val); } };
+    req.on('data', chunk => {
+      data += chunk;
+      if (data.length > 1e6) {
+        // req.destroy() does NOT fire 'end' — error/close handlers below ensure promise resolves
+        req.destroy();
+      }
+    });
+    req.on('end',   () => { try { settle(JSON.parse(data || '{}')); } catch (e) { settle({ _parseError: true, _rawLength: data.length }); } });
+    req.on('error', () => settle({ _bodyTooLarge: true }));  // fires after req.destroy()
+    req.on('close', () => settle({ _bodyTooLarge: true }));  // fallback if 'error' never fires
   });
 }
 
@@ -3876,7 +3904,7 @@ function brandedEmailTemplate(userName, contentHtml, opts = {}) {
   <!--[if mso]><style>table,td{font-family:Arial,sans-serif !important;}</style><![endif]-->
 </head>
 <body style="margin:0;padding:0;background-color:#060612;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;">
-  ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${preheader}</div>` : ''}
+  ${preheader ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</div>` : ''}
 
   <!-- Outer wrapper -->
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#060612;">
@@ -3904,7 +3932,7 @@ function brandedEmailTemplate(userName, contentHtml, opts = {}) {
         <!-- ═══ GREETING ═══ -->
         <tr><td style="padding:24px 32px 8px;">
           <div style="font-size:16px;color:#E0E0E0;line-height:1.5;">
-            ${userName ? `Hello <strong style="color:#ffffff;">${userName}</strong>,` : 'Hello,'}
+            ${userName ? `Hello <strong style="color:#ffffff;">${escapeHtml(userName)}</strong>,` : 'Hello,'}
           </div>
         </td></tr>
 
