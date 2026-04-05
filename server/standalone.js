@@ -4203,14 +4203,24 @@ function storeVerificationCode(email, type) {
 }
 
 function verifyCode(email, type, code) {
-  const record = db.findOne('verification_codes', c =>
-    c.email === email.toLowerCase() && c.type === type && c.code === code && !c.used
-  );
+  // Find the most recent unused record for this email+type (without comparing code yet)
+  const candidates = db.findMany('verification_codes',
+    c => c.email === email.toLowerCase() && c.type === type && !c.used
+  ).sort((a, b) => new Date(b.expires_at) - new Date(a.expires_at));
+
+  const record = candidates[0];
   if (!record) return { valid: false, reason: 'Invalid code' };
+
+  // timingSafeEqual prevents timing attacks that could be used to enumerate valid codes
+  const submitted = Buffer.from(String(code || '').padEnd(6, '\0'));
+  const stored    = Buffer.from(String(record.code || '').padEnd(6, '\0'));
+  const codeMatch = timingSafeEqual(submitted, stored);
+
+  if (!codeMatch) return { valid: false, reason: 'Invalid code' };
   if (new Date(record.expires_at) < new Date()) {
     return { valid: false, reason: 'Code expired. Please request a new one.' };
   }
-  // Mark as used
+  // Mark as used (one-time use)
   record.used = true;
   db._save('verification_codes');
   return { valid: true };
@@ -4312,6 +4322,15 @@ api.post('/api/auth/forgot-password', async (req, res) => {
 
 // ─── AUTH: RESET PASSWORD (requires valid code) ───
 api.post('/api/auth/reset-password', async (req, res) => {
+  // Rate limit: 10 attempts per IP per 15 min, 5 per email per 15 min
+  // Prevents brute-forcing the 6-digit OTP (1M combinations) within the 10-min code window
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  const rlIp = rateLimit(`reset-pw:ip:${ip}`, 10, 900000);
+  if (!rlIp.allowed) {
+    return json(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' },
+      { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlIp.resetAt / 1000)) });
+  }
+
   const body = await readBody(req);
   const { email, code, newPassword } = body;
 
@@ -4319,6 +4338,12 @@ api.post('/api/auth/reset-password', async (req, res) => {
   if (newPassword.length < 12) return json(res, 400, { error: 'Password must be at least 12 characters' });
 
   const emailKey = email.toLowerCase().trim();
+
+  const rlEmail = rateLimit(`reset-pw:email:${emailKey}`, 5, 900000);
+  if (!rlEmail.allowed) {
+    return json(res, 429, { error: 'Too many attempts for this account. Try again in 15 minutes.' },
+      { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlEmail.resetAt / 1000)) });
+  }
   const user = db.findOne('users', u => u.email === emailKey);
   if (!user) return json(res, 404, { error: 'User not found' });
 
@@ -4335,11 +4360,26 @@ api.post('/api/auth/reset-password', async (req, res) => {
 
 // ─── AUTH: SEND EMAIL VERIFICATION CODE ───
 api.post('/api/auth/verify-email/send', async (req, res) => {
+  // Rate limit: 5 sends per IP per hour, 3 sends per email per hour
+  // Prevents using this endpoint to spam arbitrary email addresses
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  const rlIp = rateLimit(`verify-send:ip:${ip}`, 5, 3600000);
+  if (!rlIp.allowed) {
+    return json(res, 429, { error: 'Too many verification requests. Try again in 1 hour.' },
+      { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlIp.resetAt / 1000)) });
+  }
+
   const body = await readBody(req);
   const { email } = body;
   if (!email) return json(res, 400, { error: 'Email required' });
 
   const emailKey = email.toLowerCase().trim();
+
+  const rlEmail = rateLimit(`verify-send:email:${emailKey}`, 3, 3600000);
+  if (!rlEmail.allowed) {
+    return json(res, 429, { error: 'Too many verification emails sent. Try again in 1 hour.' },
+      { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlEmail.resetAt / 1000)) });
+  }
 
   const code = storeVerificationCode(emailKey, 'email_verify');
   await sendEmail(emailKey, `${APP_NAME} — Verify Your Email`, emailVerificationEmail(code));
@@ -4349,11 +4389,26 @@ api.post('/api/auth/verify-email/send', async (req, res) => {
 
 // ─── AUTH: VERIFY EMAIL CODE ───
 api.post('/api/auth/verify-email/confirm', async (req, res) => {
+  // Rate limit: 10 attempts per IP per 15 min, 5 per email per 15 min
+  // Prevents brute-forcing the 6-digit OTP
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  const rlIp = rateLimit(`verify-confirm:ip:${ip}`, 10, 900000);
+  if (!rlIp.allowed) {
+    return json(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' },
+      { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlIp.resetAt / 1000)) });
+  }
+
   const body = await readBody(req);
   const { email, code } = body;
   if (!email || !code) return json(res, 400, { error: 'Email and code required' });
 
   const emailKey = email.toLowerCase().trim();
+  const rlEmail = rateLimit(`verify-confirm:email:${emailKey}`, 5, 900000);
+  if (!rlEmail.allowed) {
+    return json(res, 429, { error: 'Too many attempts for this account. Try again in 15 minutes.' },
+      { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlEmail.resetAt / 1000)) });
+  }
+
   const check = verifyCode(emailKey, 'email_verify', code);
   if (!check.valid) return json(res, 400, { error: check.reason });
 

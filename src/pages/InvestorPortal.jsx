@@ -1,5 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
-import * as recharts from "recharts";
+// Named imports allow Vite tree-shaking to exclude unused recharts components.
+// Only import what InvestorPortal renders directly; lazy-loaded panels (PerformanceView etc.)
+// import their own recharts symbols independently via their own chunks.
+import { AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { useResponsive } from '../hooks/useResponsive';
 import {
   registerUser, registerPasskey, authenticateWithPasskey, loginWithEmail,
@@ -29,10 +32,6 @@ import { isPushSupported, getPermissionState, requestPermission, notifications a
 import { generateMonthlyStatement, openPrintView } from '../store/pdfGenerator.js';
 import { getTheme, getThemePreference, setTheme, getAvailableThemes, applyTheme } from '../store/themeService.js';
 
-const {
-  AreaChart, Area, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
-} = recharts;
 
 // ═══════════════════════════════════════════
 //   12 TRIBES — INVESTOR PORTAL v2.0
