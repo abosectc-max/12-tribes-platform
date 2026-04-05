@@ -1,12 +1,34 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 export function useResponsive() {
   const [width, setWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200)
 
   useEffect(() => {
-    const handleResize = () => setWidth(window.innerWidth)
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
+    // Use matchMedia for efficient breakpoint detection (no layout thrashing)
+    const mobileQuery = window.matchMedia('(max-width: 767px)')
+    const tabletQuery = window.matchMedia('(min-width: 768px) and (max-width: 1023px)')
+
+    // Debounced resize handler for precise width (only needed for non-breakpoint logic)
+    let rafId = null
+    const handleResize = () => {
+      if (rafId) cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => setWidth(window.innerWidth))
+    }
+
+    // Listen for breakpoint crossings (fires only at thresholds — zero-cost between)
+    const onBreakpointChange = () => handleResize()
+    mobileQuery.addEventListener('change', onBreakpointChange)
+    tabletQuery.addEventListener('change', onBreakpointChange)
+
+    // Also listen to resize for smooth transitions, but throttled via rAF
+    window.addEventListener('resize', handleResize, { passive: true })
+
+    return () => {
+      mobileQuery.removeEventListener('change', onBreakpointChange)
+      tabletQuery.removeEventListener('change', onBreakpointChange)
+      window.removeEventListener('resize', handleResize)
+      if (rafId) cancelAnimationFrame(rafId)
+    }
   }, [])
 
   return {

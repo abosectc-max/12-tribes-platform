@@ -1186,6 +1186,71 @@ function OnboardingTutorial({ investor, onComplete }) {
 
 
 // ════════════════════════════════════════
+//   MOBILE BOTTOM TAB BAR
+// ════════════════════════════════════════
+
+const BOTTOM_TAB_ITEMS = [
+  { id: "portfolio", label: "Portfolio", icon: "◉" },
+  { id: "performance", label: "Performance", icon: "▲" },
+  { id: "signals", label: "Signals", icon: "◎" },
+  { id: "research", label: "Research", icon: "⊘" },
+  { id: "agents", label: "AI Agents", icon: "◆" },
+];
+
+function MobileBottomTabBar({ activeTab, onTabChange }) {
+  return (
+    <div style={{
+      position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 150,
+      ...slateGlass, borderRadius: 0, borderBottom: "none", borderLeft: "none", borderRight: "none",
+      borderTop: "1px solid rgba(255,255,255,0.08)",
+      paddingBottom: `calc(4px + ${safeAreaBottom})`,
+      paddingTop: 6,
+      display: "flex", justifyContent: "space-around", alignItems: "center",
+      backdropFilter: "blur(40px) saturate(180%)",
+      WebkitBackdropFilter: "blur(40px) saturate(180%)",
+      background: "rgba(15,18,32,0.88)",
+    }}>
+      {BOTTOM_TAB_ITEMS.map(item => {
+        const active = activeTab === item.id;
+        return (
+          <button key={item.id}
+            onClick={() => { haptics.light(); onTabChange(item.id); }}
+            style={{
+              flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+              background: "none", border: "none", cursor: "pointer",
+              padding: "6px 0", position: "relative",
+              WebkitTapHighlightColor: "transparent",
+              transition: "transform 0.15s cubic-bezier(0.2, 0, 0, 1)",
+            }}
+            onTouchStart={(e) => { e.currentTarget.style.transform = 'scale(0.9)'; }}
+            onTouchEnd={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
+          >
+            {/* Active indicator dot */}
+            {active && (
+              <div style={{
+                position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)",
+                width: 20, height: 3, borderRadius: 2,
+                background: "linear-gradient(90deg, #00D4FF, #A855F7)",
+              }} />
+            )}
+            <span style={{
+              fontSize: 20, lineHeight: 1,
+              color: active ? "#00D4FF" : "rgba(255,255,255,0.35)",
+              transition: "color 0.2s",
+            }}>{item.icon}</span>
+            <span style={{
+              fontSize: 9, fontWeight: active ? 700 : 500, letterSpacing: 0.3,
+              color: active ? "#00D4FF" : "rgba(255,255,255,0.35)",
+              transition: "color 0.2s",
+            }}>{item.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
 //   LEFT SIDEBAR NAVIGATION
 // ════════════════════════════════════════
 
@@ -1209,27 +1274,67 @@ const SIDEBAR_ITEMS = [
 ];
 
 function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onToggle, isMobile, adminNotifCount = 0 }) {
-  const sidebarWidth = 260;
+  const sidebarWidth = 280;
+  const [touchStartX, setTouchStartX] = useState(null);
+  const [dragOffset, setDragOffset] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
 
-  // Desktop: permanent sidebar. Mobile: slide-out drawer.
+  // Swipe-to-close gesture handler
+  const handleTouchStart = useCallback((e) => {
+    if (!isMobile || !isOpen) return;
+    setTouchStartX(e.touches[0].clientX);
+    setIsDragging(true);
+  }, [isMobile, isOpen]);
+
+  const handleTouchMove = useCallback((e) => {
+    if (!isDragging || touchStartX === null) return;
+    const deltaX = e.touches[0].clientX - touchStartX;
+    if (deltaX < 0) setDragOffset(deltaX); // Only allow dragging left (to close)
+  }, [isDragging, touchStartX]);
+
+  const handleTouchEnd = useCallback(() => {
+    if (!isDragging) return;
+    // If dragged more than 80px left, close the sidebar
+    if (dragOffset < -80) {
+      onToggle();
+      haptics.light();
+    }
+    setDragOffset(0);
+    setTouchStartX(null);
+    setIsDragging(false);
+  }, [isDragging, dragOffset, onToggle]);
+
+  // Desktop: permanent sidebar. Mobile: slide-out drawer with spring physics.
+  const mobileTransform = isOpen
+    ? `translateX(${Math.min(0, dragOffset)}px)`
+    : `translateX(-${sidebarWidth}px)`;
+
   return (
     <>
-      {/* Mobile overlay */}
-      {isMobile && isOpen && (
+      {/* Mobile overlay — fades with drag */}
+      {isMobile && (
         <div onClick={onToggle} style={{
           position: "fixed", inset: 0, zIndex: 200,
-          background: "rgba(0,0,0,0.6)", transition: "opacity 0.3s",
+          background: "rgba(0,0,0,0.6)",
+          opacity: isOpen ? (1 - Math.min(1, Math.abs(dragOffset) / sidebarWidth) * 0.6) : 0,
+          pointerEvents: isOpen ? "auto" : "none",
+          transition: isDragging ? "none" : "opacity 0.35s cubic-bezier(0.32, 0.72, 0, 1)",
         }} />
       )}
 
       {/* Sidebar panel */}
-      <div style={{
+      <div
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        style={{
         position: "fixed", top: 0, left: 0, bottom: 0, width: sidebarWidth,
         zIndex: 201,
         ...slateGlass, borderRadius: 0, borderLeft: "none", borderTop: "none", borderBottom: "none",
         display: "flex", flexDirection: "column",
-        transform: isMobile ? (isOpen ? "translateX(0)" : `translateX(-${sidebarWidth}px)`) : "translateX(0)",
-        transition: "transform 0.3s ease",
+        transform: isMobile ? mobileTransform : "translateX(0)",
+        transition: isDragging ? "none" : "transform 0.4s cubic-bezier(0.32, 0.72, 0, 1)",
+        willChange: "transform",
       }}>
         {/* Logo + Close */}
         <div style={{
@@ -2325,6 +2430,14 @@ function PortfolioDashboard({ investor, onLogout }) {
   const { isMobile, isTablet } = useResponsive();
   const [adminNotifCount, setAdminNotifCount] = useState(0);
 
+  // Lock body scroll when mobile sidebar is open (prevents background scroll-through)
+  useEffect(() => {
+    if (isMobile && sidebarOpen) {
+      document.body.classList.add('sidebar-open');
+      return () => document.body.classList.remove('sidebar-open');
+    }
+  }, [isMobile, sidebarOpen]);
+
   // Fetch admin notification count (only for admins)
   useEffect(() => {
     if (investor?.role !== 'admin') return;
@@ -2499,8 +2612,23 @@ function PortfolioDashboard({ investor, onLogout }) {
         adminNotifCount={adminNotifCount}
       />
 
+      {/* Mobile Bottom Tab Bar */}
+      {isMobile && (
+        <MobileBottomTabBar activeTab={activeTab} onTabChange={(tab) => { setActiveTab(tab); window.scrollTo({ top: 0, behavior: 'smooth' }); }} />
+      )}
+
+      {/* Swipe-from-left-edge to open sidebar (mobile only) */}
+      {isMobile && !sidebarOpen && (
+        <div
+          onTouchStart={(e) => { if (e.touches[0].clientX < 24) e.currentTarget._edgeSwipe = true; }}
+          onTouchMove={(e) => { if (e.currentTarget._edgeSwipe && e.touches[0].clientX > 60) { setSidebarOpen(true); haptics.light(); e.currentTarget._edgeSwipe = false; } }}
+          onTouchEnd={(e) => { e.currentTarget._edgeSwipe = false; }}
+          style={{ position: "fixed", top: 0, left: 0, bottom: 0, width: 24, zIndex: 149 }}
+        />
+      )}
+
       {/* Main Content (offset by sidebar width on desktop) */}
-      <div style={{ marginLeft: sidebarWidth, minHeight: "100vh", transition: "margin 0.3s" }}>
+      <div style={{ marginLeft: sidebarWidth, minHeight: "100vh", transition: "margin 0.3s cubic-bezier(0.32, 0.72, 0, 1)", paddingBottom: isMobile ? 72 : 0 }}>
         {/* Top Bar */}
         <div style={{
           ...slateGlass, borderRadius: 0, borderTop: "none", borderRight: "none",
@@ -2529,19 +2657,21 @@ function PortfolioDashboard({ investor, onLogout }) {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <RefreshButton label="Sync" onRefresh={() => syncFromServer(investor.id).then(() => setTick(t => t + 1))} />
-            <div style={{
-              padding: "6px 14px", borderRadius: 10,
-              background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)",
-              fontSize: 11, fontWeight: 600, color: "#10B981",
-            }}>
-              ● Markets Open
-            </div>
+            <RefreshButton label={isMobile ? "" : "Sync"} onRefresh={() => syncFromServer(investor.id).then(() => setTick(t => t + 1))} />
+            {!isMobile && (
+              <div style={{
+                padding: "6px 14px", borderRadius: 10,
+                background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)",
+                fontSize: 11, fontWeight: 600, color: "#10B981",
+              }}>
+                ● Markets Open
+              </div>
+            )}
           </div>
         </div>
 
         {/* Content Area */}
-        <div style={{ padding: isMobile ? 16 : 28, maxWidth: 1100, paddingBottom: isMobile ? `calc(32px + ${safeAreaBottom})` : 40 }}>
+        <div style={{ padding: isMobile ? "12px 14px" : 28, maxWidth: 1100, paddingBottom: isMobile ? `calc(80px + ${safeAreaBottom})` : 40 }}>
 
           {/* ═══ PORTFOLIO VIEW ═══ */}
           {activeTab === "portfolio" && (

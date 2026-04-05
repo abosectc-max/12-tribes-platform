@@ -702,3 +702,72 @@ html, body, #root {
     background-color 0.45s cubic-bezier(0.4, 0, 0.2, 1),
     color 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   MOBILE NAVIGATION OPTIMIZATIONS
+   ─ Smooth touch feedback, momentum scrolling, GPU compositing
+   ─ Bottom tab bar safe area, content clearance
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── M-NAV 1. GPU-ACCELERATED SIDEBAR ─────────────────────────── */
+@media (max-width: 767px) {
+  /* Force GPU compositing for sidebar and bottom bar */
+  [style*="position: fixed"][style*="z-index: 201"],
+  [style*="position: fixed"][style*="z-index: 150"] {
+    will-change: transform;
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
+  }
+
+  /* Prevent body scroll when sidebar is open */
+  body.sidebar-open {
+    overflow: hidden;
+    position: fixed;
+    width: 100%;
+    touch-action: none;
+  }
+
+  /* Touch feedback for all tappable elements */
+  button, a, [role="button"] {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  /* Smooth momentum scrolling for content areas */
+  [style*="overflow"] {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    scroll-behavior: smooth;
+  }
+}
+
+/* ── M-NAV 2. BOTTOM TAB BAR — LIGHT MODE ─────────────────────── */
+/* Override dark background for bottom bar in light mode */
+[data-theme="light"] [style*="position: fixed"][style*="z-index: 150"][style*="bottom: 0"] {
+  background: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(40px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
+  border-top-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06) !important;
+}
+
+/* ── M-NAV 3. ACTIVE TAB PRESS ANIMATION ──────────────────────── */
+@media (max-width: 767px) {
+  button:active {
+    transform: scale(0.96);
+    transition: transform 0.08s ease-out;
+  }
+}
+
+/* ── M-NAV 4. CONTENT VIEW TRANSITION ─────────────────────────── */
+/* Fade-in when switching between tabs */
+@keyframes tabContentIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 767px) {
+  [style*="padding"][style*="max-width: 1100"] > div {
+    animation: tabContentIn 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+}
