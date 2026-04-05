@@ -13269,7 +13269,8 @@ api.post('/api/admin/wallets/reset-all', auth, async (req, res) => {
 
   // 2. Purge all operational tables
   const tablesToPurge = ['positions', 'trades', 'signals', 'auto_trade_log', 'trade_flags',
-    'post_mortems', 'risk_events', 'qa_reports', 'order_queue', 'tax_ledger', 'tax_lots', 'wash_sales'];
+    'post_mortems', 'risk_events', 'qa_reports', 'order_queue', 'tax_ledger', 'tax_lots', 'wash_sales',
+    'audit_log', 'trade_audit', 'compliance_alerts', 'withdrawal_requests', 'settlements'];
   const report = { purged: {} };
   for (const table of tablesToPurge) {
     const before = db.findMany(table).length;
@@ -13598,6 +13599,51 @@ api.get('/api/compliance/status', auth, (req, res) => {
   if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
   const health = compliance.runComplianceHealthCheck();
   json(res, 200, health);
+});
+
+// POST /api/admin/audit-log/reset — Clear stale audit chain and start fresh with GENESIS
+api.post('/api/admin/audit-log/reset', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.confirm) return json(res, 400, { error: 'Requires confirm: true' });
+
+  const before = db.findMany('audit_log', () => true).length;
+  if (db.tables && db.tables.audit_log) db.tables.audit_log = [];
+  if (db.pool) { try { await db.pool.query('DELETE FROM audit_log'); } catch (e) { console.error('[AuditReset] PG delete failed:', e.message); } }
+
+  // Insert a fresh GENESIS entry so the chain starts clean
+  const ts = new Date().toISOString();
+  const genesisId = `audit-genesis-${Date.now()}`;
+  const hashInput = `${genesisId}|${Date.now()}|SYSTEM|AUDIT_CHAIN_RESET|GENESIS|${JSON.stringify({ reason: body.reason || 'Admin reset', admin: admin.email, previousEntries: before })}`;
+  const entryHash = createHash('sha256').update(hashInput).digest('hex');
+  const genesisEntry = {
+    id: genesisId, timestamp: ts, timestamp_ms: Date.now(),
+    category: 'SYSTEM', action: 'AUDIT_CHAIN_RESET', user_id: admin.id,
+    details: JSON.stringify({ reason: body.reason || 'Admin reset', admin: admin.email, previousEntries: before }),
+    prev_hash: 'GENESIS', entry_hash: entryHash,
+    retention_until: new Date(Date.now() + 6 * 365.25 * 86400000).toISOString(),
+    immutable: true, created_at: ts,
+  };
+  db.insert('audit_log', genesisEntry);
+
+  console.log(`[ADMIN] Audit chain reset by ${admin.email}: cleared ${before} entries, new GENESIS created`);
+  json(res, 200, { success: true, cleared: before, genesisId });
+});
+
+// POST /api/admin/withdrawals/clear — Clear all stale withdrawal requests
+api.post('/api/admin/withdrawals/clear', auth, async (req, res) => {
+  const admin = db.findOne('users', u => u.id === req.userId);
+  if (!admin || admin.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+  const body = await readBody(req);
+  if (!body.confirm) return json(res, 400, { error: 'Requires confirm: true' });
+
+  const before = db.findMany('withdrawal_requests', () => true).length;
+  if (db.tables && db.tables.withdrawal_requests) db.tables.withdrawal_requests = [];
+  if (db.pool) { try { await db.pool.query('DELETE FROM withdrawal_requests'); } catch (e) { console.error('[WithdrawalClear] PG delete failed:', e.message); } }
+
+  console.log(`[ADMIN] Withdrawals cleared by ${admin.email}: ${before} records removed`);
+  json(res, 200, { success: true, cleared: before });
 });
 
 // GET /api/compliance/audit-log — Immutable audit trail

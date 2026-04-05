@@ -1027,6 +1027,27 @@ function AdminPanel({ investor, isMobile }) {
             </div>
           )}
 
+          {/* Clear All Withdrawals Button */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+            <button onClick={async () => {
+              if (!window.confirm('Clear ALL withdrawal data? This removes every withdrawal request from the system. This cannot be undone.')) return;
+              try {
+                const resp = await fetch(`${ADMIN_API_BASE}/admin/withdrawals/clear`, {
+                  method: 'POST', headers: authHeaders, body: JSON.stringify({ confirm: true }),
+                });
+                const data = await resp.json();
+                if (data.success) { alert(`Cleared ${data.cleared} withdrawal records.`); setAdminWithdrawals([]); }
+                else { alert(data.error || 'Clear failed'); }
+              } catch { alert('Network error'); }
+            }} style={{
+              padding: '7px 16px', borderRadius: 10, border: '1px solid rgba(239,68,68,0.3)',
+              background: 'rgba(239,68,68,0.1)', color: '#EF4444', fontSize: 11, fontWeight: 600,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              🗑️ Clear All Withdrawal Data
+            </button>
+          </div>
+
           {/* Summary Stats */}
           {adminWithdrawals.length > 0 && (() => {
             const statusColors = {
@@ -1345,6 +1366,22 @@ function AdminPanel({ investor, isMobile }) {
                     <div style={{ fontSize: 11, color: '#EF4444', marginTop: 6 }}>
                       {complianceData.audit.chainIntegrity.violations.length} violations detected
                     </div>
+                  )}
+                  {!complianceData.audit?.chainIntegrity?.valid && (
+                    <button onClick={async () => {
+                      if (!window.confirm('Reset the audit chain? This clears all stale audit entries and starts a fresh chain. This action cannot be undone.')) return;
+                      try {
+                        const resp = await fetch(`${ADMIN_API_BASE}/admin/audit-log/reset`, {
+                          method: 'POST', headers: authHeaders, body: JSON.stringify({ confirm: true, reason: 'Admin UI reset — stale chain' }),
+                        });
+                        const data = await resp.json();
+                        if (data.success) { alert(`Audit chain reset. ${data.cleared} stale entries cleared.`); fetchCompliance(); }
+                        else { alert(data.error || 'Reset failed'); }
+                      } catch { alert('Network error'); }
+                    }} style={{
+                      marginTop: 10, padding: '7px 14px', borderRadius: 10, border: '1px solid rgba(239,68,68,0.3)',
+                      background: 'rgba(239,68,68,0.1)', color: '#EF4444', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                    }}>Reset Chain</button>
                   )}
                 </div>
 
