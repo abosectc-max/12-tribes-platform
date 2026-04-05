@@ -5,6 +5,14 @@ import RefreshButton from '../RefreshButton';
 
 const { AreaChart, Area, LineChart, Line, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer } = recharts;
 
+const glass = {
+  background: 'rgba(255,255,255,0.03)',
+  backdropFilter: 'blur(40px) saturate(180%)',
+  WebkitBackdropFilter: 'blur(40px) saturate(180%)',
+  border: '1px solid rgba(255,255,255,0.06)',
+  borderRadius: 16,
+};
+
 function PerformanceView({ investor, wallet, positions, tradeHistory, isMobile }) {
   const [chartPeriod, setChartPeriod] = useState("monthly");
   const [serverPerf, setServerPerf] = useState(null);
