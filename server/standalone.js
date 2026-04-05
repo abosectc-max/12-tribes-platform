@@ -94,23 +94,30 @@ const ALLOWED_ORIGINS = [
 // In-memory Map is the hot path (zero latency). PostgreSQL is the persistence layer
 // so rate limits survive server restarts — preventing brute-force via redeploy.
 const rateLimitStore = new Map();
+// Returns { allowed: bool, remaining: number, resetAt: ms-epoch }
+// resetAt = when the oldest request in the window expires (i.e. when a new attempt is allowed)
 function rateLimit(key, maxAttempts, windowMs) {
   const now = Date.now();
   const record = rateLimitStore.get(key) || [];
   const recent = record.filter(t => now - t < windowMs);
-  if (recent.length >= maxAttempts) return false;
-  recent.push(now);
-  rateLimitStore.set(key, recent);
-  // Fire-and-forget persist to PG — silent fail keeps hot path synchronous
-  if (db?.pool) {
-    db.pool.query(
-      `INSERT INTO rate_limit_store (key, attempts, updated_at)
-       VALUES ($1, $2::jsonb, $3)
-       ON CONFLICT (key) DO UPDATE SET attempts = $2::jsonb, updated_at = $3`,
-      [key, JSON.stringify(recent), now]
-    ).catch(() => {});
+  const allowed = recent.length < maxAttempts;
+  if (allowed) {
+    recent.push(now);
+    rateLimitStore.set(key, recent);
+    // Fire-and-forget persist to PG — silent fail keeps hot path synchronous
+    if (db?.pool) {
+      db.pool.query(
+        `INSERT INTO rate_limit_store (key, attempts, updated_at)
+         VALUES ($1, $2::jsonb, $3)
+         ON CONFLICT (key) DO UPDATE SET attempts = $2::jsonb, updated_at = $3`,
+        [key, JSON.stringify(recent), now]
+      ).catch(() => {});
+    }
   }
-  return true;
+  const remaining = Math.max(0, maxAttempts - recent.length);
+  // Reset time: when the oldest timestamp in the current window falls out
+  const resetAt = recent.length > 0 ? recent[0] + windowMs : now + windowMs;
+  return { allowed, remaining, resetAt };
 }
 // Clean rate limit store every 5 minutes — both memory and PG
 const rateLimitCleanupInterval = setInterval(() => {
@@ -3119,16 +3126,22 @@ const SECURITY_HEADERS = {
   'Cross-Origin-Opener-Policy': 'same-origin',
 };
 
-function json(res, status, data) {
+function json(res, status, data, extraHeaders = {}) {
   const origin = res._corsOrigin || ALLOWED_ORIGINS[0];
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
     'Access-Control-Allow-Credentials': 'true',
-    'Access-Control-Expose-Headers': 'X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Strict-Transport-Security, Referrer-Policy, X-RateLimit-Remaining',
+    // Only expose headers that frontend JS actually needs to read.
+    // Security response headers (X-Frame-Options etc.) are not JS-readable and don't belong here.
+    'Access-Control-Expose-Headers': 'X-RateLimit-Remaining, X-RateLimit-Reset',
+    // Vary: Origin is required when Access-Control-Allow-Origin is dynamic.
+    // Without it, a shared proxy can serve a cached CORS response meant for origin A to origin B.
+    'Vary': 'Origin',
     ...SECURITY_HEADERS,
+    ...extraHeaders,
   });
   res.end(JSON.stringify(data));
 }
@@ -3219,8 +3232,9 @@ const VALID_AGENT_NAMES = new Set(['Viper', 'Oracle', 'Spectre', 'Sentinel', 'Ph
 // ─── AUTH: REGISTER ───
 api.post('/api/auth/register', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-  if (!rateLimit(`register:${ip}`, 10, 3600000)) {
-    return json(res, 429, { error: 'Too many registration attempts. Try again in 1 hour.' });
+  const rlReg = rateLimit(`register:${ip}`, 10, 3600000);
+  if (!rlReg.allowed) {
+    return json(res, 429, { error: 'Too many registration attempts. Try again in 1 hour.' }, { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlReg.resetAt / 1000)) });
   }
 
   const body = await readBody(req);
@@ -3317,8 +3331,9 @@ api.post('/api/auth/register', async (req, res) => {
 // ─── AUTH: LOGIN ───
 api.post('/api/auth/login', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-  if (!rateLimit(`login:${ip}`, 5, 900000)) {
-    return json(res, 429, { error: 'Too many login attempts. Try again in 15 minutes.' });
+  const rlLogin = rateLimit(`login:${ip}`, 5, 900000);
+  if (!rlLogin.allowed) {
+    return json(res, 429, { error: 'Too many login attempts. Try again in 15 minutes.' }, { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlLogin.resetAt / 1000)) });
   }
 
   const body = await readBody(req);
@@ -4207,8 +4222,9 @@ function accessDeniedEmail(firstName) {
 // ─── AUTH: FORGOT PASSWORD (sends email with code) ───
 api.post('/api/auth/forgot-password', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-  if (!rateLimit(`forgot:${ip}`, 3, 900000)) {
-    return json(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' });
+  const rlForgot = rateLimit(`forgot:${ip}`, 3, 900000);
+  if (!rlForgot.allowed) {
+    return json(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' }, { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlForgot.resetAt / 1000)) });
   }
 
   const body = await readBody(req);
@@ -4218,8 +4234,9 @@ api.post('/api/auth/forgot-password', async (req, res) => {
 
   const emailKey = email.toLowerCase().trim();
 
-  if (!rateLimit(`forgot:email:${emailKey}`, 3, 3600000)) {
-    return json(res, 429, { error: 'Too many reset requests for this email. Try again in 1 hour.' });
+  const rlForgotEmail = rateLimit(`forgot:email:${emailKey}`, 3, 3600000);
+  if (!rlForgotEmail.allowed) {
+    return json(res, 429, { error: 'Too many reset requests for this email. Try again in 1 hour.' }, { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Math.ceil(rlForgotEmail.resetAt / 1000)) });
   }
 
   // Always return success (privacy — don't reveal if account exists)
@@ -7815,7 +7832,8 @@ const server = createServer(async (req, res) => {
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Max-Age': '86400',
-      'Access-Control-Expose-Headers': 'X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Strict-Transport-Security, Referrer-Policy, X-RateLimit-Remaining',
+      'Access-Control-Expose-Headers': 'X-RateLimit-Remaining, X-RateLimit-Reset',
+      'Vary': 'Origin',
       ...SECURITY_HEADERS,
     });
     return res.end();
