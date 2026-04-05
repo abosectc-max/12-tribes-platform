@@ -82,6 +82,9 @@ let currentMarketRegime = MARKET_REGIMES.neutral;
  * @returns {*}
  */
 function safeParse(json, fallback = null) {
+  // JSON.parse(null) returns null without throwing — guard explicitly so the
+  // caller's fallback (e.g. []) is used when the localStorage key is absent.
+  if (json == null) return fallback;
   try {
     return JSON.parse(json);
   } catch (e) {

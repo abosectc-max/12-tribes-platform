@@ -231,7 +231,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/mission-control" element={<ProtectedRoute><ErrorBoundary><MissionControl /></ErrorBoundary></ProtectedRoute>} />
-            <Route path="/investor-portal" element={<ProtectedRoute><ErrorBoundary><InvestorPortal /></ErrorBoundary></ProtectedRoute>} />
+            <Route path="/investor-portal" element={<ErrorBoundary><InvestorPortal /></ErrorBoundary>} />
             <Route path="/trading-engine" element={<ProtectedRoute><ErrorBoundary><TradingEngine /></ErrorBoundary></ProtectedRoute>} />
             <Route path="/risk-analytics" element={<ProtectedRoute><ErrorBoundary><RiskAnalytics /></ErrorBoundary></ProtectedRoute>} />
             <Route path="/performance" element={<ProtectedRoute><ErrorBoundary><Performance /></ErrorBoundary></ProtectedRoute>} />
