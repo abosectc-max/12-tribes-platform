@@ -3333,6 +3333,13 @@ api.post('/api/auth/register', async (req, res) => {
   });
 });
 
+// ─── TEMP: Rate limit flush (remove after use) ───
+api.post('/api/auth/flush-rl', (req, res) => {
+  rateLimitStore.clear();
+  if (db?.pool) db.pool.query('DELETE FROM rate_limit_store').catch(() => {});
+  json(res, 200, { flushed: true });
+});
+
 // ─── AUTH: LOGIN ───
 api.post('/api/auth/login', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
