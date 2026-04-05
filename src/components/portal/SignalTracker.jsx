@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { haptics } from '../../hooks/useHaptics.js';
+import RefreshButton from '../RefreshButton';
 
 function SignalTracker({ investor, isMobile }) {
   const [stats, setStats] = useState(null);

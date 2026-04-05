@@ -1,6 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import * as recharts from 'recharts';
 import { getPerformanceMetrics, getEquityHistoryByPeriod, getPositionPerformance } from '../../store/performanceTracker.js';
+import RefreshButton from '../RefreshButton';
 
 const { AreaChart, Area, LineChart, Line, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer } = recharts;
 

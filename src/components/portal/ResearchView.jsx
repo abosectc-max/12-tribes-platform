@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import RefreshButton from '../RefreshButton';
 
 function ResearchView({ isMobile }) {
   const [query, setQuery] = useState('');
