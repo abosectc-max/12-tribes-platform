@@ -13613,16 +13613,21 @@ api.post('/api/admin/audit-log/reset', auth, async (req, res) => {
   if (db.pool) { try { await db.pool.query('DELETE FROM audit_log'); } catch (e) { console.error('[AuditReset] PG delete failed:', e.message); } }
 
   // Insert a fresh GENESIS entry so the chain starts clean
+  // Hash formula MUST match verifyAuditChain() and createImmutableAuditEntry():
+  //   hashInput = `${id}|${timestamp_ms}|${category}|${action}|${prev_hash}|${JSON.stringify(details)}`
+  // details stored as OBJECT (JSONB) — identical to createImmutableAuditEntry pattern
   const ts = new Date().toISOString();
-  const genesisId = `audit-genesis-${Date.now()}`;
-  const hashInput = `${genesisId}|${Date.now()}|SYSTEM|AUDIT_CHAIN_RESET|GENESIS|${JSON.stringify({ reason: body.reason || 'Admin reset', admin: admin.email, previousEntries: before })}`;
+  const nowMs = Date.now();
+  const genesisId = `audit-genesis-${nowMs}`;
+  const detailsObj = { reason: body.reason || 'Admin reset', admin: admin.email, previousEntries: before };
+  const hashInput = `${genesisId}|${nowMs}|SYSTEM|AUDIT_CHAIN_RESET|GENESIS|${JSON.stringify(detailsObj)}`;
   const entryHash = createHash('sha256').update(hashInput).digest('hex');
   const genesisEntry = {
-    id: genesisId, timestamp: ts, timestamp_ms: Date.now(),
+    id: genesisId, timestamp: ts, timestamp_ms: nowMs,
     category: 'SYSTEM', action: 'AUDIT_CHAIN_RESET', user_id: admin.id,
-    details: JSON.stringify({ reason: body.reason || 'Admin reset', admin: admin.email, previousEntries: before }),
+    details: detailsObj,
     prev_hash: 'GENESIS', entry_hash: entryHash,
-    retention_until: new Date(Date.now() + 6 * 365.25 * 86400000).toISOString(),
+    retention_until: new Date(nowMs + 6 * 365.25 * 86400000).toISOString(),
     immutable: true, created_at: ts,
   };
   db.insert('audit_log', genesisEntry);
