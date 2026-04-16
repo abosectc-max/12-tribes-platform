@@ -1275,34 +1275,49 @@ const SIDEBAR_ITEMS = [
 
 function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onToggle, isMobile, adminNotifCount = 0 }) {
   const sidebarWidth = 280;
-  const [touchStartX, setTouchStartX] = useState(null);
+  const [touchStart, setTouchStart] = useState(null); // { x, y }
   const [dragOffset, setDragOffset] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
+  const [swipeIntent, setSwipeIntent] = useState(null); // null | 'horizontal' | 'vertical'
 
   // Swipe-to-close gesture handler
+  // FIX: direction is NOT locked until the user moves ≥8px — prevents vertical scroll
+  // from being captured as a horizontal swipe gesture.
   const handleTouchStart = useCallback((e) => {
     if (!isMobile || !isOpen) return;
-    setTouchStartX(e.touches[0].clientX);
-    setIsDragging(true);
+    setTouchStart({ x: e.touches[0].clientX, y: e.touches[0].clientY });
+    setSwipeIntent(null);
   }, [isMobile, isOpen]);
 
   const handleTouchMove = useCallback((e) => {
-    if (!isDragging || touchStartX === null) return;
-    const deltaX = e.touches[0].clientX - touchStartX;
-    if (deltaX < 0) setDragOffset(deltaX); // Only allow dragging left (to close)
-  }, [isDragging, touchStartX]);
+    if (!touchStart) return;
+    const deltaX = e.touches[0].clientX - touchStart.x;
+    const deltaY = e.touches[0].clientY - touchStart.y;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+
+    // Determine intent once the user has moved at least 8px in any direction
+    if (swipeIntent === null) {
+      if (absX < 8 && absY < 8) return; // Not enough movement to decide yet
+      setSwipeIntent(absX >= absY ? 'horizontal' : 'vertical');
+      return;
+    }
+
+    // Vertical intent → let native scroll handle it, don't touch dragOffset
+    if (swipeIntent === 'vertical') return;
+
+    // Horizontal intent → apply drag (left only, to close)
+    if (deltaX < 0) setDragOffset(deltaX);
+  }, [touchStart, swipeIntent]);
 
   const handleTouchEnd = useCallback(() => {
-    if (!isDragging) return;
-    // If dragged more than 80px left, close the sidebar
-    if (dragOffset < -80) {
+    if (swipeIntent === 'horizontal' && dragOffset < -80) {
       onToggle();
       haptics.light();
     }
     setDragOffset(0);
-    setTouchStartX(null);
-    setIsDragging(false);
-  }, [isDragging, dragOffset, onToggle]);
+    setTouchStart(null);
+    setSwipeIntent(null);
+  }, [swipeIntent, dragOffset, onToggle]);
 
   // Desktop: permanent sidebar. Mobile: slide-out drawer with spring physics.
   const mobileTransform = isOpen
