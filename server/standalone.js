@@ -6484,6 +6484,240 @@ api.post('/api/admin/purge-stale', auth, (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+//   FULL PLATFORM RESET — Nuclear option
+//   Wipes ALL financial history, resets every investor to $10,000,
+//   disables trading platform-wide. Requires admin auth + confirmation token.
+// ═══════════════════════════════════════════════════════════════════════
+api.post('/api/admin/full-platform-reset', auth, async (req, res) => {
+  const user = db.findOne('users', u => u.id === req.userId);
+  if (!user || user.role !== 'admin') return json(res, 403, { error: 'Admin only' });
+
+  const body = await readBody(req);
+  if (body.confirm !== 'RESET_CONFIRMED') {
+    return json(res, 400, { error: 'Safety lock: include { "confirm": "RESET_CONFIRMED" } in body' });
+  }
+
+  const FRESH_BALANCE = 10000;
+  const resetAt = new Date().toISOString();
+  const results = { tablesCleared: [], walletsReset: 0, capitalAccountsReset: 0, tradingDisabled: 0, agentsReset: 0, errors: [] };
+
+  try {
+    // ─── STEP 1: Pre-reset recovery snapshot ───
+    try {
+      const preWallets = db.findMany('wallets');
+      const preUsers  = db.findMany('users');
+      const preCAs    = db.findMany('capital_accounts');
+      const snapData  = {
+        timestamp: resetAt, trigger: 'pre-full-reset',
+        wallets: preWallets.map(w => ({
+          user_id: w.user_id, balance: w.balance, equity: w.equity,
+          initial_balance: w.initial_balance, realized_pnl: w.realized_pnl,
+          unrealized_pnl: w.unrealized_pnl, trade_count: w.trade_count,
+        })),
+        users: preUsers.map(u => ({ id: u.id, email: u.email, first_name: u.first_name, last_name: u.last_name, role: u.role })),
+        capital_accounts: preCAs.map(ca => ({
+          user_id: ca.user_id, beginning_balance: ca.beginning_balance,
+          ending_balance: ca.ending_balance, contributions: ca.contributions,
+        })),
+        trades_count: db.findMany('trades').length,
+        positions_count: db.findMany('positions').length,
+        withdrawals_count: db.findMany('withdrawal_requests').length,
+      };
+      const snapId = `pre-reset-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+      if (db.pool) {
+        await db.pool.query(
+          'INSERT INTO recovery_snapshots (id, trigger, data) VALUES ($1, $2, $3)',
+          [snapId, 'pre-full-reset', JSON.stringify(snapData)]
+        );
+        console.log(`[FullReset] Pre-reset snapshot saved: ${snapId}`);
+      }
+    } catch (snapErr) {
+      results.errors.push(`Pre-reset snapshot: ${snapErr.message}`);
+    }
+
+    // ─── STEP 2: Clear all financial tables (memory + PG) ───
+    const tablesToClear = [
+      'trades', 'positions', 'auto_trade_log', 'withdrawal_requests',
+      'snapshots', 'tax_ledger', 'tax_lots', 'wash_sales', 'tax_allocations',
+      'distributions', 'distribution_records', 'fee_ledger', 'capital_calls',
+      'order_queue', 'signals', 'trade_flags', 'risk_events',
+      'post_mortems', 'symbol_performance',
+    ];
+
+    for (const table of tablesToClear) {
+      try {
+        const countBefore = db.tables[table]?.length ?? 0;
+        // Clear in-memory cache
+        if (db.tables[table]) db.tables[table] = [];
+        // Wipe from PostgreSQL
+        if (db.pool) await db.pool.query(`DELETE FROM ${table}`);
+        results.tablesCleared.push({ table, cleared: countBefore });
+        console.log(`[FullReset] Cleared ${table}: ${countBefore} records deleted`);
+      } catch (e) {
+        results.errors.push(`Clear ${table}: ${e.message}`);
+        console.error(`[FullReset] ⚠️ Failed to clear ${table}: ${e.message}`);
+      }
+    }
+
+    // ─── STEP 3: Invalidate wallet cache ───
+    try {
+      for (const uid of Object.keys(walletCache)) delete walletCache[uid];
+    } catch (_) {}
+
+    // ─── STEP 4: Reset all wallets to $10,000 ───
+    const wallets = db.findMany('wallets');
+    for (const wallet of wallets) {
+      Object.assign(wallet, {
+        balance: FRESH_BALANCE,
+        equity: FRESH_BALANCE,
+        initial_balance: FRESH_BALANCE,
+        peak_equity: FRESH_BALANCE,
+        high_water_mark: FRESH_BALANCE,
+        unrealized_pnl: 0,
+        realized_pnl: 0,
+        trade_count: 0,
+        win_count: 0,
+        loss_count: 0,
+        deposit_amount: FRESH_BALANCE,
+        deposit_timestamp: resetAt,
+        kill_switch_active: false,
+        first_trade_at: null,
+        balance_locked: false,
+        updated_at: resetAt,
+      });
+      if (db.pool) {
+        try {
+          await db.pool.query(
+            `UPDATE wallets SET
+              balance=$1, equity=$1, initial_balance=$1, peak_equity=$1,
+              unrealized_pnl=0, realized_pnl=0, trade_count=0,
+              win_count=0, loss_count=0, deposit_amount=$1,
+              deposit_timestamp=$2, kill_switch_active=false,
+              first_trade_at=NULL, balance_locked=false, updated_at=$2
+             WHERE id=$3`,
+            [FRESH_BALANCE, resetAt, wallet.id]
+          );
+        } catch (e) { results.errors.push(`Wallet ${wallet.id}: ${e.message}`); }
+      }
+      results.walletsReset++;
+    }
+    console.log(`[FullReset] ✅ ${results.walletsReset} wallets reset to $${FRESH_BALANCE}`);
+
+    // ─── STEP 5: Reset capital_accounts ───
+    const capitalAccounts = db.findMany('capital_accounts');
+    for (const ca of capitalAccounts) {
+      Object.assign(ca, {
+        beginning_balance: FRESH_BALANCE,
+        ending_balance: FRESH_BALANCE,
+        contributions: FRESH_BALANCE,
+        allocated_income: 0,
+        updated_at: resetAt,
+      });
+      if (db.pool) {
+        try {
+          await db.pool.query(
+            `UPDATE capital_accounts SET
+              beginning_balance=$1, ending_balance=$1, contributions=$1,
+              allocated_income=0, updated_at=$2
+             WHERE id=$3`,
+            [FRESH_BALANCE, resetAt, ca.id]
+          );
+        } catch (e) { results.errors.push(`CapAccount ${ca.id}: ${e.message}`); }
+      }
+      results.capitalAccountsReset++;
+    }
+
+    // ─── STEP 6: Reset agent_stats to zero ───
+    const agents = db.findMany('agent_stats');
+    for (const agent of agents) {
+      Object.assign(agent, {
+        total_trades: 0, wins: 0, losses: 0, total_pnl: 0,
+        best_trade: 0, worst_trade: 0, avg_return: 0, updated_at: resetAt,
+      });
+      if (db.pool) {
+        try {
+          await db.pool.query(
+            `UPDATE agent_stats SET total_trades=0, wins=0, losses=0, total_pnl=0,
+              best_trade=0, worst_trade=0, avg_return=0, updated_at=$1
+             WHERE id=$2`,
+            [resetAt, agent.id]
+          );
+        } catch (e) { results.errors.push(`AgentStat ${agent.id}: ${e.message}`); }
+      }
+      results.agentsReset++;
+    }
+
+    // ─── STEP 7: Disable auto-trading for ALL fund_settings ───
+    const allFundSettings = db.findMany('fund_settings');
+    for (const settings of allFundSettings) {
+      // Deep-clone required for JSONB mutation (per db architecture docs)
+      const newData = JSON.parse(JSON.stringify(settings.data || {}));
+      if (!newData.autoTrading) newData.autoTrading = {};
+      newData.autoTrading.isAutoTrading = false;
+      newData.autoTrading.agentsActive = [];
+      newData.autoTrading.tradingStoppedAt = resetAt;
+      settings.data = newData;
+      settings.updated_at = resetAt;
+      if (db.pool) {
+        try {
+          await db.pool.query(
+            'UPDATE fund_settings SET data=$1, updated_at=$2 WHERE id=$3',
+            [JSON.stringify(newData), resetAt, settings.id]
+          );
+        } catch (e) { results.errors.push(`FundSettings ${settings.id}: ${e.message}`); }
+      }
+      results.tradingDisabled++;
+    }
+    console.log(`[FullReset] ✅ Trading disabled for ${results.tradingDisabled} fund_settings records`);
+
+    // ─── STEP 8: Broadcast reset notification to all investors ───
+    const investors = db.findMany('users');
+    for (const inv of investors) {
+      if (inv.id === req.userId) continue; // skip admin
+      try {
+        db.insert('messages', {
+          from_user_id: req.userId,
+          to_user_id: inv.id,
+          subject: 'Account Reset — Fresh $10,000 Starting Balance',
+          body: `Your account has been reset to a fresh $10,000 starting balance. All prior trade history, positions, and withdrawal requests have been cleared. Trading is currently paused — you may restart it from your dashboard at any time. This is a clean slate for the new cycle.`,
+          read: false,
+          created_at: resetAt,
+        });
+      } catch (_) {}
+    }
+
+    // ─── STEP 9: Compliance audit entry ───
+    try {
+      db.insert('audit_log', {
+        action: 'FULL_PLATFORM_RESET',
+        performed_by: req.userId,
+        details: JSON.stringify({
+          reason: 'Admin-initiated full financial data reset',
+          fresh_balance: FRESH_BALANCE,
+          walletsReset: results.walletsReset,
+          tablesCleared: results.tablesCleared.map(t => t.table),
+        }),
+        metadata: JSON.stringify({ admin_email: user.email }),
+        timestamp: resetAt,
+      });
+    } catch (_) {}
+
+    console.log(`[FullReset] ✅ COMPLETE — ${results.walletsReset} wallets, ${results.tablesCleared.length} tables cleared, trading disabled`);
+
+    json(res, 200, {
+      success: true,
+      message: `Platform reset complete. ${results.walletsReset} investor wallets set to $${FRESH_BALANCE.toLocaleString()}. Trading disabled — investors must restart manually.`,
+      details: results,
+      resetAt,
+    });
+
+  } catch (err) {
+    console.error(`[FullReset] ❌ CRITICAL FAILURE: ${err.message}`);
+    json(res, 500, { error: 'Reset failed', message: err.message, partial: results });
+  }
+});
+
 // Admin: get table sizes for monitoring
 api.get('/api/admin/table-sizes', auth, (req, res) => {
   const user = db.findOne('users', u => u.id === req.userId);
