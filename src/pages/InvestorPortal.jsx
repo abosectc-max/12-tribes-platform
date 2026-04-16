@@ -1333,7 +1333,7 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
           background: "rgba(0,0,0,0.6)",
           opacity: isOpen ? (1 - Math.min(1, Math.abs(dragOffset) / sidebarWidth) * 0.6) : 0,
           pointerEvents: isOpen ? "auto" : "none",
-          transition: isDragging ? "none" : "opacity 0.35s cubic-bezier(0.32, 0.72, 0, 1)",
+          transition: swipeIntent === 'horizontal' ? "none" : "opacity 0.35s cubic-bezier(0.32, 0.72, 0, 1)",
         }} />
       )}
 
@@ -1348,7 +1348,7 @@ function LeftSidebar({ activeTab, onTabChange, investor, onLogout, isOpen, onTog
         ...slateGlass, borderRadius: 0, borderLeft: "none", borderTop: "none", borderBottom: "none",
         display: "flex", flexDirection: "column",
         transform: isMobile ? mobileTransform : "translateX(0)",
-        transition: isDragging ? "none" : "transform 0.4s cubic-bezier(0.32, 0.72, 0, 1)",
+        transition: swipeIntent === 'horizontal' ? "none" : "transform 0.4s cubic-bezier(0.32, 0.72, 0, 1)",
         willChange: "transform",
       }}>
         {/* Logo + Close */}
