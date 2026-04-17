@@ -6794,18 +6794,19 @@ api.post('/api/admin/full-platform-reset', auth, async (req, res) => {
 
     // ─── STEP 10: Compliance audit entry ───
     try {
-      db.insert('audit_log', {
-        action: 'FULL_PLATFORM_RESET',
-        performed_by: req.userId,
-        details: JSON.stringify({
+      const auditEntry = compliance.createImmutableAuditEntry(
+        'ADMIN',
+        'FULL_PLATFORM_RESET',
+        {
           reason: 'Admin-initiated full financial data reset',
           fresh_balance: FRESH_BALANCE,
           walletsReset: results.walletsReset,
           tablesCleared: results.tablesCleared.map(t => t.table),
-        }),
-        metadata: JSON.stringify({ admin_email: user.email }),
-        timestamp: resetAt,
-      });
+        },
+        req.userId,
+        { admin_email: user.email }
+      );
+      db.insert('audit_log', auditEntry);
     } catch (_) {}
 
     console.log(`[FullReset] ✅ COMPLETE — ${results.walletsReset} wallets, ${results.tablesCleared.length} tables cleared, trading disabled`);
