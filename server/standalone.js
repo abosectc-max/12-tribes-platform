@@ -14754,23 +14754,34 @@ server.listen(PORT, '0.0.0.0', async () => {
   // ── Rate Limit Hydration: Restore active rate limit entries from PG so cooldowns survive restarts ──
   if (db?.pool) {
     try {
-      const { rows } = await db.pool.query('SELECT key, attempts, updated_at FROM rate_limit_store');
-      const now = Date.now();
-      let hydrated = 0;
-      for (const row of rows) {
-        const attempts = Array.isArray(row.attempts) ? row.attempts : JSON.parse(row.attempts || '[]');
-        const recent = attempts.filter(t => now - t < 3600000); // only keep entries < 1 hour old
-        if (recent.length > 0) { rateLimitStore.set(row.key, recent); hydrated++; }
-      }
-      if (hydrated > 0) console.log(`[RateLimit] Hydrated ${hydrated} active rate limit entries from PG — brute-force cooldowns restored`);
+      // Clear stale rate limit data from PG on every boot — prevents old windows from blocking
+      // legitimate logins after a Render redeploy. In-memory store always starts empty on boot.
+      await db.pool.query('DELETE FROM rate_limit_store').catch(() => {});
+      console.log('[RateLimit] Rate limit store cleared on boot — fresh window for all IPs');
     } catch (err) {
-      console.warn(`[RateLimit] PG hydration skipped (non-fatal): ${err.message}`);
+      console.warn(`[RateLimit] PG rate-limit clear skipped (non-fatal): ${err.message}`);
     }
   }
 
-  // ── Compliance: Restore audit chain hash from DB so chain stays intact across restarts ──
+  // ── Compliance: Repair audit chain — remove malformed entries (missing entry_hash) then restore ──
   let auditChainInit = { initialized: false };
   try {
+    // Step 1: Purge any malformed audit entries from PG and memory (e.g. raw db.insert calls without hashing)
+    if (db.pool) {
+      try {
+        const { rowCount } = await db.pool.query(
+          "DELETE FROM audit_log WHERE entry_hash IS NULL OR entry_hash = '' OR prev_hash IS NULL"
+        );
+        if (rowCount > 0) {
+          console.log(`[BOOT] Audit chain repair: removed ${rowCount} malformed entries — reloading from PG`);
+          const freshAudit = await db.pool.query('SELECT * FROM audit_log ORDER BY timestamp_ms ASC');
+          if (db.tables) db.tables.audit_log = freshAudit.rows;
+        }
+      } catch (repairErr) {
+        console.warn('[BOOT] Audit repair step skipped (non-fatal):', repairErr.message);
+      }
+    }
+    // Step 2: Init chain hash from clean entries
     const existingAuditEntries = db.findMany('audit_log', () => true) || [];
     auditChainInit = compliance.initAuditChainFromEntries(existingAuditEntries);
     if (auditChainInit.entriesProcessed > 0) {
