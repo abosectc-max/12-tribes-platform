@@ -1,0 +1,74 @@
+{
+  "summary": "QA Audit — 2026-04-17T19:08:00Z — PASS",
+  "source": "scheduled_agent",
+  "timestamp": "2026-04-17T19:08:00.000Z",
+  "severity_counts": { "critical": 0, "high": 0, "medium": 1, "low": 2 },
+  "issues": [
+    {
+      "severity": "medium",
+      "category": "availability",
+      "description": "HEAD /api/health returns 404 — the health route only responds to GET. Monitoring tools that probe via HEAD will incorrectly flag the service as down."
+    },
+    {
+      "severity": "low",
+      "category": "availability",
+      "description": "Health endpoint (/api/health) does not expose memory usage, heap stats, database connection status, or market-data sample prices. Extended observability metrics are absent, limiting automated drift detection."
+    },
+    {
+      "severity": "low",
+      "category": "availability",
+      "description": "Admin health endpoint (/api/admin/health) could not be fully validated during this audit run — security rate-limit testing (6 rapid login attempts) consumed the per-IP quota, blocking admin login for the audit window. Admin health metrics were unverified this cycle."
+    }
+  ],
+  "metrics": {
+    "backend_response_ms": 110,
+    "frontend_response_ms": 450,
+    "health_status": "operational",
+    "memory_mb": null,
+    "uptime_seconds": 6643,
+    "backend_version": "1.0.0-standalone",
+    "backend_commit": "b43eed55",
+    "cors_valid": true,
+    "cors_origin": "https://12-tribes-platform.vercel.app",
+    "security_headers_valid": true,
+    "security_headers_present": [
+      "x-content-type-options: nosniff",
+      "x-frame-options: DENY",
+      "content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+      "strict-transport-security: max-age=31536000; includeSubDomains",
+      "x-xss-protection: 1; mode=block",
+      "permissions-policy: camera=(), microphone=(), geolocation=()",
+      "cross-origin-opener-policy: same-origin",
+      "cross-origin-resource-policy: cross-origin",
+      "referrer-policy: strict-origin-when-cross-origin"
+    ],
+    "rate_limiting_active": true,
+    "rate_limit_threshold": 5,
+    "rate_limit_window_minutes": 15,
+    "invalid_login_returns_401": true,
+    "invalid_jwt_returns_401": true,
+    "protected_endpoints_require_auth": true,
+    "frontend_title": "12 Tribes | AI Investment Platform",
+    "frontend_accessible": true,
+    "auto_trading_status_returns_401_not_500": true
+  },
+  "checks_passed": [
+    "Backend health endpoint returns 200 with status=operational",
+    "Backend response time 110ms (well under 2000ms threshold)",
+    "Frontend accessible with correct branding",
+    "POST /api/auth/login with invalid credentials returns 401 (not 500)",
+    "GET /api/auto-trading/status returns 401 (not 500) when unauthenticated",
+    "CORS Access-Control-Allow-Origin is NOT wildcard — locked to production frontend",
+    "All 9 security headers present and correctly configured",
+    "Rate limiting active — 429 triggered at attempt 5 per 15-min window",
+    "Malformed/expired JWT tokens rejected with 401",
+    "No protected endpoint leaks data without Authorization header",
+    "HTTPS enforced (HSTS header present)",
+    "Uptime ~1.84 hours since last deploy at 17:16:48 UTC"
+  ],
+  "checks_failed": [],
+  "checks_partial": [
+    "HEAD /api/health returns 404 (GET works fine — medium priority fix)",
+    "Admin health endpoint not verified due to rate-limit window (audit limitation)"
+  ]
+}
