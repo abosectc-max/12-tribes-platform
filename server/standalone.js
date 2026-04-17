@@ -786,6 +786,86 @@ if (USE_POSTGRES) {
         } catch (snapErr) {
           console.error('[Recovery] ⚠️  Boot snapshot failed (non-fatal):', snapErr.message);
         }
+
+        // ─── BOOT: Apply pending platform reset if flagged ───────────────
+        // The full-platform-reset endpoint sets system_config key='boot_reset_pending'.
+        // On every boot we check for this flag and apply the reset atomically so it
+        // survives across Render redeploys (which restart the server and reload PG).
+        try {
+          const resetFlagRes = await db.pool.query(
+            "SELECT id, value FROM system_config WHERE key='boot_reset_pending' LIMIT 1"
+          );
+          if (resetFlagRes.rows.length > 0) {
+            const flagRow   = resetFlagRes.rows[0];
+            const flagValue = typeof flagRow.value === 'object' ? flagRow.value?.v : flagRow.value;
+            if (flagValue === true || flagValue === 'true') {
+              console.log('[Boot] 🔄 boot_reset_pending flag detected — applying full platform reset…');
+              const BOOT_FRESH = 10000;
+              const bootResetAt = new Date().toISOString();
+
+              // Delete all financial history from PG (errors are non-fatal per-table)
+              const bootClearTables = [
+                'trades','positions','auto_trade_log','withdrawal_requests','snapshots',
+                'tax_ledger','tax_lots','wash_sales','tax_allocations','distributions',
+                'distribution_records','fee_ledger','capital_calls','order_queue',
+                'signals','trade_flags','risk_events','post_mortems',
+              ];
+              for (const t of bootClearTables) {
+                try { await db.pool.query(`DELETE FROM ${t}`); } catch (_) {}
+                if (db.tables[t]) db.tables[t] = [];
+              }
+
+              // Reset wallets in PG, then reload in-memory
+              await db.pool.query(
+                `UPDATE wallets SET balance=$1, equity=$1, initial_balance=$1, peak_equity=$1,
+                 unrealized_pnl=0, realized_pnl=0, trade_count=0, win_count=0, loss_count=0,
+                 deposit_amount=$1, kill_switch_active=false, first_trade_at=NULL,
+                 balance_locked=false, updated_at=$2`,
+                [BOOT_FRESH, bootResetAt]
+              );
+              const freshWalletRows = await db.pool.query('SELECT * FROM wallets');
+              if (db.tables.wallets) db.tables.wallets = freshWalletRows.rows;
+
+              // Disable auto-trading in PG, then reload fund_settings in-memory
+              const fsRows = await db.pool.query('SELECT id, data FROM fund_settings');
+              for (const row of fsRows.rows) {
+                const fsData = (typeof row.data === 'object' && row.data !== null)
+                  ? row.data : JSON.parse(row.data || '{}');
+                if (fsData?.autoTrading?.isAutoTrading) {
+                  fsData.autoTrading.isAutoTrading = false;
+                  fsData.autoTrading.agentsActive  = [];
+                  fsData.autoTrading.tradingStoppedAt = bootResetAt;
+                  await db.pool.query(
+                    'UPDATE fund_settings SET data=$1, updated_at=$2 WHERE id=$3',
+                    [JSON.stringify(fsData), bootResetAt, row.id]
+                  );
+                }
+              }
+              const freshFSRows = await db.pool.query('SELECT * FROM fund_settings');
+              if (db.tables.fund_settings) db.tables.fund_settings = freshFSRows.rows.map(r => {
+                if (r.data && typeof r.data === 'string') r.data = JSON.parse(r.data);
+                return r;
+              });
+
+              // Reset agent_stats
+              await db.pool.query(
+                'UPDATE agent_stats SET total_trades=0, wins=0, losses=0, total_pnl=0, best_trade=0, worst_trade=0, avg_return=0, updated_at=$1',
+                [bootResetAt]
+              );
+
+              // Clear the flag — reset is a one-shot operation
+              await db.pool.query("DELETE FROM system_config WHERE key='boot_reset_pending'");
+              if (db.tables.system_config) {
+                db.tables.system_config = db.tables.system_config.filter(r => r.key !== 'boot_reset_pending');
+              }
+
+              console.log('[Boot] ✅ Boot reset complete — all wallets $10,000, trading disabled');
+            }
+          }
+        } catch (bootResetErr) {
+          console.error('[Boot] ⚠️  Boot reset check failed (non-fatal):', bootResetErr.message);
+        }
+
       } catch (migErr) {
         console.error('[Migration] ⚠️  Column migration failed (non-fatal):', migErr.message);
       }
@@ -6687,7 +6767,32 @@ api.post('/api/admin/full-platform-reset', auth, async (req, res) => {
       } catch (_) {}
     }
 
-    // ─── STEP 9: Compliance audit entry ───
+    // ─── STEP 9: Set boot_reset_pending flag ───
+    // Ensures the reset is re-applied on any subsequent Render reboot so data never
+    // reverts. The boot sequence checks this flag and clears it after applying.
+    try {
+      if (db.pool) {
+        await db.pool.query(
+          `INSERT INTO system_config (id, key, value, created_at)
+           VALUES ($1, 'boot_reset_pending', $2, $3)
+           ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=$3`,
+          [randomUUID(), JSON.stringify({ v: true }), resetAt]
+        );
+        // Reflect in memory too
+        const existing = db.findOne('system_config', s => s.key === 'boot_reset_pending');
+        if (existing) {
+          existing.value = { v: true };
+          existing.updated_at = resetAt;
+        } else {
+          db.tables.system_config.push({ id: randomUUID(), key: 'boot_reset_pending', value: { v: true }, created_at: resetAt });
+        }
+        console.log('[FullReset] ✅ boot_reset_pending flag set — reset will survive reboots');
+      }
+    } catch (flagErr) {
+      results.errors.push(`boot_reset_pending flag: ${flagErr.message}`);
+    }
+
+    // ─── STEP 10: Compliance audit entry ───
     try {
       db.insert('audit_log', {
         action: 'FULL_PLATFORM_RESET',
